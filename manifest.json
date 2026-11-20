@@ -1,11 +1,11 @@
 {
-  "显示名称": "酒馆甲板酒馆总控台",
+  "display_name": "TavernDeck · 酒馆总控台",
   "loading_order": 100,
-  "需要": [],
-  "可选": [],
+  "requires": [],
+  "optional": [],
   "js": "index.js",
   "css": "style.css",
-  "作者": "酒馆甲板",
-  "版本": "1.0.0",
-  "主页": ""
+  "author": "TavernDeck",
+  "version": "1.0.0",
+  "homePage": ""
 }
