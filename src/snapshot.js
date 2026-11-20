@@ -1,4 +1,3 @@
-
 import { APP_NAME, callTH, notify, genId, formatTime, makeItemKey, cloneItemRef } from './utils.js';
 import { state, getActiveScheme } from './store.js';
 import { applyItemMutations, refreshAllCatalogs } from './catalog.js';
