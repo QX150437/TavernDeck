@@ -1,4 +1,3 @@
-
 import { APP_NAME, getST, hasTH } from './src/utils.js';
 import { state, loadStore } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
