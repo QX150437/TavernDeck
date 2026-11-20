@@ -1,4 +1,3 @@
-
 import {
   APP_NAME, SCOPE_LABELS,
   hasTH, callTH, notify, makeItemKey,
@@ -495,4 +494,4 @@ export async function saveEditedEntry(itemKey, fields) {
   } finally {
     state.isBusy = false;
   }
-        }
+}
