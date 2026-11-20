@@ -1,4 +1,3 @@
-
 export const APP_NAME = 'TavernDeck';
 export const APP_CN = '酒馆总控台';
 export const APP_VERSION = 'v1.0';
@@ -106,29 +105,29 @@ export function makeItemKey(ref) {
   return '';
 }
 
-导出 功能 cloneItemRef(裁判) {
-  没有 = makeItemKey(裁判);
-  如果 (裁判.类型 === '预设') 返回 { 钥匙, 类型: '预设', id: String(裁判.id) };
-  如果 (裁判.类型 === '世界书') 返回 { 钥匙, 类型: '世界书', book: String(裁判.book), uid: Number(裁判.uid) };
-  如果 (裁判.类型 === '剧本') 返回 { 钥匙, 类型: '剧本', scope: String(裁判.scope), id: String(裁判.id) };
-  如果 (裁判.类型 === 'regex') 返回 { 钥匙, 类型: 'regex', scope: String(裁判.scope), id: String(裁判.id) };
-  返回 无效的;
+export function cloneItemRef(ref) {
+  const key = makeItemKey(ref);
+  if (ref.type === 'preset') return { key, type: 'preset', id: String(ref.id) };
+  if (ref.type === 'worldbook') return { key, type: 'worldbook', book: String(ref.book), uid: Number(ref.uid) };
+  if (ref.type === 'script') return { key, type: 'script', scope: String(ref.scope), id: String(ref.id) };
+  if (ref.type === 'regex') return { key, type: 'regex', scope: String(ref.scope), id: String(ref.id) };
+  return null;
 }
 
-导出 异步 功能 CopyToClipboard(文本) {
-  没有 = getth();
-  如果 (th && th.内置的 && typeof th.内置的.copyText === 'function') {
-    th.内置的.copyText(文本);
-    返回;
+export async function copyToClipboard(text) {
+  const th = getTH();
+  if (th && th.builtin && typeof th.builtin.copyText === 'function') {
+    th.builtin.copyText(text);
+    return;
   }
-  如果 (领航员.剪贴板 && typeof 领航员.剪贴板.WRITETEXT === 'function') {
-    等候 领航员.剪贴板.WRITETEXT(文本);
-    返回;
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    await navigator.clipboard.writeText(text);
+    return;
   }
-  如何帮助教师 = 文档.createElement('文本区域');
-  助教.价值 = 文本;
-  文档.身体.appendChild(助教);
-  助教.选择();
-  文档.execCommand('复制');
-  助教.移除();
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  ta.remove();
 }
