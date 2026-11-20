@@ -531,4 +531,919 @@ function handleRootClick(e) {
     });
     return;
   }
-  if (action === 'set-snapshot-filter' && state.modal?.ty
+  if (action === 'set-snapshot-filter' && state.modal?.type === 'snapshots') {
+    state.modal.filter = actionEl.getAttribute('data-filter') === 'all' ? 'all' : 'current';
+    updateSnapshotList();
+    return;
+  }
+  if (action === 'create-snapshot' && state.modal?.type === 'snapshots') {
+    const inp = modalLayerEl.querySelector('#td-snap-name-input');
+    const customName = (inp ? inp.value : state.modal.draftName || '').trim();
+    const snap = captureCurrentSnapshotData(customName, state.modal.createMode);
+    state.store.snapshots = state.store.snapshots || [];
+    state.store.snapshots.unshift(snap);
+    saveStore(state.store);
+    state.modal.draftName = '';
+    if (inp) inp.value = '';
+    const allChip = modalLayerEl.querySelector("[data-action='set-snapshot-filter'][data-filter='all']");
+    if (allChip) allChip.textContent = `全部快照 (${state.store.snapshots.length})`;
+    updateSnapshotList();
+    renderMain();
+    notify('success', `已保存快照「${snap.name}」`);
+    return;
+  }
+  if (action === 'apply-snapshot' || action === 'apply-snapshot-from-detail') {
+    promptApplySnapshot(actionEl.getAttribute('data-snap-id'));
+    return;
+  }
+  if (action === 'view-snapshot') {
+    state.snapshotDetailId = actionEl.getAttribute('data-snap-id');
+    state.previewKey = null;
+    renderPreviewModal();
+    return;
+  }
+  if (action === 'overwrite-snapshot') {
+    const snapId = actionEl.getAttribute('data-snap-id');
+    const snap = (state.store.snapshots || []).find((s) => s.id === snapId);
+    if (!snap) return;
+    openConfirm({
+      title: '覆盖快照确认',
+      message: `确定要用当前预设状态覆盖更新快照「${snap.name}」吗？`,
+      confirmText: '确认覆盖',
+      confirmClass: 'warn',
+      onConfirm: () => {
+        const fresh = captureCurrentSnapshotData(snap.name, snap.mode);
+        fresh.id = snap.id;
+        fresh.createdAt = snap.createdAt;
+        const idx = state.store.snapshots.findIndex((s) => s.id === snapId);
+        if (idx >= 0) state.store.snapshots[idx] = fresh;
+        saveStore(state.store);
+        updateSnapshotList();
+        notify('success', `快照「${snap.name}」已更新`);
+      },
+    });
+    return;
+  }
+  if (action === 'rename-snapshot') {
+    const snapId = actionEl.getAttribute('data-snap-id');
+    const snap = (state.store.snapshots || []).find((s) => s.id === snapId);
+    if (!snap) return;
+    state.modal = { type: 'snapshotRename', snapId: snap.id, name: snap.name, prevModal: state.modal };
+    renderModal();
+    return;
+  }
+  if (action === 'back-to-snapshots' && state.modal?.type === 'snapshotRename') {
+    state.modal = state.modal.prevModal || { type: 'snapshots', createMode: 'state', filter: 'current', draftName: '' };
+    renderModal();
+    return;
+  }
+  if (action === 'submit-snap-rename' && state.modal?.type === 'snapshotRename') {
+    const inp = modalLayerEl.querySelector('#td-snap-rename-input');
+    const name = (inp ? inp.value : state.modal.name || '').trim();
+    if (!name) { notify('warning', '请输入快照名称'); return; }
+    const snap = (state.store.snapshots || []).find((s) => s.id === state.modal.snapId);
+    if (snap) { snap.name = name; snap.updatedAt = Date.now(); saveStore(state.store); }
+    state.modal = state.modal.prevModal || { type: 'snapshots', createMode: 'state', filter: 'current', draftName: '' };
+    renderModal();
+    notify('success', '快照已重命名');
+    return;
+  }
+  if (action === 'delete-snapshot') {
+    const snapId = actionEl.getAttribute('data-snap-id');
+    const snap = (state.store.snapshots || []).find((s) => s.id === snapId);
+    if (!snap) return;
+    openConfirm({
+      title: '删除快照确认',
+      message: `确定要永久删除快照「${snap.name}」吗？`,
+      confirmText: '确认删除',
+      onConfirm: () => {
+        state.store.snapshots = (state.store.snapshots || []).filter((s) => s.id !== snapId);
+        saveStore(state.store);
+        const allChip = modalLayerEl.querySelector("[data-action='set-snapshot-filter'][data-filter='all']");
+        if (allChip) allChip.textContent = `全部快照 (${state.store.snapshots.length})`;
+        updateSnapshotList();
+        renderMain();
+        notify('info', '快照已删除');
+      },
+    });
+    return;
+  }
+
+  if (action === 'open-bindings') {
+    state.modal = { type: 'bindings', selectedIds: new Set(getBoundSchemeIds(state.presetName)) };
+    renderModal();
+    return;
+  }
+  if (action === 'toggle-bind-scheme' && state.modal?.type === 'bindings') {
+    const sid = actionEl.getAttribute('data-scheme-id');
+    if (!sid) return;
+    const set = state.modal.selectedIds;
+    const willCheck = !set.has(sid);
+    if (willCheck) set.add(sid);
+    else set.delete(sid);
+    actionEl.classList.toggle('checked', willCheck);
+    const cb = actionEl.querySelector('.td-checkbox');
+    if (cb) cb.checked = willCheck;
+    return;
+  }
+  if (action === 'clear-bindings' && state.modal?.type === 'bindings') {
+    state.modal.selectedIds.clear();
+    modalLayerEl.querySelectorAll("[data-action='toggle-bind-scheme']").forEach((row) => {
+      row.classList.remove('checked');
+      const cb = row.querySelector('.td-checkbox');
+      if (cb) cb.checked = false;
+    });
+    return;
+  }
+  if (action === 'save-bindings' && state.modal?.type === 'bindings') {
+    const pKey = state.presetName || '__default__';
+    const arr = Array.from(state.modal.selectedIds);
+    if (arr.length > 0) state.store.presetBindings[pKey] = arr;
+    else delete state.store.presetBindings[pKey];
+    saveStore(state.store);
+    state.modal = null;
+    renderModal();
+    renderMain();
+    notify('success', arr.length > 0 ? `已绑定 ${arr.length} 个方案到当前预设` : '已解除绑定，将显示全部方案');
+    return;
+  }
+
+  if (action === 'new-scheme') { state.modal = { type: 'schemeForm', mode: 'create', schemeId: null, name: '' }; renderModal(); return; }
+  if (action === 'rename-scheme') { const s = getActiveScheme(); state.modal = { type: 'schemeForm', mode: 'rename', schemeId: s.id, name: s.name }; renderModal(); return; }
+  if (action === 'duplicate-scheme') { const s = getActiveScheme(); state.modal = { type: 'schemeForm', mode: 'duplicate', duplicateFromId: s.id, name: `${s.name} (副本)` }; renderModal(); return; }
+  if (action === 'delete-scheme') {
+    const s = getActiveScheme();
+    openConfirm({
+      title: '删除方案确认',
+      message: `确定要从全局方案池中永久删除方案「${s.name}」及其包含的所有分组配置吗？`,
+      confirmText: '确认删除',
+      onConfirm: () => { deleteActiveScheme(); renderMain(); },
+    });
+    return;
+  }
+  if (action === 'submit-scheme-form' && state.modal?.type === 'schemeForm') {
+    const inp = modalLayerEl.querySelector('#td-scheme-name-input');
+    const bindCb = modalLayerEl.querySelector('#td-scheme-bind-check');
+    const name = (inp ? inp.value : state.modal.name || '').trim();
+    if (!name) { notify('warning', '请输入方案名称'); if (inp) inp.focus(); return; }
+    const bindToCurrent = bindCb ? !!bindCb.checked : !!state.modal.bindToCurrent;
+    if (state.modal.mode === 'rename') createOrUpdateScheme({ id: state.modal.schemeId, name });
+    else if (state.modal.mode === 'duplicate') createOrUpdateScheme({ duplicateFromId: state.modal.duplicateFromId, name, bindToCurrent });
+    else createOrUpdateScheme({ name, bindToCurrent });
+    state.modal = null;
+    renderModal();
+    renderMain();
+    return;
+  }
+
+  if (action === 'new-group') { state.modal = { type: 'groupForm', groupId: null, parentId: null, name: '', mode: 'multi' }; renderModal(); return; }
+  if (action === 'new-subgroup') {
+    e.stopPropagation();
+    const found = findGroupNode(getActiveScheme().groups, groupId);
+    if (!found) return;
+    state.modal = { type: 'groupForm', groupId: null, parentId: found.group.id, parentName: found.group.name, name: '', mode: 'multi' };
+    renderModal();
+    return;
+  }
+  if (action === 'edit-group') {
+    e.stopPropagation();
+    const found = findGroupNode(getActiveScheme().groups, groupId);
+    if (!found) return;
+    state.modal = { type: 'groupForm', groupId: found.group.id, parentId: null, name: found.group.name, mode: found.group.mode };
+    renderModal();
+    return;
+  }
+  if (action === 'delete-group') {
+    e.stopPropagation();
+    const found = findGroupNode(getActiveScheme().groups, groupId);
+    if (!found) return;
+    openConfirm({
+      title: `管理分组 · ${found.group.name}`,
+      message: '你可以选择仅「清空分组」（保留该分组结构，清空其内部条目和子分组），或「确认删除」该分组。',
+      confirmText: '确认删除',
+      extraButton: { text: '清空分组', className: 'warn', onClick: () => { clearGroupContents(groupId); renderMain(); } },
+      onConfirm: () => { deleteGroup(groupId); renderMain(); },
+    });
+    return;
+  }
+  if (action === 'toggle-collapse') {
+    if (e.target.closest('[data-stop-collapse]') || e.target.closest('.td-drag-grip')) return;
+    const found = findGroupNode(getActiveScheme().groups, groupId);
+    if (!found) return;
+    found.group.collapsed = !found.group.collapsed;
+    saveStore(state.store);
+    const groupEl = panelMainEl.querySelector(`.td-group[data-group-id='${groupId}']`);
+    if (groupEl) groupEl.classList.toggle('collapsed', found.group.collapsed);
+    else renderMain();
+    return;
+  }
+  if (action === 'toggle-multi-group') {
+    e.stopPropagation();
+    toggleMultiGroupAll(groupId).then((ok) => {
+      if (ok) {
+        renderMain();
+        if (state.previewKey) syncPreviewStatusUi();
+        if (state.modal?.type === 'picker') updatePickerList();
+      }
+    });
+    return;
+  }
+  if (action === 'open-picker') {
+    e.stopPropagation();
+    const found = findGroupNode(getActiveScheme().groups, groupId);
+    if (!found) return;
+    const g = found.group;
+    const selectedMap = new Map();
+    (g.items || []).forEach((it) => { const cloned = cloneItemRef(it); if (cloned) selectedMap.set(cloned.key, cloned); });
+    state.modal = {
+      type: 'picker', groupId: g.id, source: 'preset', selectedMap, query: '', filter: 'all',
+      selectMode: 'single', rangeAnchorKey: null, rangeAction: true,
+    };
+    renderModal();
+    refreshAllCatalogs().then(() => { if (state.modal?.type === 'picker') updatePickerList(); });
+    return;
+  }
+  if (action === 'toggle-entry') {
+    toggleEntryInGroup(groupId, itemKey).then((ok) => {
+      if (ok) {
+        renderMain();
+        if (state.previewKey) syncPreviewStatusUi();
+        if (state.modal?.type === 'picker') updatePickerList();
+      }
+    });
+    return;
+  }
+  if (action === 'remove-entry') {
+    const entry = state.catalog.byKey.get(itemKey);
+    openConfirm({
+      title: '移除条目确认',
+      message: `确定要将「${entry ? entry.name : itemKey}」从此分组中移除吗？`,
+      confirmText: '确认移除',
+      onConfirm: () => { removeEntryFromGroup(groupId, itemKey); renderMain(); },
+    });
+    return;
+  }
+  if (action === 'preview-entry') { e.stopPropagation(); state.snapshotDetailId = null; state.previewKey = itemKey; renderPreviewModal(); return; }
+  if (action === 'close-preview') { state.previewKey = null; state.snapshotDetailId = null; renderPreviewModal(); return; }
+  if (action === 'preview-undo') {
+    pushEditSnapshot(true);
+    if (editHistory.index > 0) { editHistory.index--; applyPreviewSnapshot(editHistory.stack[editHistory.index]); updatePreviewHistoryButtons(); }
+    return;
+  }
+  if (action === 'preview-redo') {
+    if (editHistory.index < editHistory.stack.length - 1) { editHistory.index++; applyPreviewSnapshot(editHistory.stack[editHistory.index]); updatePreviewHistoryButtons(); }
+    return;
+  }
+  if (action === 'copy-preview') {
+    const contentEl = previewLayerEl.querySelector('#td-edit-content') || previewLayerEl.querySelector('#td-edit-replace-string');
+    copyToClipboard(contentEl ? contentEl.value : '')
+      .then(() => notify('success', '内容已复制到剪贴板'))
+      .catch(() => notify('error', '复制失败'));
+    return;
+  }
+  if (action === 'toggle-preview-entry') {
+    const item = state.catalog.byKey.get(state.previewKey);
+    if (!item) return;
+    applyItemMutations([{ ref: item.ref, enabled: !item.enabled }]).then((ok) => {
+      if (ok) { renderMain(); syncPreviewStatusUi(); if (state.modal?.type === 'picker') updatePickerList(); }
+    });
+    return;
+  }
+  if (action === 'save-preview-edit') {
+    const item = state.catalog.byKey.get(state.previewKey);
+    if (!item) return;
+    const targetKey = state.previewKey;
+    const snap = readPreviewSnapshot();
+    const fields = { name: snap.name || item.name };
+    if (previewLayerEl.querySelector('#td-edit-content')) {
+      fields.content = snap.content;
+      fields.allowContent = typeof item.raw.content === 'string' || snap.content.length > 0;
+    }
+    if (previewLayerEl.querySelector('#td-edit-find-regex')) fields.find_regex = snap.find_regex;
+    if (previewLayerEl.querySelector('#td-edit-replace-string')) fields.replace_string = snap.replace_string;
+    openConfirm({
+      title: '保存更改确认',
+      message: `确定要将对「${fields.name || item.name}」的修改保存并持久化吗？`,
+      confirmText: '确认保存',
+      confirmClass: 'primary',
+      onConfirm: () => {
+        saveEditedEntry(targetKey, fields).then((ok) => {
+          if (ok) { renderMain(); renderPreviewModal(); if (state.modal?.type === 'picker') updatePickerList(); }
+        });
+      },
+    });
+    return;
+  }
+
+  if (action === 'close-modal') { state.modal = null; renderModal(); return; }
+  if (action === 'set-modal-mode' && state.modal?.type === 'groupForm') {
+    const nextMode = actionEl.getAttribute('data-mode') === 'single' ? 'single' : 'multi';
+    state.modal.mode = nextMode;
+    modalLayerEl.querySelectorAll("[data-action='set-modal-mode']").forEach((card) => {
+      card.classList.toggle('active', card.getAttribute('data-mode') === nextMode);
+    });
+    return;
+  }
+  if (action === 'submit-group-form' && state.modal?.type === 'groupForm') {
+    const inp = modalLayerEl.querySelector('#td-group-name-input');
+    const name = (inp ? inp.value : state.modal.name || '').trim();
+    if (!name) { notify('warning', '请输入分组名称'); if (inp) inp.focus(); return; }
+    createOrUpdateGroup({ id: state.modal.groupId, parentId: state.modal.parentId, name, mode: state.modal.mode });
+    state.modal = null;
+    renderModal();
+    renderMain();
+    return;
+  }
+
+  if (action === 'toggle-picker-select-mode' && state.modal?.type === 'picker') {
+    state.modal.selectMode = state.modal.selectMode === 'range' ? 'single' : 'range';
+    state.modal.rangeAnchorKey = null;
+    updatePickerList();
+    return;
+  }
+  if (action === 'set-picker-source' && state.modal?.type === 'picker') {
+    const nextSrc = actionEl.getAttribute('data-source') || 'preset';
+    state.modal.source = nextSrc;
+    state.modal.rangeAnchorKey = null;
+    if (nextSrc === 'worldbook' && state.catalog.worldbook.groups.length === 0) {
+      updatePickerList();
+      refreshWorldbookCatalog(false).then(() => { if (state.modal?.type === 'picker') updatePickerList(); });
+    } else {
+      updatePickerList();
+    }
+    return;
+  }
+  if (action === 'load-all-worldbooks' && state.modal?.type === 'picker') {
+    refreshWorldbookCatalog(true).then(() => { if (state.modal?.type === 'picker') updatePickerList(); });
+    return;
+  }
+  if (action === 'toggle-pick' && state.modal?.type === 'picker') {
+    if (e.target.closest("[data-action='preview-entry']")) return;
+    const m = state.modal;
+    const item = state.catalog.byKey.get(itemKey);
+    if (!item) return;
+    const map = m.selectedMap;
+    if (m.selectMode === 'range') {
+      const visibleKeys = Array.from(modalLayerEl.querySelectorAll('.td-picker-row[data-item-key]')).map((r) => r.getAttribute('data-item-key'));
+      if (!m.rangeAnchorKey || !visibleKeys.includes(m.rangeAnchorKey)) {
+        const willCheck = !map.has(itemKey);
+        if (willCheck) map.set(itemKey, cloneItemRef(item.ref));
+        else map.delete(itemKey);
+        m.rangeAnchorKey = itemKey;
+        m.rangeAction = willCheck;
+        updatePickerList();
+        return;
+      }
+      if (m.rangeAnchorKey === itemKey) { m.rangeAnchorKey = null; updatePickerList(); return; }
+      const idx1 = visibleKeys.indexOf(m.rangeAnchorKey);
+      const idx2 = visibleKeys.indexOf(itemKey);
+      for (let i = Math.min(idx1, idx2); i <= Math.max(idx1, idx2); i++) {
+        const rk = visibleKeys[i];
+        const rItem = state.catalog.byKey.get(rk);
+        if (m.rangeAction) { if (rItem) map.set(rk, cloneItemRef(rItem.ref)); }
+        else map.delete(rk);
+      }
+      m.rangeAnchorKey = null;
+      updatePickerList();
+      return;
+    }
+    const willCheck = !map.has(itemKey);
+    if (willCheck) map.set(itemKey, cloneItemRef(item.ref));
+    else map.delete(itemKey);
+    actionEl.classList.toggle('checked', willCheck);
+    const cb = actionEl.querySelector('.td-checkbox');
+    if (cb) cb.checked = willCheck;
+    const countEl = modalLayerEl.querySelector("[data-role='picker-count']");
+    if (countEl) countEl.textContent = `已选 ${map.size} 项`;
+    const selectedChipEl = modalLayerEl.querySelector("[data-action='set-picker-filter'][data-filter='selected']");
+    if (selectedChipEl) selectedChipEl.textContent = `已勾选 (${map.size})`;
+    if (m.filter === 'selected') updatePickerList();
+    return;
+  }
+  if (action === 'set-picker-filter' && state.modal?.type === 'picker') {
+    state.modal.filter = actionEl.getAttribute('data-filter');
+    state.modal.rangeAnchorKey = null;
+    updatePickerList();
+    return;
+  }
+  if (action === 'picker-select-scope' && state.modal?.type === 'picker') {
+    const sec = getPickerSections().find((s) => s.scopeKey === actionEl.getAttribute('data-scope-key'));
+    if (sec) {
+      sec.items.forEach((it) => state.modal.selectedMap.set(it.key, cloneItemRef(it.ref)));
+      state.modal.rangeAnchorKey = null;
+      updatePickerList();
+    }
+    return;
+  }
+  if (action === 'picker-select-visible' && state.modal?.type === 'picker') {
+    modalLayerEl.querySelectorAll('.td-picker-row[data-item-key]').forEach((r) => {
+      const k = r.getAttribute('data-item-key');
+      const it = state.catalog.byKey.get(k);
+      if (it) state.modal.selectedMap.set(k, cloneItemRef(it.ref));
+    });
+    state.modal.rangeAnchorKey = null;
+    updatePickerList();
+    return;
+  }
+  if (action === 'picker-unselect-visible' && state.modal?.type === 'picker') {
+    modalLayerEl.querySelectorAll('.td-picker-row[data-item-key]').forEach((r) => {
+      state.modal.selectedMap.delete(r.getAttribute('data-item-key'));
+    });
+    state.modal.rangeAnchorKey = null;
+    updatePickerList();
+    return;
+  }
+  if (action === 'save-picker' && state.modal?.type === 'picker') {
+    setGroupItems(state.modal.groupId, state.modal.selectedMap);
+    state.modal = null;
+    renderModal();
+    renderMain();
+    notify('success', '分组条目已更新');
+    return;
+  }
+
+  if (action === 'set-theme') {
+    const nextTheme = actionEl.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    state.store.settings.theme = nextTheme;
+    saveStore(state.store);
+    if (rootEl) rootEl.setAttribute('data-theme', nextTheme);
+    modalLayerEl.querySelectorAll("[data-action='set-theme']").forEach((card) => {
+      card.classList.toggle('active', card.getAttribute('data-theme') === nextTheme);
+    });
+    return;
+  }
+  if (action === 'toggle-entry-switch') {
+    const key = actionEl.getAttribute('data-key');
+    const s = state.store.settings;
+    const cur = key === 'enableExtButton' ? !!s.enableExtButton : s[key] !== false;
+    const nextVal = !cur;
+    if (!nextVal) {
+      const nextOrb = key === 'showOrb' ? false : s.showOrb !== false;
+      const nextExt = key === 'enableExtButton' ? false : !!s.enableExtButton;
+      if (!nextOrb && !nextExt) {
+        notify('warning', '悬浮球与魔法棒拓展按钮至少需保留一项开启');
+        return;
+      }
+    }
+    s[key] = nextVal;
+    saveStore(state.store);
+    actionEl.classList.toggle('on', nextVal);
+    if (key === 'showOrb') applyOrbVisualState();
+    if (key === 'enableExtButton') syncExtensionButton();
+    return;
+  }
+  if (action === 'toggle-drag-sort') {
+    const nextVal = !state.store.settings.enableDragSort;
+    state.store.settings.enableDragSort = nextVal;
+    saveStore(state.store);
+    actionEl.classList.toggle('on', nextVal);
+    renderMain();
+    return;
+  }
+  if (action === 'reset-layout') {
+    state.store.settings.orbPosition = null;
+    state.store.settings.panelPosition = null;
+    state.store.settings.panelSize = null;
+    state.store.settings.fullscreen = false;
+    state.store.settings.orbSize = 50;
+    saveStore(state.store);
+    repositionUI();
+    renderMain();
+    if (state.modal?.type === 'settings') renderModal();
+    notify('success', '窗口与悬浮球已重置');
+    return;
+  }
+  if (action === 'clear-all-data') {
+    openConfirm({
+      title: '重置方案数据确认',
+      message: '确定要清空全部方案、分组与预设绑定关系吗？（预设快照将保留）此操作不可撤销。',
+      confirmText: '确认重置',
+      onConfirm: () => {
+        const defId = genId();
+        state.store.schemes = [{ id: defId, name: '默认方案', groups: [] }];
+        state.store.presetBindings = {};
+        state.store.activeSchemeByPreset = {};
+        state.store.activeSchemeId = defId;
+        saveStore(state.store);
+        state.modal = null;
+        renderModal();
+        renderMain();
+        notify('info', '已重置全部方案数据');
+      },
+    });
+  }
+}
+
+function handleRootInput(e) {
+  if (!e.target) return;
+  const id = e.target.id;
+  if (id === 'td-group-name-input' && state.modal?.type === 'groupForm') { state.modal.name = e.target.value; return; }
+  if (id === 'td-scheme-name-input' && state.modal?.type === 'schemeForm') { state.modal.name = e.target.value; return; }
+  if (id === 'td-snap-name-input' && state.modal?.type === 'snapshots') { state.modal.draftName = e.target.value; return; }
+  if (id === 'td-snap-rename-input' && state.modal?.type === 'snapshotRename') { state.modal.name = e.target.value; return; }
+  if (id === 'td-picker-search' && state.modal?.type === 'picker') {
+    state.modal.query = e.target.value;
+    state.modal.rangeAnchorKey = null;
+    updatePickerList();
+    return;
+  }
+  if (id === 'td-size-range') {
+    const sz = Math.max(34, Math.min(72, Number(e.target.value) || 50));
+    state.store.settings.orbSize = sz;
+    applyOrbVisualState();
+    const label = modalLayerEl.querySelector("[data-role='orb-size-label']");
+    if (label) label.textContent = `悬浮球大小 (${sz}px)`;
+    return;
+  }
+  if (id === 'td-opacity-range') {
+    const val = Math.max(35, Math.min(100, Number(e.target.value) || 96)) / 100;
+    state.store.settings.orbOpacity = val;
+    orbEl.style.opacity = String(val);
+    const label = modalLayerEl.querySelector("[data-role='opacity-label']");
+    if (label) label.textContent = `悬浮球透明度 (${Math.round(val * 100)}%)`;
+    return;
+  }
+  if (['td-edit-name', 'td-edit-content', 'td-edit-find-regex', 'td-edit-replace-string'].includes(id)) {
+    const isLarge = e.inputType === 'insertFromPaste' || e.inputType === 'deleteByCut';
+    if (isLarge) pushEditSnapshot(true);
+    else scheduleEditSnapshot();
+  }
+}
+
+function handleRootChange(e) {
+  if (!e.target) return;
+  const id = e.target.id;
+  if (id === 'td-preset-select') {
+    const nextPreset = e.target.value;
+    if (!nextPreset || nextPreset === state.presetName) return;
+    try {
+      if (hasTH('loadPreset')) {
+        if (callTH('loadPreset', nextPreset) === false) {
+          notify('error', `切换预设失败: ${nextPreset}`);
+          e.target.value = state.presetName;
+          return;
+        }
+        setTimeout(() => {
+          refreshAllCatalogs().then(() => {
+            renderMain();
+            renderOrb();
+            notify('success', `已切换预设：${state.presetName}`);
+          });
+        }, 70);
+      }
+    } catch (err) {
+      notify('error', '切换预设出错');
+    }
+    return;
+  }
+  if (id === 'td-scheme-select') { setActiveSchemeId(e.target.value); renderMain(); return; }
+  if (id === 'td-scheme-bind-check' && state.modal?.type === 'schemeForm') { state.modal.bindToCurrent = !!e.target.checked; return; }
+  if (id === 'td-opacity-range' || id === 'td-size-range') saveStore(state.store);
+}
+
+function handleRootKeydown(e) {
+  if (e.key === 'Enter' && !e.isComposing && e.target) {
+    if (e.target.id === 'td-group-name-input') modalLayerEl.querySelector("[data-action='submit-group-form']")?.click();
+    else if (e.target.id === 'td-scheme-name-input') modalLayerEl.querySelector("[data-action='submit-scheme-form']")?.click();
+    else if (e.target.id === 'td-snap-rename-input') modalLayerEl.querySelector("[data-action='submit-snap-rename']")?.click();
+    else if (e.target.id === 'td-snap-name-input') modalLayerEl.querySelector("[data-action='create-snapshot']")?.click();
+  }
+}
+
+function onOrbPointerDown(e) {
+  if (e.button !== undefined && e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  wakeOrb();
+  orbDragging = true;
+  orbMoved = false;
+  orbEl.classList.add('is-dragging');
+  const pos = getOrbPosition();
+  orbDragStart = { x: e.clientX, y: e.clientY, orbX: pos.x, orbY: pos.y };
+  if (orbEl.setPointerCapture && e.pointerId !== undefined) {
+    try { orbEl.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+}
+
+function onOrbPointerMove(e) {
+  if (!orbDragging) return;
+  const dx = e.clientX - orbDragStart.x;
+  const dy = e.clientY - orbDragStart.y;
+  if (Math.hypot(dx, dy) > 5) orbMoved = true;
+  if (!orbMoved) return;
+  const vp = getViewportRect();
+  const clamped = clampOrbPosition(orbDragStart.orbX + dx, orbDragStart.orbY + dy);
+  state.store.settings.orbPosition = clamped;
+  orbEl.style.left = `${Math.round(vp.x + clamped.x)}px`;
+  orbEl.style.top = `${Math.round(vp.y + clamped.y)}px`;
+}
+
+function onOrbPointerUp(e) {
+  if (!orbDragging) return;
+  e.preventDefault();
+  e.stopPropagation();
+  orbDragging = false;
+  orbEl.classList.remove('is-dragging');
+  if (orbMoved) {
+    saveStore(state.store);
+    scheduleOrbIdle();
+  } else {
+    suppressClickUntil = Date.now() + 450;
+    setTimeout(() => setPanelOpen(!state.panelOpen), 45);
+  }
+}
+
+function onOrbClick(e) { e.preventDefault(); e.stopPropagation(); }
+
+function onPanelHeaderPointerDown(e) {
+  if (state.store.settings.fullscreen || (e.button !== undefined && e.button !== 0)) return;
+  const header = e.target.closest('[data-drag-handle]');
+  if (!header || e.target.closest('button, a, input, select, [data-action]')) return;
+  winDragging = true;
+  const pos = getPanelPosition(getPanelSize());
+  winDragStart = { x: e.clientX, y: e.clientY, left: pos.x, top: pos.y };
+  if (panelEl.setPointerCapture && e.pointerId !== undefined) {
+    try { panelEl.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+}
+
+function onResizePointerDown(e) {
+  if (state.store.settings.fullscreen || (e.button !== undefined && e.button !== 0)) return;
+  e.stopPropagation();
+  e.preventDefault();
+  winResizing = true;
+  const size = getPanelSize();
+  const pos = getPanelPosition(size);
+  winResizeStart = { x: e.clientX, y: e.clientY, w: size.w, h: size.h, left: pos.x, top: pos.y };
+  if (resizeHandleEl.setPointerCapture && e.pointerId !== undefined) {
+    try { resizeHandleEl.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+}
+
+function onPanelPointerMove(e) {
+  if (winDragging) {
+    const vp = getViewportRect();
+    const size = getPanelSize();
+    const nx = Math.max(4, Math.min(Math.max(4, vp.w - size.w - 4), Math.round(winDragStart.left + e.clientX - winDragStart.x)));
+    const ny = Math.max(4, Math.min(Math.max(4, vp.h - size.h - 4), Math.round(winDragStart.top + e.clientY - winDragStart.y)));
+    state.store.settings.panelPosition = { x: nx, y: ny };
+    panelEl.style.left = `${Math.round(vp.x + nx)}px`;
+    panelEl.style.top = `${Math.round(vp.y + ny)}px`;
+    return;
+  }
+  if (winResizing) {
+    const vp = getViewportRect();
+    const maxW = Math.max(280, vp.w - winResizeStart.left - 4);
+    const maxH = Math.max(280, vp.h - winResizeStart.top - 4);
+    const nw = Math.max(280, Math.min(maxW, Math.round(winResizeStart.w + e.clientX - winResizeStart.x)));
+    const nh = Math.max(280, Math.min(maxH, Math.round(winResizeStart.h + e.clientY - winResizeStart.y)));
+    state.store.settings.panelSize = { w: nw, h: nh };
+    panelEl.style.width = `${nw}px`;
+    panelEl.style.height = `${nh}px`;
+  }
+}
+
+function onPanelPointerUp() {
+  if (winDragging) { winDragging = false; saveStore(state.store); }
+  if (winResizing) { winResizing = false; saveStore(state.store); }
+}
+
+function clearDragVisuals() {
+  if (!panelMainEl) return;
+  panelMainEl.querySelectorAll('.td-is-dragging').forEach((el) => el.classList.remove('td-is-dragging'));
+  panelMainEl.querySelectorAll('.td-drop-before,.td-drop-after,.td-drop-into,.td-drop-active').forEach((el) => {
+    el.classList.remove('td-drop-before', 'td-drop-after', 'td-drop-into', 'td-drop-active');
+  });
+  panelMainEl.querySelector('.td-body')?.classList.remove('is-dragging-group', 'is-dragging-item');
+}
+
+function onSortGripPointerDown(e) {
+  if (!state.store.settings.enableDragSort || (e.button !== undefined && e.button !== 0)) return;
+  const grip = e.target.closest('.td-drag-grip');
+  if (!grip) return;
+  e.preventDefault();
+  e.stopPropagation();
+  dragOp = {
+    type: grip.getAttribute('data-drag-type'),
+    sourceGroupId: grip.getAttribute('data-group-id'),
+    itemKey: grip.getAttribute('data-item-key') || '',
+    label: grip.getAttribute('data-drag-label') || '拖拽项',
+    startX: e.clientX,
+    startY: e.clientY,
+    active: false,
+    ghostEl: null,
+    dropTarget: null,
+  };
+}
+
+function onGlobalPointerMove(e) {
+  if (!dragOp) return;
+  if (!dragOp.active) {
+    if (Math.hypot(e.clientX - dragOp.startX, e.clientY - dragOp.startY) < 6) return;
+    dragOp.active = true;
+    const ghost = document.createElement('div');
+    ghost.className = 'td-drag-ghost';
+    ghost.textContent = dragOp.label;
+    rootEl.appendChild(ghost);
+    dragOp.ghostEl = ghost;
+    panelMainEl.querySelector('.td-body')?.classList.add(dragOp.type === 'group' ? 'is-dragging-group' : 'is-dragging-item');
+    if (dragOp.type === 'group') {
+      panelMainEl.querySelector(`.td-group[data-group-id='${dragOp.sourceGroupId}']`)?.classList.add('td-is-dragging');
+    } else {
+      panelMainEl.querySelector(`.td-item[data-group-id='${dragOp.sourceGroupId}'][data-item-key='${cssEscape(dragOp.itemKey)}']`)?.classList.add('td-is-dragging');
+    }
+  }
+
+  if (dragOp.ghostEl) {
+    dragOp.ghostEl.style.left = `${Math.round(e.clientX + 12)}px`;
+    dragOp.ghostEl.style.top = `${Math.round(e.clientY - 18)}px`;
+  }
+  const body = panelMainEl.querySelector('.td-body');
+  if (body) {
+    const br = body.getBoundingClientRect();
+    if (e.clientY < br.top + 44) body.scrollTop -= 10;
+    else if (e.clientY > br.bottom - 44) body.scrollTop += 10;
+  }
+
+  panelMainEl.querySelectorAll('.td-drop-before,.td-drop-after,.td-drop-into,.td-drop-active').forEach((el) => {
+    el.classList.remove('td-drop-before', 'td-drop-after', 'td-drop-into', 'td-drop-active');
+  });
+  dragOp.dropTarget = null;
+
+  const hit = document.elementFromPoint(e.clientX, e.clientY);
+  if (!hit || !panelMainEl.contains(hit)) return;
+
+  if (dragOp.type === 'item') {
+    const itemEl = hit.closest('.td-item[data-item-key]');
+    if (itemEl) {
+      const tGroupId = itemEl.getAttribute('data-group-id');
+      const tKey = itemEl.getAttribute('data-item-key');
+      if (tGroupId === dragOp.sourceGroupId && tKey === dragOp.itemKey) return;
+      const rect = itemEl.getBoundingClientRect();
+      const pos = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+      itemEl.classList.add(pos === 'before' ? 'td-drop-before' : 'td-drop-after');
+      dragOp.dropTarget = { kind: 'item', groupId: tGroupId, itemKey: tKey, pos };
+      return;
+    }
+    const grpEl = hit.closest('.td-group-head[data-group-id], .td-group-empty[data-group-id], .td-group-items[data-group-id]');
+    if (grpEl) {
+      const tGroupId = grpEl.getAttribute('data-group-id');
+      panelMainEl.querySelector(`.td-group[data-group-id='${tGroupId}'] > .td-group-head`)?.classList.add('td-drop-into');
+      dragOp.dropTarget = { kind: 'group-append', groupId: tGroupId };
+    }
+    return;
+  }
+
+  if (dragOp.type === 'group') {
+    const srcGroupEl = panelMainEl.querySelector(`.td-group[data-group-id='${dragOp.sourceGroupId}']`);
+    const rootZone = hit.closest('.td-root-dropzone[data-root-pos]');
+    if (rootZone) {
+      rootZone.classList.add('td-drop-active');
+      dragOp.dropTarget = { kind: 'root', pos: rootZone.getAttribute('data-root-pos') };
+      return;
+    }
+    const headEl = hit.closest('.td-group-head[data-group-id]');
+    if (headEl) {
+      const tId = headEl.getAttribute('data-group-id');
+      const tGroupEl = headEl.closest('.td-group');
+      if (tId === dragOp.sourceGroupId || (srcGroupEl && srcGroupEl.contains(headEl))) return;
+      const rect = headEl.getBoundingClientRect();
+      const rel = (e.clientY - rect.top) / Math.max(1, rect.height);
+      if (rel < 0.28) {
+        tGroupEl?.classList.add('td-drop-before');
+        dragOp.dropTarget = { kind: 'group', targetGroupId: tId, pos: 'before' };
+      } else if (rel > 0.72) {
+        tGroupEl?.classList.add('td-drop-after');
+        dragOp.dropTarget = { kind: 'group', targetGroupId: tId, pos: 'after' };
+      } else {
+        headEl.classList.add('td-drop-into');
+        dragOp.dropTarget = { kind: 'group', targetGroupId: tId, pos: 'into' };
+      }
+      return;
+    }
+    const grpEl = hit.closest('.td-group[data-group-id]');
+    if (grpEl) {
+      const tId = grpEl.getAttribute('data-group-id');
+      if (tId === dragOp.sourceGroupId || (srcGroupEl && srcGroupEl.contains(grpEl))) return;
+      const rect = grpEl.getBoundingClientRect();
+      const pos = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+      grpEl.classList.add(pos === 'before' ? 'td-drop-before' : 'td-drop-after');
+      dragOp.dropTarget = { kind: 'group', targetGroupId: tId, pos };
+    }
+  }
+}
+
+function onGlobalPointerUp() {
+  if (!dragOp) return;
+  const op = dragOp;
+  dragOp = null;
+  op.ghostEl?.remove();
+  clearDragVisuals();
+  if (op.active && op.dropTarget) {
+    suppressClickUntil = Date.now() + 200;
+    if (performDrop(op)) renderMain();
+  }
+}
+
+function onHostResize() {
+  const active = document.activeElement;
+  if (active && rootEl && rootEl.contains(active) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) {
+    syncOverlayBounds();
+    return;
+  }
+  repositionUI();
+}
+
+function onHostWandClick(e) {
+  if (e.target?.closest?.('#extensionsMenuButton')) setTimeout(syncExtensionButton, 0);
+}
+
+export function mountUI() {
+  cleanupDOM();
+  rootEl = document.createElement('div');
+  rootEl.id = ROOT_ID;
+  orbEl = document.createElement('div');
+  orbEl.className = 'td-orb';
+  orbEl.title = `${APP_NAME} ${APP_VERSION}`;
+  panelEl = document.createElement('div');
+  panelEl.className = 'td-panel';
+  panelMainEl = document.createElement('div');
+  panelMainEl.className = 'td-panel-main';
+  resizeHandleEl = document.createElement('div');
+  resizeHandleEl.className = 'td-resize-handle';
+  resizeHandleEl.innerHTML = ICONS.grip;
+  panelEl.appendChild(panelMainEl);
+  panelEl.appendChild(resizeHandleEl);
+
+  modalLayerEl = document.createElement('div');
+  modalLayerEl.className = 'td-modal-layer';
+  previewLayerEl = document.createElement('div');
+  previewLayerEl.className = 'td-preview-layer';
+  confirmLayerEl = document.createElement('div');
+  confirmLayerEl.className = 'td-confirm-layer';
+
+  rootEl.appendChild(orbEl);
+  rootEl.appendChild(panelEl);
+  rootEl.appendChild(modalLayerEl);
+  rootEl.appendChild(previewLayerEl);
+  rootEl.appendChild(confirmLayerEl);
+  document.body.appendChild(rootEl);
+
+  setUiContext({
+    getModalLayer: () => modalLayerEl,
+    getPreviewLayer: () => previewLayerEl,
+    getConfirmLayer: () => confirmLayerEl,
+    syncOverlayBounds,
+  });
+
+  orbEl.addEventListener('pointerdown', onOrbPointerDown);
+  orbEl.addEventListener('pointermove', onOrbPointerMove);
+  orbEl.addEventListener('pointerup', onOrbPointerUp);
+  orbEl.addEventListener('pointercancel', onOrbPointerUp);
+  orbEl.addEventListener('click', onOrbClick);
+
+  panelEl.addEventListener('pointerdown', onPanelHeaderPointerDown);
+  panelEl.addEventListener('pointerdown', onSortGripPointerDown);
+  panelEl.addEventListener('pointermove', onPanelPointerMove);
+  panelEl.addEventListener('pointerup', onPanelPointerUp);
+  panelEl.addEventListener('pointercancel', onPanelPointerUp);
+
+  resizeHandleEl.addEventListener('pointerdown', onResizePointerDown);
+  resizeHandleEl.addEventListener('pointermove', onPanelPointerMove);
+  resizeHandleEl.addEventListener('pointerup', onPanelPointerUp);
+  resizeHandleEl.addEventListener('pointercancel', onPanelPointerUp);
+
+  rootEl.addEventListener('click', handleRootClickCapture, true);
+  rootEl.addEventListener('click', handleRootClick);
+  rootEl.addEventListener('input', handleRootInput);
+  rootEl.addEventListener('change', handleRootChange);
+  rootEl.addEventListener('keydown', handleRootKeydown);
+
+  window.addEventListener('pointermove', onGlobalPointerMove);
+  window.addEventListener('pointerup', onGlobalPointerUp);
+  window.addEventListener('pointercancel', onGlobalPointerUp);
+  document.addEventListener('click', onHostWandClick, true);
+  window.addEventListener('resize', onHostResize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', onHostResize);
+    window.visualViewport.addEventListener('scroll', onHostResize);
+  }
+}
+
+export function cleanupDOM() {
+  clearOrbIdleTimer();
+  if (editHistory.timer) clearTimeout(editHistory.timer);
+  window.removeEventListener('pointermove', onGlobalPointerMove);
+  window.removeEventListener('pointerup', onGlobalPointerUp);
+  window.removeEventListener('pointercancel', onGlobalPointerUp);
+  document.removeEventListener('click', onHostWandClick, true);
+  window.removeEventListener('resize', onHostResize);
+  if (window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', onHostResize);
+    window.visualViewport.removeEventListener('scroll', onHostResize);
+  }
+  document.getElementById(EXT_BTN_ID)?.remove();
+  document.getElementById(EXT_SETTINGS_ID)?.remove();
+  document.getElementById(ROOT_ID)?.remove();
+  rootEl = orbEl = panelEl = panelMainEl = resizeHandleEl = modalLayerEl = previewLayerEl = confirmLayerEl = null;
+}
