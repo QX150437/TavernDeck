@@ -1,4 +1,3 @@
-
 import {
   APP_NAME, APP_CN, APP_VERSION, STORAGE_KEY, SCHEMA_VERSION, TYPE_LABELS,
   escapeHtml, formatTime, makeItemKey,
@@ -303,4 +302,544 @@ export function updateSnapshotList() {
               <span class='td-mode-tag ${isFull ? 'single' : 'multi'}'>${isFull ? '完整快照' : '开关快照'}</span>
               ${diffTag}
               <span>预设: ${escapeHtml(s.presetName || '未知')}</span>
-              <span
+              <span>启用 ${s.stats ? s.stats.enabledCount : 0}/${s.stats ? s.stats.totalCount : 0}${extLen > 0 ? ` + 外部${extLen}` : ''}</span>
+              <span>${escapeHtml(formatTime(s.updatedAt || s.createdAt))}</span>
+            </div>
+          </div>
+        </div>
+        <div class='td-snap-actions'>
+          <button class='td-btn primary' data-action='apply-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.check} 恢复快照</button>
+          <button class='td-btn' data-action='view-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.eye} 差异</button>
+          <button class='td-btn' data-action='overwrite-snapshot' data-snap-id='${escapeHtml(s.id)}'>更新</button>
+          <button class='td-icon-btn' data-action='rename-snapshot' data-snap-id='${escapeHtml(s.id)}' title='重命名'>${ICONS.edit}</button>
+          <button class='td-icon-btn danger' data-action='delete-snapshot' data-snap-id='${escapeHtml(s.id)}' title='删除快照'>${ICONS.trash}</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+export function renderConfirmModal() {
+  const confirmLayerEl = uiCtx.getConfirmLayer();
+  if (!confirmLayerEl) return;
+  const c = state.confirmModal;
+  if (!c) {
+    confirmLayerEl.classList.remove('is-open');
+    confirmLayerEl.innerHTML = '';
+    return;
+  }
+  confirmLayerEl.classList.add('is-open');
+  const extraHtml = c.extraButton
+    ? `<button class='td-btn ${escapeHtml(c.extraButton.className || 'warn')}' data-action='confirm-extra'>${escapeHtml(c.extraButton.text)}</button>`
+    : '';
+  confirmLayerEl.innerHTML = `
+    <div class='td-modal td-modal-sm'>
+      <div class='td-modal-head'>
+        <div class='td-modal-title'>${escapeHtml(c.title || '确认操作')}</div>
+        <button class='td-icon-btn' data-action='confirm-cancel'>${ICONS.close}</button>
+      </div>
+      <div class='td-modal-body'>
+        <div style='font-size:14px;color:var(--td-text);line-height:1.6;'>${escapeHtml(c.message || '确定要执行此操作吗？')}</div>
+      </div>
+      <div class='td-modal-foot'>
+        <button class='td-btn' data-action='confirm-cancel'>取消</button>
+        ${extraHtml}
+        <button class='td-btn ${escapeHtml(c.confirmClass || 'danger')}' data-action='confirm-ok'>${escapeHtml(c.confirmText || '确认')}</button>
+      </div>
+    </div>`;
+  uiCtx.syncOverlayBounds();
+}
+
+export function openConfirm(opts) {
+  state.confirmModal = opts;
+  renderConfirmModal();
+}
+
+export function renderModal() {
+  const modalLayerEl = uiCtx.getModalLayer();
+  if (!modalLayerEl) return;
+  const m = state.modal;
+  if (!m || !state.panelOpen) {
+    modalLayerEl.classList.remove('is-open');
+    modalLayerEl.innerHTML = '';
+    return;
+  }
+  modalLayerEl.classList.add('is-open');
+
+  if (m.type === 'snapshots') {
+    const mode = m.createMode || 'state';
+    modalLayerEl.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>预设快照管理</div>
+          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-field' style='padding:11px;border-radius:13px;background:var(--td-surface);border:1px solid var(--td-border-strong);'>
+            <label class='td-label'>保存当前状态为新快照（当前预设：${escapeHtml(state.presetName)}）</label>
+            <input class='td-input' id='td-snap-name-input' type='text' placeholder='输入快照名称（留空自动生成）' value='${escapeHtml(m.draftName || '')}' />
+            <div class='td-seg-grid'>
+              <button type='button' class='td-seg-card ${mode === 'state' ? 'active' : ''}' data-action='set-snap-mode' data-mode='state'>
+                <div class='td-seg-title'>开关状态快照</div>
+                <div class='td-seg-desc'>轻量，记录预设及关联条目的开关，可跨版本应用</div>
+              </button>
+              <button type='button' class='td-seg-card single-card ${mode === 'full' ? 'active' : ''}' data-action='set-snap-mode' data-mode='full'>
+                <div class='td-seg-title'>完整预设快照</div>
+                <div class='td-seg-desc'>同时完整备份提示词正文与生成参数</div>
+              </button>
+            </div>
+            <button class='td-btn primary' data-action='create-snapshot' style='width:100%;margin-top:2px;'>${ICONS.camera} 保存为新快照</button>
+          </div>
+          <div class='td-filter-bar'>
+            <button class='td-chip' data-action='set-snapshot-filter' data-filter='current'>当前预设快照</button>
+            <button class='td-chip' data-action='set-snapshot-filter' data-filter='all'>全部快照 (${(state.store.snapshots || []).length})</button>
+          </div>
+          <div data-role='snapshot-list' style='display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;'></div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn primary' data-action='close-modal'>完成</button>
+        </div>
+      </div>`;
+    updateSnapshotList();
+    uiCtx.syncOverlayBounds();
+    return;
+  }
+
+  if (m.type === 'snapshotRename') {
+    modalLayerEl.innerHTML = `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>重命名快照</div>
+          <button class='td-icon-btn' data-action='back-to-snapshots'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-field'>
+            <label class='td-label'>快照名称</label>
+            <input class='td-input' id='td-snap-rename-input' type='text' value='${escapeHtml(m.name || '')}' />
+          </div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' data-action='back-to-snapshots'>取消</button>
+          <button class='td-btn primary' data-action='submit-snap-rename'>保存</button>
+        </div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+    return;
+  }
+
+  if (m.type === 'schemeForm') {
+    const title = m.mode === 'rename' ? '重命名方案' : (m.mode === 'duplicate' ? '复制方案' : '新建方案');
+    const showBindOpt = m.mode !== 'rename';
+    const bindChecked = typeof m.bindToCurrent === 'boolean' ? m.bindToCurrent : (getBoundSchemeIds(state.presetName).length > 0);
+    m.bindToCurrent = bindChecked;
+    modalLayerEl.innerHTML = `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>${title}</div>
+          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-field'>
+            <label class='td-label'>方案名称</label>
+            <input class='td-input' id='td-scheme-name-input' type='text' placeholder='例如：日常聊天、战斗模式、纯文风...' value='${escapeHtml(m.name || '')}' />
+          </div>
+          ${showBindOpt ? `
+            <label class='td-setting-row' style='cursor:pointer;'>
+              <div>
+                <div class='td-setting-title'>同时绑定到当前预设</div>
+                <div class='td-setting-desc'>${escapeHtml(state.presetName)}</div>
+              </div>
+              <input class='td-checkbox' id='td-scheme-bind-check' type='checkbox' ${bindChecked ? 'checked' : ''} />
+            </label>` : ''}
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' data-action='close-modal'>取消</button>
+          <button class='td-btn primary' data-action='submit-scheme-form'>确定</button>
+        </div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+    return;
+  }
+
+  if (m.type === 'bindings') {
+    const pool = ensureSchemesPool();
+    const selectedSet = m.selectedIds;
+    const rowsHtml = pool.map((s) => {
+      const checked = selectedSet.has(s.id);
+      return `
+        <div class='td-picker-row ${checked ? 'checked' : ''}' data-action='toggle-bind-scheme' data-scheme-id='${escapeHtml(s.id)}'>
+          <div class='td-picker-left'>
+            <input class='td-checkbox' type='checkbox' ${checked ? 'checked' : ''} tabindex='-1' />
+            <span class='td-item-name'>${escapeHtml(s.name)}</span>
+          </div>
+          <span class='td-count-tag'>${(s.groups || []).length} 个分组</span>
+        </div>`;
+    }).join('');
+    modalLayerEl.innerHTML = `
+      <div class='td-modal'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>预设方案绑定 · ${escapeHtml(state.presetName)}</div>
+          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>勾选要绑定到当前预设的方案（支持多选，同一方案也可被多个预设共用）。若全部不选，则控制台默认列出全部方案。</div>
+          <div style='display:flex;flex-direction:column;gap:6px;'>${rowsHtml}</div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' style='margin-right:auto;' data-action='clear-bindings'>全部不选(显示全部)</button>
+          <button class='td-btn' data-action='close-modal'>取消</button>
+          <button class='td-btn primary' data-action='save-bindings'>保存绑定</button>
+        </div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+    return;
+  }
+
+  if (m.type === 'groupForm') {
+    const isEdit = !!m.groupId;
+    const title = isEdit ? '编辑分组' : (m.parentId ? `新建子分组 · ${m.parentName || ''}` : '新建分组');
+    modalLayerEl.innerHTML = `
+      <div class='td-modal'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>${escapeHtml(title)}</div>
+          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-field'>
+            <label class='td-label'>分组名称</label>
+            <input class='td-input' id='td-group-name-input' type='text' placeholder='例如：破限预设、文风切换、功能开关...' value='${escapeHtml(m.name || '')}' />
+          </div>
+          <div class='td-field'>
+            <label class='td-label'>分组模式</label>
+            <div class='td-seg-grid'>
+              <button type='button' class='td-seg-card ${m.mode === 'multi' ? 'active' : ''}' data-action='set-modal-mode' data-mode='multi'>
+                <div class='td-seg-title'>多选分组</div>
+                <div class='td-seg-desc'>条目自由开关，支持一键全开 / 全关</div>
+              </button>
+              <button type='button' class='td-seg-card single-card ${m.mode === 'single' ? 'active' : ''}' data-action='set-modal-mode' data-mode='single'>
+                <div class='td-seg-title'>单选分组</div>
+                <div class='td-seg-desc'>组内条目互斥，开启一项自动关闭其余</div>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' data-action='close-modal'>取消</button>
+          <button class='td-btn primary' data-action='submit-group-form'>${isEdit ? '保存修改' : '创建分组'}</button>
+        </div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+    return;
+  }
+
+  if (m.type === 'picker') {
+    const found = findGroupNode(getActiveScheme().groups, m.groupId);
+    const group = found ? found.group : null;
+    modalLayerEl.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>批量添加 · ${escapeHtml(group ? group.name : '')}</div>
+          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body td-picker-body'>
+          <div class='td-source-tabs'>
+            <button class='td-source-tab' data-action='set-picker-source' data-source='preset'>预设条目</button>
+            <button class='td-source-tab' data-action='set-picker-source' data-source='worldbook'>世界书</button>
+            <button class='td-source-tab' data-action='set-picker-source' data-source='script'>酒馆脚本</button>
+            <button class='td-source-tab' data-action='set-picker-source' data-source='regex'>正则条目</button>
+          </div>
+          <input class='td-input' id='td-picker-search' type='text' placeholder='搜索条目名称、ID 或正文关键字...' value='${escapeHtml(m.query || '')}' />
+          <div class='td-filter-bar'>
+            <button class='td-chip' data-action='toggle-picker-select-mode'>单选点选</button>
+            <button class='td-chip' data-action='set-picker-filter' data-filter='all'>全部</button>
+            <button class='td-chip' data-action='set-picker-filter' data-filter='enabled'>已启用</button>
+            <button class='td-chip' data-action='set-picker-filter' data-filter='disabled'>未启用</button>
+            <button class='td-chip' data-action='set-picker-filter' data-filter='selected'>已勾选 (${m.selectedMap.size})</button>
+            <button class='td-chip' data-action='picker-select-visible'>全选当前</button>
+            <button class='td-chip' data-action='picker-unselect-visible'>清空当前</button>
+          </div>
+          <div class='td-range-hint' data-role='picker-range-hint' style='display:none;'></div>
+          <div class='td-picker-list td-scroll'></div>
+        </div>
+        <div class='td-modal-foot'>
+          <span data-role='picker-count' style='margin-right:auto;font-size:13px;font-weight:600;color:var(--td-text-muted);'>已选 ${m.selectedMap.size} 项</span>
+          <button class='td-btn' data-action='close-modal'>取消</button>
+          <button class='td-btn primary' data-action='save-picker'>保存条目</button>
+        </div>
+      </div>`;
+    updatePickerList();
+    uiCtx.syncOverlayBounds();
+    return;
+  }
+
+  if (m.type === 'settings') {
+    const theme = state.store.settings.theme;
+    const opacity = state.store.settings.orbOpacity ?? 0.96;
+    const orbSize = getOrbSize();
+    const showOrb = state.store.settings.showOrb !== false;
+    const enableExt = !!state.store.settings.enableExtButton;
+    const enableDrag = !!state.store.settings.enableDragSort;
+    modalLayerEl.innerHTML = `
+      <div class='td-modal'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>设置 · ${APP_NAME} (${APP_CN}) ${APP_VERSION}</div>
+          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-field'>
+            <label class='td-label'>外观主题</label>
+            <div class='td-seg-grid'>
+              <button type='button' class='td-seg-card ${theme === 'light' ? 'active' : ''}' data-action='set-theme' data-theme='light'>
+                <div class='td-seg-title'>${ICONS.sun} 白天模式</div>
+                <div class='td-seg-desc'>明亮通透的浅色界面</div>
+              </button>
+              <button type='button' class='td-seg-card ${theme === 'dark' ? 'active' : ''}' data-action='set-theme' data-theme='dark'>
+                <div class='td-seg-title'>${ICONS.moon} 黑夜模式</div>
+                <div class='td-seg-desc'>护眼沉稳的深色质感</div>
+              </button>
+            </div>
+          </div>
+          <div class='td-field'>
+            <label class='td-label'>触发入口设置（至少保留一项开启，扩展页始终可打开）</label>
+            <div class='td-setting-row'>
+              <div>
+                <div class='td-setting-title'>悬浮球入口</div>
+                <div class='td-setting-desc'>无操作自动缩小变淡，靠边自动贴边收纳</div>
+              </div>
+              <button type='button' class='td-switch ${showOrb ? 'on' : ''}' data-action='toggle-entry-switch' data-key='showOrb'></button>
+            </div>
+            <div class='td-setting-row'>
+              <div>
+                <div class='td-setting-title'>左下角魔法棒拓展按钮</div>
+                <div class='td-setting-desc'>在魔法棒菜单中添加「总控台」快捷入口</div>
+              </div>
+              <button type='button' class='td-switch ${enableExt ? 'on' : ''}' data-action='toggle-entry-switch' data-key='enableExtButton'></button>
+            </div>
+          </div>
+          <div class='td-field'>
+            <label class='td-label'>交互设置</label>
+            <div class='td-setting-row'>
+              <div>
+                <div class='td-setting-title'>启用拖拽排序与嵌套</div>
+                <div class='td-setting-desc'>开启后显示左侧拖拽手柄，可拖动调序、跨组及嵌套子分组</div>
+              </div>
+              <button type='button' class='td-switch ${enableDrag ? 'on' : ''}' data-action='toggle-drag-sort'></button>
+            </div>
+          </div>
+          <div class='td-field'>
+            <label class='td-label' data-role='orb-size-label'>悬浮球大小 (${orbSize}px)</label>
+            <input class='td-range' id='td-size-range' type='range' min='34' max='72' value='${orbSize}' />
+          </div>
+          <div class='td-field'>
+            <label class='td-label' data-role='opacity-label'>悬浮球透明度 (${Math.round(opacity * 100)}%)</label>
+            <input class='td-range' id='td-opacity-range' type='range' min='35' max='100' value='${Math.round(opacity * 100)}' />
+          </div>
+          <div class='td-field'>
+            <label class='td-label'>布局与数据维护</label>
+            <div style='display:flex;gap:8px;flex-wrap:wrap;'>
+              <button class='td-btn' data-action='reset-layout'>重置窗口与悬浮球位置/大小</button>
+              <button class='td-btn danger' data-action='clear-all-data'>重置全部方案数据</button>
+            </div>
+          </div>
+          <div style='font-size:12px;color:var(--td-text-dim);padding-top:6px;border-top:1px solid var(--td-border);'>
+            当前预设：${escapeHtml(state.presetName)}<br />
+            数据持久化：酒馆全局变量 (${STORAGE_KEY} · Schema v${SCHEMA_VERSION})
+          </div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn primary' data-action='close-modal'>完成</button>
+        </div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+  }
+}
+
+export function readPreviewSnapshot() {
+  const previewLayerEl = uiCtx.getPreviewLayer();
+  if (!previewLayerEl) return null;
+  const nameEl = previewLayerEl.querySelector('#td-edit-name');
+  const contentEl = previewLayerEl.querySelector('#td-edit-content');
+  const findEl = previewLayerEl.querySelector('#td-edit-find-regex');
+  const repEl = previewLayerEl.querySelector('#td-edit-replace-string');
+  return {
+    name: nameEl ? nameEl.value : '',
+    content: contentEl ? contentEl.value : '',
+    find_regex: findEl ? findEl.value : '',
+    replace_string: repEl ? repEl.value : '',
+  };
+}
+
+export function applyPreviewSnapshot(snap) {
+  const previewLayerEl = uiCtx.getPreviewLayer();
+  if (!previewLayerEl || !snap) return;
+  const nameEl = previewLayerEl.querySelector('#td-edit-name');
+  const contentEl = previewLayerEl.querySelector('#td-edit-content');
+  const findEl = previewLayerEl.querySelector('#td-edit-find-regex');
+  const repEl = previewLayerEl.querySelector('#td-edit-replace-string');
+  if (nameEl) nameEl.value = snap.name;
+  if (contentEl) contentEl.value = snap.content;
+  if (findEl) findEl.value = snap.find_regex;
+  if (repEl) repEl.value = snap.replace_string;
+}
+
+function snapshotsEqual(a, b) {
+  return !!a && !!b && a.name === b.name && a.content === b.content && a.find_regex === b.find_regex && a.replace_string === b.replace_string;
+}
+
+export function updatePreviewHistoryButtons() {
+  const previewLayerEl = uiCtx.getPreviewLayer();
+  if (!previewLayerEl) return;
+  const undoBtn = previewLayerEl.querySelector("[data-action='preview-undo']");
+  const redoBtn = previewLayerEl.querySelector("[data-action='preview-redo']");
+  if (undoBtn) undoBtn.disabled = editHistory.index <= 0;
+  if (redoBtn) redoBtn.disabled = editHistory.index >= editHistory.stack.length - 1;
+}
+
+export function pushEditSnapshot(force) {
+  if (editHistory.timer) {
+    clearTimeout(editHistory.timer);
+    editHistory.timer = null;
+  }
+  const snap = readPreviewSnapshot();
+  if (!snap || snapshotsEqual(editHistory.stack[editHistory.index], snap)) return;
+  if (!force || editHistory.index < editHistory.stack.length - 1) {
+    editHistory.stack = editHistory.stack.slice(0, editHistory.index + 1);
+  }
+  editHistory.stack.push(snap);
+  if (editHistory.stack.length > 80) editHistory.stack.shift();
+  editHistory.index = editHistory.stack.length - 1;
+  updatePreviewHistoryButtons();
+}
+
+export function scheduleEditSnapshot() {
+  if (editHistory.timer) clearTimeout(editHistory.timer);
+  editHistory.timer = setTimeout(() => pushEditSnapshot(false), 320);
+}
+
+export function syncPreviewStatusUi() {
+  const previewLayerEl = uiCtx.getPreviewLayer();
+  if (!previewLayerEl || !state.previewKey) return;
+  const item = state.catalog.byKey.get(state.previewKey);
+  if (!item) return;
+  const statusTag = previewLayerEl.querySelector("[data-role='preview-status-tag']");
+  const toggleBtn = previewLayerEl.querySelector("[data-action='toggle-preview-entry']");
+  if (statusTag) statusTag.textContent = `状态: ${item.enabled ? '已开启' : '已关闭'}`;
+  if (toggleBtn) toggleBtn.textContent = item.enabled ? '关闭条目' : '开启条目';
+}
+
+export function renderPreviewModal() {
+  const previewLayerEl = uiCtx.getPreviewLayer();
+  if (!previewLayerEl) return;
+  if (editHistory.timer) {
+    clearTimeout(editHistory.timer);
+    editHistory.timer = null;
+  }
+  if (!state.panelOpen) {
+    previewLayerEl.classList.remove('is-open');
+    previewLayerEl.innerHTML = '';
+    editHistory.stack = [];
+    editHistory.index = -1;
+    return;
+  }
+
+  if (state.snapshotDetailId) {
+    const snap = (state.store.snapshots || []).find((s) => s.id === state.snapshotDetailId);
+    if (!snap) {
+      state.snapshotDetailId = null;
+      previewLayerEl.classList.remove('is-open');
+      previewLayerEl.innerHTML = '';
+      return;
+    }
+    const diffs = computeSnapshotDiff(snap);
+    const diffHtml = diffs.length === 0
+      ? "<div class='td-group-empty'>该快照的开关状态与当前环境完全一致</div>"
+      : diffs.map((d) => `
+          <div class='td-diff-row'>
+            <span style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;'>${escapeHtml(d.name)}</span>
+            <span class='td-mode-tag ${d.to ? 'ok' : 'single'}'>${d.from ? '开' : '关'} → ${d.to ? '开' : '关'}</span>
+          </div>`).join('');
+    previewLayerEl.classList.add('is-open');
+    previewLayerEl.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>快照差异对比 · ${escapeHtml(snap.name)}</div>
+          <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-preview-meta'>
+            <span class='td-meta-tag'>模式: ${snap.mode === 'full' ? '完整预设快照' : '开关状态快照'}</span>
+            <span class='td-meta-tag'>来源预设: ${escapeHtml(snap.presetName)}</span>
+            <span class='td-meta-tag'>时间: ${escapeHtml(formatTime(snap.updatedAt || snap.createdAt))}</span>
+            <span class='td-meta-tag'>差异: ${diffs.length} 项</span>
+          </div>
+          <div style='display:flex;flex-direction:column;gap:5px;'>${diffHtml}</div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' data-action='close-preview'>关闭</button>
+          <button class='td-btn primary' data-action='apply-snapshot-from-detail' data-snap-id='${escapeHtml(snap.id)}'>${ICONS.check} 恢复此快照</button>
+        </div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+    return;
+  }
+
+  if (!state.previewKey) {
+    previewLayerEl.classList.remove('is-open');
+    previewLayerEl.innerHTML = '';
+    editHistory.stack = [];
+    editHistory.index = -1;
+    return;
+  }
+
+  const item = state.catalog.byKey.get(state.previewKey);
+  if (!item) {
+    state.previewKey = null;
+    previewLayerEl.classList.remove('is-open');
+    previewLayerEl.innerHTML = '';
+    return;
+  }
+
+  const ref = item.ref;
+  const raw = item.raw || {};
+  let metaHtml = `<span class='td-meta-tag'>类型: ${escapeHtml(TYPE_LABELS[ref.type] || ref.type)}</span><span class='td-meta-tag' data-role='preview-status-tag'>状态: ${item.enabled ? '已开启' : '已关闭'}</span>`;
+  if (item.scopeTitle) metaHtml += `<span class='td-meta-tag'>作用域: ${escapeHtml(item.scopeTitle)}</span>`;
+
+  let fieldsHtml = `<div class='td-field'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(item.name || '')}' /></div>`;
+  if (ref.type === 'regex') {
+    fieldsHtml += `
+      <div class='td-field'><label class='td-label'>查找正则 (Find Regex)</label><input class='td-input' id='td-edit-find-regex' type='text' value='${escapeHtml(raw.find_regex || '')}' /></div>
+      <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>替换为 (Replace String)</label><textarea class='td-textarea td-scroll' id='td-edit-replace-string' style='flex:1;'>${escapeHtml(raw.replace_string || '')}</textarea></div>`;
+  } else {
+    const isPlaceholder = ref.type === 'preset' && typeof raw.content !== 'string';
+    const contentVal = typeof raw.content === 'string' ? raw.content : '';
+    fieldsHtml += `
+      <div class='td-field' style='flex:1;display:flex;flex-direction:column;'>
+        <label class='td-label'>条目内容 ${isPlaceholder ? '（此条为酒馆内置占位符，一般无正文）' : ''}</label>
+        <textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;' ${isPlaceholder ? "placeholder='该条目为内置占位符'" : ''}>${escapeHtml(contentVal)}</textarea>
+      </div>`;
+  }
+
+  previewLayerEl.classList.add('is-open');
+  previewLayerEl.innerHTML = `
+    <div class='td-modal td-modal-tall'>
+      <div class='td-modal-head'>
+        <div class='td-modal-title' title='${escapeHtml(item.name)}'>编辑与预览 · ${escapeHtml(item.name)}</div>
+        <div style='display:flex;gap:4px;'>
+          <button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button>
+          <button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button>
+          <button class='td-icon-btn' data-action='copy-preview' title='复制内容'>${ICONS.copy}</button>
+          <button class='td-icon-btn' data-action='close-preview' title='关闭'>${ICONS.close}</button>
+        </div>
+      </div>
+      <div class='td-modal-body'><div class='td-preview-meta'>${metaHtml}</div>${fieldsHtml}</div>
+      <div class='td-modal-foot'>
+        <button class='td-btn' data-action='toggle-preview-entry'>${item.enabled ? '关闭条目' : '开启条目'}</button>
+        <button class='td-btn' data-action='close-preview'>取消</button>
+        <button class='td-btn primary' data-action='save-preview-edit'>${ICONS.save} 保存更改</button>
+      </div>
+    </div>`;
+
+  editHistory.stack = [readPreviewSnapshot()];
+  editHistory.index = 0;
+  updatePreviewHistoryButtons();
+  uiCtx.syncOverlayBounds();
+}
