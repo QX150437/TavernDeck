@@ -1,4 +1,4 @@
-import { APP_NAME, getST, hasTH, logWarn } from './src/utils.js';
+import { APP_NAME, getST, hasTH, logInfo, logWarn } from './src/utils.js';
 import { state, loadStore } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
 import { syncNativePresetCollapse } from './src/native-ui.js';
@@ -9,6 +9,7 @@ import {
 } from './src/ui-app.js';
 
 let booted = false;
+let initialSynced = false;
 
 async function syncAndRefresh() {
   syncNativePresetCollapse();
@@ -17,6 +18,10 @@ async function syncAndRefresh() {
   try {
     state.store = loadStore();
     await refreshAllCatalogs();
+    if (!initialSynced) {
+      initialSynced = true;
+      logInfo(`已连接 TavernHelper 并完成首次同步（当前预设：${state.presetName || '未知'}）`);
+    }
     renderOrb();
     syncExtensionButton();
     syncTopBarUI();

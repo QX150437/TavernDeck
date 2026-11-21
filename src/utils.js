@@ -21,6 +21,11 @@ export const SCOPE_LABELS = {
   character: '角色卡',
 };
 
+export function logInfo(msg, detail) {
+  if (detail !== undefined) console.info(`[${APP_NAME}] ${msg}:`, detail);
+  else console.info(`[${APP_NAME}] ${msg}`);
+}
+
 export function logWarn(msg, err) {
   if (err !== undefined) console.warn(`[${APP_NAME}] ${msg}:`, err);
   else console.warn(`[${APP_NAME}] ${msg}`);
@@ -65,6 +70,7 @@ export function callTH(name, ...args) {
 export function notify(type, message) {
   if (type === 'error') logError(message);
   else if (type === 'warning') logWarn(message);
+  else logInfo(message);
 
   try {
     if (typeof toastr !== 'undefined' && typeof toastr[type] === 'function') {
@@ -78,7 +84,6 @@ export function notify(type, message) {
   } catch (e) {
     logWarn('toastr 提示调用失败', e);
   }
-  console.log(`[${APP_NAME}][${type}]`, message);
 }
 
 export function genId() {
@@ -148,8 +153,9 @@ export async function copyToClipboard(text) {
   ta.value = text;
   document.body.appendChild(ta);
   ta.select();
-  document.execCommand('copy');
+  const ok = document.execCommand('copy');
   ta.remove();
+  if (!ok) throw new Error('浏览器禁止剪贴板写入');
 }
 
 export function normalizeColorInput(raw) {

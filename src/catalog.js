@@ -1,6 +1,6 @@
 import {
   SCOPE_LABELS,
-  getST, hasTH, callTH, notify, makeItemKey, logWarn, logError,
+  getST, hasTH, callTH, notify, makeItemKey, logInfo, logWarn, logError,
 } from './utils.js';
 import { state, getActiveScheme, findGroupNode } from './store.js';
 
@@ -96,7 +96,8 @@ export function refreshSyncSources() {
   }
 
   try {
-    state.presetNames = hasTH('getPresetNames') ? (callTH('getPresetNames') || []) : [];
+    const rawNames = hasTH('getPresetNames') ? (callTH('getPresetNames') || []) : [];
+    state.presetNames = rawNames.filter((n) => n && n !== 'in_use');
   } catch (e) {
     logWarn('获取预设列表失败', e);
     state.presetNames = [];
@@ -356,6 +357,7 @@ export function applyItemMutations(mutations) {
   const scriptMut = new Map();
   const regexMut = new Map();
   const rollbacks = [];
+  let changedCount = 0;
 
   mutations.forEach((m) => {
     const ref = m.ref;
@@ -364,6 +366,7 @@ export function applyItemMutations(mutations) {
     const nextEnabled = !!m.enabled;
     if (existing && existing.enabled === nextEnabled) return;
 
+    changedCount++;
     if (existing) {
       rollbacks.push({ item: existing, prevEnabled: existing.enabled });
       existing.enabled = nextEnabled;
@@ -435,6 +438,10 @@ export function applyItemMutations(mutations) {
             return regexes;
           }, opt);
         }
+      }
+
+      if (changedCount > 1) {
+        logInfo(`批量更新 ${changedCount} 个条目开关状态完成`);
       }
 
       pendingMutationOps--;
@@ -564,7 +571,7 @@ export async function saveEditedEntry(itemKey, fields) {
     }
 
     await refreshAllCatalogs();
-    notify('success', '已保存并持久化');
+    notify('success', `已保存并持久化「${fields.name || item.name}」`);
     return true;
   } catch (e) {
     logError('保存条目失败', e);

@@ -11,7 +11,7 @@ import {
   exportStoreData, importStoreData,
 } from './store.js';
 import {
-  refreshWorldbookCatalog, refreshAllCatalogs, applyItemMutations,
+  refreshWorldbookCatalog, refreshAllCatalogs,
   toggleEntryInGroup, toggleMultiGroupAll, saveEditedEntry,
 } from './catalog.js';
 import {
@@ -345,7 +345,7 @@ function updateStickyGroupHeaders() {
     }
     const gRect = grp.getBoundingClientRect();
     const sRect = stickyTop.getBoundingClientRect();
-    const isStuck = gRect.top < bodyTop - 1 && gRect.bottom > bodyTop + sRect.height + 6;
+    const isStuck = gRect.top < bodyTop - 0.5 && gRect.bottom > bodyTop + sRect.height + 6;
     stickyTop.classList.toggle('is-stuck', isStuck);
   });
 }
@@ -475,8 +475,10 @@ export function renderMain() {
   const prevBody = panelMainEl.querySelector('.td-body');
   const prevScrollTop = prevBody ? prevBody.scrollTop : 0;
 
-  const presetList = state.presetNames.slice();
-  if (state.presetName && !presetList.includes(state.presetName)) presetList.unshift(state.presetName);
+  const presetList = (state.presetNames || []).filter((n) => n && n !== 'in_use');
+  if (state.presetName && state.presetName !== 'in_use' && !presetList.includes(state.presetName)) {
+    presetList.unshift(state.presetName);
+  }
   const presetOptions = presetList
     .map((pName) => `<option value='${escapeHtml(pName)}' ${pName === state.presetName ? 'selected' : ''}>${escapeHtml(pName)}</option>`)
     .join('');
@@ -544,22 +546,29 @@ function renderPreservingFocus(targetLayer, renderFn) {
     focusId = active.id;
     try { selStart = active.selectionStart; selEnd = active.selectionEnd; } catch (e) {}
   }
-  const scroller = targetLayer?.querySelector('.td-picker-list, .td-modal-body');
-  const prevTop = scroller ? scroller.scrollTop : 0;
+  const prevBodyTop = targetLayer?.querySelector('.td-modal-body')?.scrollTop || 0;
+  const prevListTop = targetLayer?.querySelector('.td-picker-list')?.scrollTop || 0;
 
   renderFn();
 
-  if (prevTop > 0 && targetLayer) {
-    const nextScroller = targetLayer.querySelector('.td-picker-list, .td-modal-body');
-    if (nextScroller) {
-      nextScroller.scrollTop = prevTop;
-      requestAnimationFrame(() => { nextScroller.scrollTop = prevTop; });
-    }
+  if (targetLayer) {
+    const restoreScroll = () => {
+      if (prevBodyTop > 0) {
+        const nextBody = targetLayer.querySelector('.td-modal-body');
+        if (nextBody) nextBody.scrollTop = prevBodyTop;
+      }
+      if (prevListTop > 0) {
+        const nextList = targetLayer.querySelector('.td-picker-list');
+        if (nextList) nextList.scrollTop = prevListTop;
+      }
+    };
+    restoreScroll();
+    requestAnimationFrame(restoreScroll);
   }
   if (focusId && targetLayer) {
     const nextEl = targetLayer.querySelector(`#${cssEscape(focusId)}`);
     if (nextEl) {
-      nextEl.focus();
+      nextEl.focus({ preventScroll: true });
       if (typeof selStart === 'number' && typeof nextEl.setSelectionRange === 'function') {
         try { nextEl.setSelectionRange(selStart, selEnd); } catch (e) {}
       }
@@ -729,6 +738,12 @@ function handleRootClick(e) {
     return;
   }
 
+  if (action === 'show-full-title') {
+    const fullTitle = actionEl.getAttribute('data-full-title') || actionEl.textContent || '';
+    if (fullTitle) notify('info', `完整对比标题：${fullTitle}`);
+    return;
+  }
+
   if (handleMergeUiClick(e, actionEl, action, previewLayerEl, {
     renderPreviewModal,
     updatePresetMergeBody,
@@ -830,7 +845,7 @@ function handleRootClick(e) {
     if (!oldName || !newName) { notify('warning', '请选择要对比的两个预设'); return; }
     if (oldName === newName) { notify('warning', '请选择两个不同的预设进行对比'); return; }
     try { state.modal = { type: 'presetMerge', session: buildPresetDiffSession(oldName, newName) }; renderModal(); }
-    catch (err) { notify('error', `读取预设失败: ${err.message || err}`); }
+    catch (err) { logError('读取预设对比失败', err); notify('error', `读取预设失败: ${err.message || err}`); }
     return;
   }
   if (action === 'toggle-merge-controls' && state.modal?.type === 'presetMerge') { state.modal.session.controlsOpen = !state.modal.session.controlsOpen; updatePresetMergeBody(); return; }
@@ -873,7 +888,7 @@ function handleRootClick(e) {
     const session = state.modal.session;
     openConfirm({
       title: '覆盖目标预设确认', message: `确定要将缝合后的结果直接覆盖保存到预设「${session.newName}」吗？`, confirmText: '确认覆盖保存', confirmClass: 'danger',
-      onConfirm: () => executePresetStitch(session, 'overwrite').then(() => { state.modal = null; renderModal(); refreshAllCatalogs().then(() => renderMain()); }).catch((err) => notify('error', err.message || String(err))),
+      onConfirm: () => executePresetStitch(session, 'overwrite').then(() => { state.modal = null; renderModal(); refreshAllCatalogs().then(() => renderMain()); }).catch((err) => { logError('覆盖缝合预设失败', err); notify('error', err.message || String(err)); }),
     });
     return;
   }
@@ -881,7 +896,7 @@ function handleRootClick(e) {
     const session = state.modal.session;
     const newName = window.prompt('请输入另存为的新预设名称：', `${session.newName}-缝合版`);
     if (!newName || !newName.trim()) return;
-    executePresetStitch(session, 'new', newName.trim()).then(() => { state.modal = null; renderModal(); refreshAllCatalogs().then(() => renderMain()); }).catch((err) => notify('error', err.message || String(err)));
+    executePresetStitch(session, 'new', newName.trim()).then(() => { state.modal = null; renderModal(); refreshAllCatalogs().then(() => renderMain()); }).catch((err) => { logError('另存缝合预设失败', err); notify('error', err.message || String(err)); });
     return;
   }
 
@@ -913,7 +928,7 @@ function handleRootClick(e) {
       state.modal.importPreview = parsed; state.modal.impSchemes = Array.isArray(parsed.schemes);
       state.modal.impSnapshots = Array.isArray(parsed.snapshots); state.modal.impSettings = !!parsed.settings;
       renderModal();
-    } catch (err) { notify('error', `JSON 解析失败: ${err.message || err}`); }
+    } catch (err) { logWarn('解析导入文本失败', err); notify('error', `JSON 解析失败: ${err.message || err}`); }
     return;
   }
   if (action === 'toggle-io-imp-opt' && state.modal?.type === 'ioCenter') { const k = actionEl.getAttribute('data-key'); state.modal[k] = !state.modal[k]; actionEl.classList.toggle('on', !!state.modal[k]); return; }
@@ -927,7 +942,7 @@ function handleRootClick(e) {
         try {
           importStoreData(m.importPreview, { mode: m.impMode, importSchemes: !!m.impSchemes, importSnapshots: !!m.impSnapshots, importSettings: !!m.impSettings });
           state.modal = null; renderModal(); renderOrb(); syncExtensionButton(); syncTopBarUI(); syncNativePresetCollapse(); renderMain(); notify('success', '配置导入成功');
-        } catch (err) { notify('error', `导入失败: ${err.message || err}`); }
+        } catch (err) { logError('执行导入配置失败', err); notify('error', `导入失败: ${err.message || err}`); }
       },
     });
     return;
@@ -1085,10 +1100,6 @@ function handleRootClick(e) {
     const contentEl = previewLayerEl.querySelector('#td-edit-content') || previewLayerEl.querySelector('#td-edit-replace-string');
     copyToClipboard(contentEl ? contentEl.value : '').then(() => notify('success', '内容已复制到剪贴板')).catch((err) => { logError('复制预览内容失败', err); notify('error', '复制失败'); });
     return;
-  }
-  if (action === 'toggle-preview-entry') {
-    const item = state.catalog.byKey.get(state.previewKey); if (!item) return;
-    const task = applyItemMutations([{ ref: item.ref, enabled: !item.enabled }]); syncEntryStatesUI(); task.then(() => syncEntryStatesUI()); return;
   }
   if (action === 'save-preview-edit') {
     const item = state.catalog.byKey.get(state.previewKey); if (!item) return;
@@ -1372,7 +1383,7 @@ function handleRootChange(e) {
         confirmText: '保存并切换', confirmClass: 'primary',
         extraButton: { text: '仅切换', className: 'warn', onClick: () => performSwitchPreset(nextPreset) },
         onCancel: () => { e.target.value = prevName; },
-        onConfirm: () => { saveInUseToPreset(prevName).then(() => performSwitchPreset(nextPreset)).catch((err) => notify('error', `保存失败: ${err.message || err}`)); },
+        onConfirm: () => { saveInUseToPreset(prevName).then(() => performSwitchPreset(nextPreset)).catch((err) => { logError('保存预设修改失败', err); notify('error', `保存失败: ${err.message || err}`); }); },
       });
       return;
     }
@@ -1393,7 +1404,7 @@ function handleRootChange(e) {
         state.previewCtx = { type: 'orbCrop', img: res.img, zoom: 1, offsetX: 0, offsetY: 0 };
         renderPreviewModal();
       }
-    }).catch((err) => notify('error', err.message || '图片加载失败'));
+    }).catch((err) => { logError('加载悬浮球图片失败', err); notify('error', err.message || '图片加载失败'); });
     return;
   }
   if (id === 'td-io-file-input' && state.modal?.type === 'ioCenter') {
@@ -1405,7 +1416,7 @@ function handleRootChange(e) {
       state.modal.importPreview = parsed; state.modal.impSchemes = Array.isArray(parsed.schemes);
       state.modal.impSnapshots = Array.isArray(parsed.snapshots); state.modal.impSettings = !!parsed.settings;
       renderModal();
-    }).catch((err) => notify('error', `读取文件失败: ${err.message || err}`));
+    }).catch((err) => { logError('读取导入文件失败', err); notify('error', `读取文件失败: ${err.message || err}`); });
     return;
   }
   if (id === 'td-merge-settings-cb' && state.modal?.type === 'presetMerge') { state.modal.session.migrateSettings = !!e.target.checked; return; }

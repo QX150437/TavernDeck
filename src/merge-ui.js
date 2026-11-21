@@ -65,6 +65,7 @@ export function initPresetMergeCustomCtx(entry, options = {}) {
     type: 'mergeCustom',
     entry,
     contentOnly: !!options.contentOnly,
+    syncScroll: false,
     draft: {
       name: base.name || entry.name || '',
       enabled: base.enabled !== false,
@@ -93,6 +94,7 @@ export function initWbMergeCustomCtx(entry, options = {}) {
     type: 'wbMergeCustom',
     entry,
     contentOnly: !!options.contentOnly,
+    syncScroll: false,
     draft: {
       name: base.name || entry.name || '',
       enabled: !!base.enabled,
@@ -184,6 +186,16 @@ function renderDiffLineHtml(lineObj, sideClass) {
   return `<div class='${clsList.join(' ')}'>${inner}</div>`;
 }
 
+function renderLinesBackdrop(rawText, diffLines, sideClass) {
+  const realLines = String(rawText || '').split('\n');
+  let di = 0;
+  return realLines.map((lineText) => {
+    while (di < diffLines.length && diffLines[di].text !== lineText) di++;
+    const matched = di < diffLines.length ? diffLines[di++] : { text: lineText, status: 'ctx' };
+    return renderDiffLineHtml(matched, sideClass);
+  }).join('');
+}
+
 function syncBackdropScroll(ta, bd) {
   if (!ta || !bd) return;
   bd.scrollTop = ta.scrollTop;
@@ -201,8 +213,8 @@ export function applyMergeCustomSideDiffs(previewLayerEl) {
   if (!oldTa || !newTa || !oldBd || !newBd) return;
 
   const { oldLines, newLines } = computeSideLineDiffs(oldTa.value, newTa.value);
-  oldBd.innerHTML = oldLines.map((l) => renderDiffLineHtml(l, 'is-mod-old')).join('');
-  newBd.innerHTML = newLines.map((l) => renderDiffLineHtml(l, 'is-mod-new')).join('');
+  oldBd.innerHTML = renderLinesBackdrop(oldTa.value, oldLines, 'is-mod-old');
+  newBd.innerHTML = renderLinesBackdrop(newTa.value, newLines, 'is-mod-new');
   syncBackdropScroll(oldTa, oldBd);
   syncBackdropScroll(newTa, newBd);
 }
@@ -303,6 +315,7 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
   const d = ctx.draft;
   const isInChat = d.posType === 'in_chat';
   const contentOnly = !!ctx.contentOnly;
+  const syncScroll = !!ctx.syncScroll;
   const attrRows = buildPresetAttrRows(entry.oldPrompt, entry.newPrompt);
 
   const attrsSectionHtml = contentOnly
@@ -386,6 +399,7 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
       <div class='td-modal-head'>
         <div class='td-modal-title'>${contentOnly ? '只缝合内容' : '手动缝合条目'} · ${escapeHtml(entry.name)}</div>
         <div style='display:flex;gap:4px;align-items:center;'>
+          <button type='button' class='td-btn sm ${syncScroll ? 'primary' : ''}' data-action='toggle-merge-sync-scroll' title='开关旧版与新版文本框同步滚动'>${syncScroll ? '同步滚动:开' : '同步滚动'}</button>
           <button type='button' class='td-btn sm ${contentOnly ? 'primary' : ''}' data-action='toggle-merge-content-only'>${contentOnly ? '完整缝合' : '只缝合内容'}</button>
           <button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${icons.undo}</button>
           <button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${icons.redo}</button>
@@ -410,6 +424,7 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
   const entry = ctx.entry;
   const d = ctx.draft;
   const contentOnly = !!ctx.contentOnly;
+  const syncScroll = !!ctx.syncScroll;
   const attrRows = buildWbAttrRows(entry.oldEntry, entry.newEntry);
   const advDiff = attrRows.some((r) => ['sec', 'scanDepth', 'recursion', 'effect'].includes(r.key) && r.isDiff);
   const posOpts = WB_POSITION_OPTIONS.map((o) => `<option value='${o.v}' ${d.posType === o.v ? 'selected' : ''}>${o.t}</option>`).join('');
@@ -544,6 +559,7 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
       <div class='td-modal-head'>
         <div class='td-modal-title'>${contentOnly ? '只缝合内容' : '手动缝合世界书'} · ${escapeHtml(entry.name)}</div>
         <div style='display:flex;gap:4px;align-items:center;'>
+          <button type='button' class='td-btn sm ${syncScroll ? 'primary' : ''}' data-action='toggle-merge-sync-scroll' title='开关旧版与新版文本框同步滚动'>${syncScroll ? '同步滚动:开' : '同步滚动'}</button>
           <button type='button' class='td-btn sm ${contentOnly ? 'primary' : ''}' data-action='toggle-merge-content-only'>${contentOnly ? '完整缝合' : '只缝合内容'}</button>
           <button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${icons.undo}</button>
           <button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${icons.redo}</button>
@@ -565,18 +581,39 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
 
 export function bindMergeCustomEvents(previewLayerEl) {
   if (!previewLayerEl || !state.previewCtx) return;
-  const isPreset = state.previewCtx.type === 'mergeCustom';
+  const ctx = state.previewCtx;
+  const isPreset = ctx.type === 'mergeCustom';
   const oldTa = previewLayerEl.querySelector(isPreset ? '#td-merge-old-content' : '#td-wbm-old-content');
   const newTa = previewLayerEl.querySelector(isPreset ? '#td-merge-new-content' : '#td-wbm-new-content');
   const oldBd = previewLayerEl.querySelector('#td-merge-old-bd');
   const newBd = previewLayerEl.querySelector('#td-merge-new-bd');
+  let syncing = false;
+
   if (oldTa && oldBd && !oldTa.dataset.tdScrollBound) {
     oldTa.dataset.tdScrollBound = '1';
-    oldTa.addEventListener('scroll', () => syncBackdropScroll(oldTa, oldBd));
+    oldTa.addEventListener('scroll', () => {
+      syncBackdropScroll(oldTa, oldBd);
+      if (!syncing && ctx.syncScroll && newTa) {
+        syncing = true;
+        newTa.scrollTop = oldTa.scrollTop;
+        newTa.scrollLeft = oldTa.scrollLeft;
+        syncBackdropScroll(newTa, newBd);
+        syncing = false;
+      }
+    });
   }
   if (newTa && newBd && !newTa.dataset.tdScrollBound) {
     newTa.dataset.tdScrollBound = '1';
-    newTa.addEventListener('scroll', () => syncBackdropScroll(newTa, newBd));
+    newTa.addEventListener('scroll', () => {
+      syncBackdropScroll(newTa, newBd);
+      if (!syncing && ctx.syncScroll && oldTa) {
+        syncing = true;
+        oldTa.scrollTop = newTa.scrollTop;
+        oldTa.scrollLeft = newTa.scrollLeft;
+        syncBackdropScroll(oldTa, oldBd);
+        syncing = false;
+      }
+    });
   }
 }
 
@@ -744,6 +781,13 @@ export function saveMergeCustomResult(previewLayerEl, hooks) {
 export function handleMergeUiClick(e, actionEl, action, previewLayerEl, hooks) {
   const ctx = state.previewCtx;
   if (!ctx || (ctx.type !== 'mergeCustom' && ctx.type !== 'wbMergeCustom')) return false;
+
+  if (action === 'toggle-merge-sync-scroll') {
+    ctx.syncScroll = !ctx.syncScroll;
+    actionEl.classList.toggle('primary', ctx.syncScroll);
+    actionEl.textContent = ctx.syncScroll ? '同步滚动:开' : '同步滚动';
+    return true;
+  }
 
   if (action === 'toggle-merge-content-only') {
     syncPresetMergeCustomDraft(previewLayerEl);

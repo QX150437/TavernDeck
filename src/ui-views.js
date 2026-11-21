@@ -585,9 +585,13 @@ export function renderModal() {
 
   if (m.type === 'presetMerge') {
     const s = m.session;
+    const titleStr = `${s.oldName} ⇄ ${s.newName}`;
     modalLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'><div class='td-modal-title'>${escapeHtml(s.oldName)} ⇄ ${escapeHtml(s.newName)}</div><div style='display:flex;gap:4px;align-items:center;'><button class='td-btn sm' data-action='toggle-merge-controls'>${ICONS.sliders} 筛选与批量</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
+        <div class='td-modal-head'>
+          <div class='td-modal-title td-title-clickable' data-action='show-full-title' data-full-title='${escapeHtml(titleStr)}' title='点击查看完整标题'>${escapeHtml(titleStr)}</div>
+          <div style='display:flex;gap:4px;align-items:center;'><button class='td-btn sm' data-action='toggle-merge-controls'>${ICONS.sliders} 筛选与批量</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+        </div>
         <div class='td-modal-body td-picker-body'>
           <div class='td-picker-summary'><span data-role='merge-summary-text' style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'></span></div>
           <div class='td-picker-controls'>
@@ -978,9 +982,7 @@ export function syncPreviewStatusUi() {
   const item = state.catalog.byKey.get(state.previewKey);
   if (!item) return;
   const statusTag = previewLayerEl.querySelector("[data-role='preview-status-tag']");
-  const toggleBtn = previewLayerEl.querySelector("[data-action='toggle-preview-entry']");
   if (statusTag) statusTag.textContent = `状态: ${item.enabled ? '已开启' : '已关闭'}`;
-  if (toggleBtn) toggleBtn.textContent = item.enabled ? '关闭条目' : '开启条目';
 }
 
 export function renderPreviewModal() {
@@ -992,7 +994,7 @@ export function renderPreviewModal() {
   if (uiCtx.renderManagerPreview()) return;
 
   if (state.previewCtx?.type === 'mergeCustom') {
-    renderPresetMergeCustomModal(previewLayerEl, ICONS, uiCtx.getViewportRect());
+    renderPresetMergeCustomModal(previewLayerEl, ICONS);
     editHistory.stack = [readPreviewSnapshot()];
     editHistory.index = 0;
     updatePreviewHistoryButtons();
@@ -1027,7 +1029,7 @@ export function renderPreviewModal() {
   }
 
   previewLayerEl.classList.add('is-open');
-  previewLayerEl.innerHTML = `<div class='td-modal td-modal-tall'><div class='td-modal-head'><div class='td-modal-title' title='${escapeHtml(item.name)}'>编辑与预览 · ${escapeHtml(item.name)}</div><div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='copy-preview' title='复制内容'>${ICONS.copy}</button><button class='td-icon-btn' data-action='close-preview' title='关闭'>${ICONS.close}</button></div></div><div class='td-modal-body'><div class='td-preview-meta'>${metaHtml}</div>${fieldsHtml}</div><div class='td-modal-foot'><button class='td-btn' data-action='toggle-preview-entry'>${item.enabled ? '关闭条目' : '开启条目'}</button><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='save-preview-edit'>${ICONS.save} 保存更改</button></div></div>`;
+  previewLayerEl.innerHTML = `<div class='td-modal td-modal-tall'><div class='td-modal-head'><div class='td-modal-title' title='${escapeHtml(item.name)}'>编辑与预览 · ${escapeHtml(item.name)}</div><div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='copy-preview' title='复制内容'>${ICONS.copy}</button><button class='td-icon-btn' data-action='close-preview' title='关闭'>${ICONS.close}</button></div></div><div class='td-modal-body'><div class='td-preview-meta'>${metaHtml}</div>${fieldsHtml}</div><div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='save-preview-edit'>${ICONS.save} 保存更改</button></div></div>`;
   editHistory.stack = [readPreviewSnapshot()]; editHistory.index = 0;
   updatePreviewHistoryButtons(); uiCtx.syncOverlayBounds();
 }

@@ -4,6 +4,17 @@ const logBuffer = [];
 const MAX_LOGS = 200;
 let captureInstalled = false;
 
+const OWN_FILES = [
+  'taverndeck', 'ui-app.js', 'ui-views.js', 'ui-managers.js', 'merge-ui.js',
+  'preset-merge.js', 'worldbook-merge.js', 'preset-manager.js', 'worldbook-manager.js',
+  'ai-preset-edit.js', 'catalog.js', 'snapshot.js', 'native-ui.js', 'dev-tools.js',
+];
+
+function isOwnSource(text) {
+  const s = String(text || '').toLowerCase();
+  return OWN_FILES.some((f) => s.includes(f));
+}
+
 function formatLogArg(a) {
   if (a instanceof Error) {
     return a.stack ? `${a.message} | ${a.stack.split('\n')[0]}` : (a.message || String(a));
@@ -20,11 +31,15 @@ function formatLogArg(a) {
   return String(a);
 }
 
+function stripAppPrefix(txt) {
+  return String(txt || '').replace(new RegExp(`^\\[${APP_NAME}\\]\\s*`), '');
+}
+
 export function pushDevLog(level, message) {
   const d = new Date();
   const pad = (n) => (n < 10 ? `0${n}` : String(n));
   const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  logBuffer.unshift({ time, level: level || 'INFO', message: String(message || '') });
+  logBuffer.unshift({ time, level: level || 'INFO', message: stripAppPrefix(message) });
   if (logBuffer.length > MAX_LOGS) logBuffer.length = MAX_LOGS;
 }
 
@@ -50,8 +65,17 @@ export function initDevErrorCapture() {
   captureInstalled = true;
   pushDevLog('INFO', `${APP_NAME} ${APP_VERSION} 初始化完成`);
 
+  const origInfo = console.info;
   const origWarn = console.warn;
   const origError = console.error;
+
+  console.info = function (...args) {
+    try {
+      const txt = args.map(formatLogArg).join(' ');
+      if (txt.includes(APP_NAME)) pushDevLog('INFO', txt);
+    } catch (e) {}
+    return origInfo.apply(this, args);
+  };
   console.warn = function (...args) {
     try {
       const txt = args.map(formatLogArg).join(' ');
@@ -69,13 +93,15 @@ export function initDevErrorCapture() {
 
   window.addEventListener('error', (ev) => {
     const file = String(ev.filename || '');
-    if (file.includes('TavernDeck') || String(ev.message || '').includes(APP_NAME)) {
-      pushDevLog('ERR', `${ev.message || 'Uncaught Error'} (${file}:${ev.lineno || 0})`);
+    const msg = String(ev.message || '');
+    if (isOwnSource(file) || isOwnSource(msg)) {
+      pushDevLog('ERR', `${msg || 'Uncaught Error'} (${file}:${ev.lineno || 0})`);
     }
   });
   window.addEventListener('unhandledrejection', (ev) => {
     const msg = formatLogArg(ev.reason);
-    if (msg.includes(APP_NAME) || msg.includes('TavernDeck')) {
+    const stack = ev.reason instanceof Error ? String(ev.reason.stack || '') : '';
+    if (isOwnSource(msg) || isOwnSource(stack)) {
       pushDevLog('ERR', `UnhandledRejection: ${msg}`);
     }
   });

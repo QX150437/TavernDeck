@@ -157,6 +157,31 @@ export function renderSelectPopupView() {
   }
   layer.classList.add('is-open');
 
+  if (sp.type === 'aiItemPreview') {
+    const metaTags = (sp.metas || []).filter(Boolean)
+      .map((t) => `<span class='td-meta-tag'>${escapeHtml(t)}</span>`)
+      .join('');
+    layer.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>内容预览 · ${escapeHtml(sp.title || '')}</div>
+          <button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          ${metaTags ? `<div class='td-preview-meta'>${metaTags}</div>` : ''}
+          <div class='td-field' style='flex:1;display:flex;flex-direction:column;'>
+            <label class='td-label'>条目正文内容</label>
+            <textarea class='td-textarea td-scroll' readonly style='flex:1;min-height:240px;'>${escapeHtml(sp.content || '')}</textarea>
+          </div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn primary' data-action='close-select-popup'>关闭</button>
+        </div>
+      </div>`;
+    ctx.syncOverlayBounds();
+    return;
+  }
+
   if (sp.type === 'theme' || sp.type === 'orbStyle') {
     const isTheme = sp.type === 'theme';
     const list = isTheme ? THEME_OPTIONS : ORB_STYLE_OPTIONS;
@@ -416,10 +441,11 @@ export function renderManagerModalView(m) {
 
   if (m.type === 'wbMerge') {
     const s = m.session;
+    const titleStr = `${s.oldName} ⇄ ${s.newName}`;
     modalLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
         <div class='td-modal-head'>
-          <div class='td-modal-title'>${escapeHtml(s.oldName)} ⇄ ${escapeHtml(s.newName)}</div>
+          <div class='td-modal-title td-title-clickable' data-action='show-full-title' data-full-title='${escapeHtml(titleStr)}' title='点击查看完整标题'>${escapeHtml(titleStr)}</div>
           <div style='display:flex;gap:4px;align-items:center;'><button class='td-btn sm' data-action='toggle-wb-merge-controls'>${ICONS.sliders} 筛选与批量</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         </div>
         <div class='td-modal-body td-picker-body'>
@@ -728,19 +754,33 @@ function renderAiEditSetupHtml({ title, ai, items, itemLabelFn }) {
         <div class='td-field'><label class='td-label'>2. 修改指令</label><textarea class='td-textarea' id='td-ai-instruction' style='min-height:80px;font-family:inherit;' placeholder='输入修改指令...'>${escapeHtml(ai.instruction || '')}</textarea></div>
         <div class='td-field' style='flex:1;min-height:130px;display:flex;flex-direction:column;'>
           <div style='display:flex;justify-content:space-between;align-items:center;gap:6px;'>
-            <label class='td-label'>3. 勾选待编辑条目 (已选 ${ai.selectedKeys.size} 项)</label>
+            <label class='td-label' data-role='ai-selected-label'>3. 勾选待编辑条目 (已选 ${ai.selectedKeys.size} 项)</label>
             <input class='td-input' id='td-ai-search' type='text' placeholder='筛选...' value='${escapeHtml(ai.search || '')}' style='width:140px;height:28px;font-size:12px;' />
           </div>
           <div class='td-picker-list td-scroll' style='border:1px solid var(--td-border);border-radius:10px;padding:6px;'>
             ${visible.map((it) => {
               const checked = ai.selectedKeys.has(it.key);
-              return `<label class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:36px;padding:6px 10px;'><div class='td-picker-left'><input type='checkbox' class='td-checkbox' data-action='ai-toggle-item' data-key='${escapeHtml(it.key)}' ${checked ? 'checked' : ''} /><span class='td-item-name'>${escapeHtml(itemLabelFn(it))}</span></div></label>`;
+              return `
+                <div class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:38px;padding:6px 10px;'>
+                  <label class='td-picker-left' style='cursor:pointer;'>
+                    <input type='checkbox' class='td-checkbox' data-action='ai-toggle-item' data-key='${escapeHtml(it.key)}' ${checked ? 'checked' : ''} />
+                    <span class='td-item-name' title='${escapeHtml(itemLabelFn(it))}'>${escapeHtml(itemLabelFn(it))}</span>
+                  </label>
+                  <button type='button' class='td-icon-btn' data-action='ai-preview-item' data-key='${escapeHtml(it.key)}' title='预览条目内容'>${ICONS.eye}</button>
+                </div>`;
             }).join('')}
           </div>
         </div>
       </div>
       <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='ai-run' ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'AI 处理中，请稍候...' : '发送给 AI 编辑'}</button></div>
     </div>`;
+}
+
+function setAiRunBtnLoading(previewLayerEl, loading) {
+  const btn = previewLayerEl?.querySelector("[data-action='ai-run']");
+  if (!btn) return;
+  btn.disabled = !!loading;
+  btn.textContent = loading ? 'AI 处理中，请稍候...' : '发送给 AI 编辑';
 }
 
 export function renderManagerPreviewView() {
@@ -897,7 +937,7 @@ export function renderManagerPreviewView() {
   }
 
   if (state.previewCtx.type === 'wbMergeCustom') {
-    renderWbMergeCustomModal(previewLayerEl, ICONS, ctx.getViewportRect());
+    renderWbMergeCustomModal(previewLayerEl, ICONS);
     editHistory.stack = [readPreviewSnapshot()];
     editHistory.index = 0;
     updatePreviewHistoryButtons();
@@ -1141,7 +1181,7 @@ export function handleManagerClick(e, actionEl, action) {
     const session = state.modal.session;
     ctx.openConfirm({
       title: '覆盖目标世界书确认', message: `确定要将缝合后的条目覆盖保存到世界书「${session.newName}」吗？`, confirmText: '确认覆盖', confirmClass: 'danger',
-      onConfirm: () => executeWorldbookStitch(session, 'overwrite').then(() => { state.modal = null; ctx.renderModal(); refreshWorldbookCatalog(false).then(() => ctx.renderMain()); }).catch((err) => notify('error', err.message || String(err))),
+      onConfirm: () => executeWorldbookStitch(session, 'overwrite').then(() => { state.modal = null; ctx.renderModal(); refreshWorldbookCatalog(false).then(() => ctx.renderMain()); }).catch((err) => { logError('覆盖缝合世界书失败', err); notify('error', err.message || String(err)); }),
     });
     return true;
   }
@@ -1149,45 +1189,45 @@ export function handleManagerClick(e, actionEl, action) {
     const session = state.modal.session;
     const newName = window.prompt('请输入另存为的新世界书名称：', `${session.newName}-缝合版`);
     if (!newName || !newName.trim()) return true;
-    executeWorldbookStitch(session, 'new', newName.trim()).then(() => { state.modal = null; ctx.renderModal(); refreshWorldbookCatalog(false).then(() => ctx.renderMain()); }).catch((err) => notify('error', err.message || String(err)));
+    executeWorldbookStitch(session, 'new', newName.trim()).then(() => { state.modal = null; ctx.renderModal(); refreshWorldbookCatalog(false).then(() => ctx.renderMain()); }).catch((err) => { logError('另存缝合世界书失败', err); notify('error', err.message || String(err)); });
     return true;
   }
 
   if (action === 'open-preset-manager') { state.modal = { type: 'presetManager', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
   if (action === 'pm-toggle-tools' && state.modal?.type === 'presetManager') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
   if (action === 'pm-load') { ctx.performSwitchPreset(actionEl.getAttribute('data-name')); setTimeout(() => { if (state.modal?.type === 'presetManager') ctx.renderModal(); }, 180); return true; }
-  if (action === 'pm-save-inuse-back') { saveInUseToPreset(actionEl.getAttribute('data-name')).then(() => ctx.renderModal()).catch((err) => notify('error', err.message || String(err))); return true; }
+  if (action === 'pm-save-inuse-back') { saveInUseToPreset(actionEl.getAttribute('data-name')).then(() => ctx.renderModal()).catch((err) => { logError('保存实时修改回预设失败', err); notify('error', err.message || String(err)); }); return true; }
   if (action === 'pm-create') {
     const name = window.prompt('请输入新建预设名称：', ''); if (!name || !name.trim()) return true;
-    createNewPresetSafe(name.trim()).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    createNewPresetSafe(name.trim()).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('新建预设失败', err); notify('error', err.message || String(err)); }); return true;
   }
   if (action === 'pm-save-inuse-as') {
     const name = window.prompt('将当前实时预设另存为：', `${state.presetName || '预设'}-副本`); if (!name || !name.trim()) return true;
-    createNewPresetSafe(name.trim(), 'in_use').then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    createNewPresetSafe(name.trim(), 'in_use').then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('另存预设失败', err); notify('error', err.message || String(err)); }); return true;
   }
   if (action === 'pm-duplicate') {
     const src = actionEl.getAttribute('data-name'); const name = window.prompt(`复制预设「${src}」为：`, `${src}-副本`); if (!name || !name.trim()) return true;
-    createNewPresetSafe(name.trim(), src).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    createNewPresetSafe(name.trim(), src).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('复制预设失败', err); notify('error', err.message || String(err)); }); return true;
   }
   if (action === 'pm-rename') {
     const oldName = actionEl.getAttribute('data-name'); const newName = window.prompt(`重命名预设「${oldName}」为：`, oldName);
     if (!newName || !newName.trim() || newName.trim() === oldName) return true;
-    renameSavedPresetSafe(oldName, newName.trim()).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    renameSavedPresetSafe(oldName, newName.trim()).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('重命名预设失败', err); notify('error', err.message || String(err)); }); return true;
   }
-  if (action === 'pm-export') { try { exportPresetFile(actionEl.getAttribute('data-name')); } catch (err) { notify('error', err.message || String(err)); } return true; }
+  if (action === 'pm-export') { try { exportPresetFile(actionEl.getAttribute('data-name')); } catch (err) { logError('导出预设失败', err); notify('error', err.message || String(err)); } return true; }
   if (action === 'pm-trigger-import') { modalLayerEl.querySelector('#td-pm-import-file')?.click(); return true; }
   if (action === 'pm-delete') {
     const name = actionEl.getAttribute('data-name');
     ctx.openConfirm({
       title: '删除预设确认', message: `确定要永久删除预设「${name}」吗？`, confirmText: '确认删除',
-      onConfirm: () => deleteSavedPresetSafe(name).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))),
+      onConfirm: () => deleteSavedPresetSafe(name).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('删除预设失败', err); notify('error', err.message || String(err)); }),
     });
     return true;
   }
   if (action === 'pm-open-detail') {
     const name = actionEl.getAttribute('data-name');
     try { state.modal = { type: 'presetDetail', presetName: name, data: getPresetDetail(name), tab: 'prompts', query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() }; ctx.renderModal(); }
-    catch (err) { notify('error', err.message || String(err)); }
+    catch (err) { logError('读取预设详情失败', err); notify('error', err.message || String(err)); }
     return true;
   }
   if (action === 'pm-back-list' && state.modal?.type === 'presetDetail') { state.modal = { type: 'presetManager', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
@@ -1309,7 +1349,7 @@ export function handleManagerClick(e, actionEl, action) {
   if (action === 'pm-save-detail' && state.modal?.type === 'presetDetail') {
     savePresetDetail(state.modal.presetName, state.modal.data, true).then(() => {
       state.modal.dirty = false; notify('success', `已保存预设「${state.modal.presetName}」`); return refreshAllCatalogs();
-    }).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', `保存失败: ${err.message || err}`));
+    }).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('保存预设详情失败', err); notify('error', `保存失败: ${err.message || err}`); });
     return true;
   }
 
@@ -1323,17 +1363,57 @@ export function handleManagerClick(e, actionEl, action) {
     state.previewCtx = { type: 'wbAiEdit', step: 'setup', selectedKeys: new Set(), instruction: '', search: '', loading: false, results: [] };
     ctx.renderPreviewModal(); return true;
   }
+  if (action === 'ai-preview-item' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+    e.stopPropagation();
+    const k = actionEl.getAttribute('data-key') || '';
+    if (state.previewCtx.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
+      const [listName, idxStr] = k.split('::');
+      const p = state.modal.data[listName]?.[Number(idxStr)];
+      if (!p) return true;
+      const posLabel = p.position?.type === 'in_chat' ? `@D${p.position.depth ?? 0}` : '相对位置';
+      state.selectPopup = {
+        type: 'aiItemPreview',
+        title: p.name || p.id,
+        metas: [
+          listName === 'prompts_unused' ? '未添加池' : `主列表 #${Number(idxStr) + 1}`,
+          `状态: ${p.enabled ? '开启' : '关闭'}`,
+          `身份: ${p.role || 'system'}`,
+          posLabel,
+        ],
+        content: typeof p.content === 'string' ? p.content : '（此条目为内置占位符，无正文内容）',
+      };
+      renderSelectPopupView();
+    } else if (state.previewCtx.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
+      const idx = Number(k);
+      const entry = state.modal.entries?.[idx];
+      if (!entry) return true;
+      const keysStr = formatKeysInput(entry.strategy?.keys);
+      state.selectPopup = {
+        type: 'aiItemPreview',
+        title: entry.name || `条目 #${entry.uid}`,
+        metas: [
+          `#${idx + 1}`,
+          `状态: ${entry.enabled ? '开启' : '关闭'}`,
+          keysStr ? `关键词: ${keysStr}` : '无关键词',
+        ],
+        content: entry.content || '',
+      };
+      renderSelectPopupView();
+    }
+    return true;
+  }
   if (action === 'ai-toggle-item' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
     const k = actionEl.getAttribute('data-key');
     if (state.previewCtx.selectedKeys.has(k)) state.previewCtx.selectedKeys.delete(k);
     else state.previewCtx.selectedKeys.add(k);
-    const labelEl = previewLayerEl.querySelector('.td-picker-list')?.previousElementSibling?.querySelector('.td-label');
+    const labelEl = previewLayerEl.querySelector("[data-role='ai-selected-label']");
     if (labelEl) labelEl.textContent = `3. 勾选待编辑条目 (已选 ${state.previewCtx.selectedKeys.size} 项)`;
     actionEl.closest('.td-picker-row')?.classList.toggle('checked', state.previewCtx.selectedKeys.has(k));
     return true;
   }
   if (action === 'ai-run' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
     const ai = state.previewCtx, cfg = state.store.settings.aiEditConfig;
+    if (ai.loading) return true;
     cfg.jailbreakPreset = previewLayerEl.querySelector('#td-ai-jailbreak-preset')?.value ?? cfg.jailbreakPreset;
     cfg.model = previewLayerEl.querySelector('#td-ai-model')?.value ?? cfg.model;
     ai.instruction = previewLayerEl.querySelector('#td-ai-instruction')?.value ?? ai.instruction;
@@ -1347,10 +1427,17 @@ export function handleManagerClick(e, actionEl, action) {
           if (ai.selectedKeys.has(uk)) selectedItems.push({ uidKey: uk, listName, index: idx, prompt: p });
         });
       });
-      ai.loading = true; ctx.renderPreviewModal();
+      ai.loading = true;
+      setAiRunBtnLoading(previewLayerEl, true);
       runAiPresetEdit({ selectedItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results }) => {
         ai.loading = false; ai.results = results; ai.step = 'review'; ctx.renderPreviewModal();
-      }).catch((err) => { ai.loading = false; ctx.renderPreviewModal(); notify('error', err.message || String(err)); });
+        notify('success', `AI 编辑完成，返回 ${results.length} 条修改建议`);
+      }).catch((err) => {
+        ai.loading = false;
+        setAiRunBtnLoading(previewLayerEl, false);
+        logError('AI 编辑预设失败', err);
+        notify('error', err.message || String(err));
+      });
       return true;
     }
 
@@ -1359,10 +1446,17 @@ export function handleManagerClick(e, actionEl, action) {
       (state.modal.entries || []).forEach((entry, idx) => {
         if (ai.selectedKeys.has(String(idx))) selectedItems.push({ index: idx, entry });
       });
-      ai.loading = true; ctx.renderPreviewModal();
+      ai.loading = true;
+      setAiRunBtnLoading(previewLayerEl, true);
       runAiWorldbookEdit({ selectedItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results }) => {
         ai.loading = false; ai.results = results; ai.step = 'review'; ctx.renderPreviewModal();
-      }).catch((err) => { ai.loading = false; ctx.renderPreviewModal(); notify('error', err.message || String(err)); });
+        notify('success', `AI 编辑完成，返回 ${results.length} 条修改建议`);
+      }).catch((err) => {
+        ai.loading = false;
+        setAiRunBtnLoading(previewLayerEl, false);
+        logError('AI 编辑世界书失败', err);
+        notify('error', err.message || String(err));
+      });
       return true;
     }
   }
@@ -1408,37 +1502,37 @@ export function handleManagerClick(e, actionEl, action) {
   if (action === 'open-worldbook-manager') { state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
   if (action === 'wbm-toggle-tools' && state.modal?.type === 'worldbookManager') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
   if (action === 'wbm-set-filter' && state.modal?.type === 'worldbookManager') { state.modal.filter = actionEl.getAttribute('data-filter') || 'all'; ctx.renderModal(); return true; }
-  if (action === 'wbm-toggle-global') { toggleGlobalWorldbook(actionEl.getAttribute('data-name')).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true; }
-  if (action === 'wbm-toggle-char-pri') { toggleCharPrimaryWorldbook(actionEl.getAttribute('data-name')).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true; }
-  if (action === 'wbm-toggle-char-add') { toggleCharAdditionalWorldbook(actionEl.getAttribute('data-name')).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true; }
+  if (action === 'wbm-toggle-global') { toggleGlobalWorldbook(actionEl.getAttribute('data-name')).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('切换全局世界书失败', err); notify('error', err.message || String(err)); }); return true; }
+  if (action === 'wbm-toggle-char-pri') { toggleCharPrimaryWorldbook(actionEl.getAttribute('data-name')).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('切换角色卡主世界书失败', err); notify('error', err.message || String(err)); }); return true; }
+  if (action === 'wbm-toggle-char-add') { toggleCharAdditionalWorldbook(actionEl.getAttribute('data-name')).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('切换角色卡附加世界书失败', err); notify('error', err.message || String(err)); }); return true; }
   if (action === 'wbm-toggle-chat') {
     const name = actionEl.getAttribute('data-name'), snap = getWorldbookBindingsSnapshot();
-    bindChatWorldbookSafe(snap.chatBook === name ? '' : name).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    bindChatWorldbookSafe(snap.chatBook === name ? '' : name).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('绑定/解绑聊天世界书失败', err); notify('error', err.message || String(err)); }); return true;
   }
   if (action === 'wbm-create') {
     const name = window.prompt('请输入新建世界书名称：', ''); if (!name || !name.trim()) return true;
-    createWorldbookSafe(name.trim()).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    createWorldbookSafe(name.trim()).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('新建世界书失败', err); notify('error', err.message || String(err)); }); return true;
   }
   if (action === 'wbm-create-chat') {
     const name = window.prompt('输入聊天世界书名称（留空自动生成）：', ''); if (name === null) return true;
-    createOrBindChatWorldbookSafe(name.trim()).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    createOrBindChatWorldbookSafe(name.trim()).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('新建/绑定聊天世界书失败', err); notify('error', err.message || String(err)); }); return true;
   }
   if (action === 'wbm-duplicate') {
     const src = actionEl.getAttribute('data-name'); const name = window.prompt(`复制世界书「${src}」为：`, `${src}-副本`); if (!name || !name.trim()) return true;
-    createWorldbookSafe(name.trim(), src).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    createWorldbookSafe(name.trim(), src).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('复制世界书失败', err); notify('error', err.message || String(err)); }); return true;
   }
   if (action === 'wbm-rename') {
     const oldName = actionEl.getAttribute('data-name'); const newName = window.prompt(`重命名世界书「${oldName}」为：`, oldName);
     if (!newName || !newName.trim() || newName.trim() === oldName) return true;
-    renameWorldbookSafe(oldName, newName.trim()).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))); return true;
+    renameWorldbookSafe(oldName, newName.trim()).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('重命名世界书失败', err); notify('error', err.message || String(err)); }); return true;
   }
-  if (action === 'wbm-export') { exportWorldbookFile(actionEl.getAttribute('data-name')).catch((err) => notify('error', err.message || String(err))); return true; }
+  if (action === 'wbm-export') { exportWorldbookFile(actionEl.getAttribute('data-name')).catch((err) => { logError('导出世界书失败', err); notify('error', err.message || String(err)); }); return true; }
   if (action === 'wbm-trigger-import') { modalLayerEl.querySelector('#td-wbm-import-file')?.click(); return true; }
   if (action === 'wbm-delete') {
     const name = actionEl.getAttribute('data-name');
     ctx.openConfirm({
       title: '删除世界书确认', message: `确定要永久删除世界书「${name}」吗？`, confirmText: '确认删除',
-      onConfirm: () => deleteWorldbookSafe(name).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err))),
+      onConfirm: () => deleteWorldbookSafe(name).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('删除世界书失败', err); notify('error', err.message || String(err)); }),
     });
     return true;
   }
@@ -1447,7 +1541,7 @@ export function handleManagerClick(e, actionEl, action) {
     callTH('getWorldbook', name).then((entries) => {
       state.modal = { type: 'worldbookDetail', bookName: name, entries: (entries || []).map(cloneWorldbookEntry), query: '', dirty: false, toolsOpen: false };
       ctx.renderModal();
-    }).catch((err) => notify('error', err.message || String(err)));
+    }).catch((err) => { logError(`读取世界书「${name}」失败`, err); notify('error', err.message || String(err)); });
     return true;
   }
   if (action === 'wbd-toggle-tools' && state.modal?.type === 'worldbookDetail') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
@@ -1551,7 +1645,7 @@ export function handleManagerClick(e, actionEl, action) {
   if (action === 'wbd-save-book' && state.modal?.type === 'worldbookDetail') {
     callTH('replaceWorldbook', state.modal.bookName, state.modal.entries, { render: 'debounced' }).then(() => {
       state.modal.dirty = false; notify('success', `已保存世界书「${state.modal.bookName}」`); return refreshWorldbookCatalog(false);
-    }).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', `保存世界书失败: ${err.message || err}`));
+    }).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('保存世界书失败', err); notify('error', `保存世界书失败: ${err.message || err}`); });
     return true;
   }
 
@@ -1604,12 +1698,12 @@ export function handleManagerChange(e) {
 
   if (id === 'td-pm-import-file') {
     const file = target.files?.[0]; if (!file) return true;
-    importPresetFromFile(file).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err)));
+    importPresetFromFile(file).then(() => refreshAllCatalogs()).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('导入预设文件失败', err); notify('error', err.message || String(err)); });
     return true;
   }
   if (id === 'td-wbm-import-file') {
     const file = target.files?.[0]; if (!file) return true;
-    importWorldbookFromFile(file).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => notify('error', err.message || String(err)));
+    importWorldbookFromFile(file).then(() => refreshWorldbookCatalog(false)).then(() => { ctx.renderMain(); ctx.renderModal(); }).catch((err) => { logError('导入世界书文件失败', err); notify('error', err.message || String(err)); });
     return true;
   }
   return false;
