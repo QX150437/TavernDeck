@@ -1,5 +1,5 @@
 import {
-  APP_NAME, APP_CN, APP_VERSION, ROOT_ID, EXT_BTN_ID, EXT_SETTINGS_ID,
+  APP_NAME, APP_SHORT, APP_CN, APP_VERSION, ROOT_ID, EXT_BTN_ID, EXT_SETTINGS_ID,
   hasTH, callTH, notify, genId, escapeHtml, cssEscape, makeItemKey,
   cloneItemRef, copyToClipboard, downloadJsonFile, logWarn, logError,
 } from './utils.js';
@@ -31,8 +31,13 @@ import {
 } from './ui-views.js';
 import {
   setUiManagersContext, renderSelectPopupView, renderManagerModalView,
-  renderManagerPreviewView, handleManagerClick, handleManagerInput, handleManagerChange,
+  renderManagerPreviewView, updateWbMergeBody,
+  handleManagerClick, handleManagerInput, handleManagerChange,
 } from './ui-managers.js';
+import {
+  initPresetMergeCustomCtx,
+  handleMergeUiClick, handleMergeUiInput,
+} from './merge-ui.js';
 
 let rootEl = null;
 let orbEl = null;
@@ -54,6 +59,7 @@ let winDragStart = { x: 0, y: 0, left: 0, top: 0 };
 let winResizing = false;
 let winResizeStart = { x: 0, y: 0, w: 0, h: 0, left: 0, top: 0 };
 let dragOp = null;
+let stickyRaf = 0;
 
 function getViewportRect() {
   const vv = window.visualViewport;
@@ -325,6 +331,38 @@ export function renderOrb() {
   scheduleOrbIdle();
 }
 
+function updateStickyGroupHeaders() {
+  if (!panelMainEl || !state.panelOpen) return;
+  const bodyEl = panelMainEl.querySelector('.td-body');
+  if (!bodyEl) return;
+  const bodyTop = bodyEl.getBoundingClientRect().top;
+  bodyEl.querySelectorAll('.td-group').forEach((grp) => {
+    const stickyTop = Array.from(grp.children).find((el) => el.classList.contains('td-group-sticky-top'));
+    if (!stickyTop) return;
+    if (grp.classList.contains('collapsed')) {
+      stickyTop.classList.remove('is-stuck');
+      return;
+    }
+    const gRect = grp.getBoundingClientRect();
+    const sRect = stickyTop.getBoundingClientRect();
+    const isStuck = gRect.top < bodyTop - 1 && gRect.bottom > bodyTop + sRect.height + 6;
+    stickyTop.classList.toggle('is-stuck', isStuck);
+  });
+}
+
+function bindBodyStickyScroll() {
+  const bodyEl = panelMainEl?.querySelector('.td-body');
+  if (!bodyEl || bodyEl.dataset.tdStickyBound) return;
+  bodyEl.dataset.tdStickyBound = '1';
+  bodyEl.addEventListener('scroll', () => {
+    if (stickyRaf) return;
+    stickyRaf = requestAnimationFrame(() => {
+      stickyRaf = 0;
+      updateStickyGroupHeaders();
+    });
+  }, { passive: true });
+}
+
 export function syncEntryStatesUI() {
   if (!panelMainEl || !state.panelOpen) return;
   const activeScheme = getActiveScheme();
@@ -351,7 +389,8 @@ export function syncEntryStatesUI() {
       const entry = state.catalog.byKey.get(ref.key || makeItemKey(ref));
       if (entry) { validCount++; if (entry.enabled) activeCount++; }
     });
-    const headEl = Array.from(groupEl.children).find((el) => el.classList.contains('td-group-head'));
+    const stickyTop = Array.from(groupEl.children).find((el) => el.classList.contains('td-group-sticky-top'));
+    const headEl = stickyTop ? Array.from(stickyTop.children).find((el) => el.classList.contains('td-group-head')) : null;
     if (headEl) {
       const countEl = headEl.querySelector('.td-count-tag');
       if (countEl) countEl.textContent = `${activeCount}/${items.length}`;
@@ -391,6 +430,7 @@ function updateGroupItemsDom(groupId) {
   }
   const q = (state.groupSearch[groupId] || '').trim();
   if (q) groupEl.classList.remove('collapsed');
+  updateStickyGroupHeaders();
 }
 
 function buildGroupListHtml() {
@@ -417,6 +457,8 @@ export function renderMainBodyOnly() {
   const prevScrollTop = bodyEl.scrollTop;
   bodyEl.innerHTML = buildGroupListHtml();
   if (prevScrollTop > 0) bodyEl.scrollTop = prevScrollTop;
+  bindBodyStickyScroll();
+  updateStickyGroupHeaders();
 }
 
 export function renderMain() {
@@ -429,7 +471,7 @@ export function renderMain() {
   const snapCount = (state.store.snapshots || []).length;
   const isFs = !!state.store.settings.fullscreen;
   const showCtrl = !!state.store.settings.showControlBar;
-  const showTools = !!state.store.settings.showToolsDrawer;
+  const showTools = !!state.store.settings.showToolsDrawer && !showCtrl;
   const prevBody = panelMainEl.querySelector('.td-body');
   const prevScrollTop = prevBody ? prevBody.scrollTop : 0;
 
@@ -445,8 +487,7 @@ export function renderMain() {
   panelMainEl.innerHTML = `
     <div class='td-header' data-drag-handle='1'>
       <div class='td-brand'>
-        <div class='td-brand-logo'>${ICONS.deck}</div>
-        <div class='td-brand-title'>${APP_NAME} <span class='td-ver'>${APP_VERSION}</span></div>
+        <div class='td-brand-title'>${APP_SHORT} <span class='td-ver'>${APP_VERSION}</span></div>
       </div>
       <div class='td-header-actions'>
         <button class='td-icon-btn ${showTools ? 'is-active' : ''}' data-action='toggle-tools-drawer' title='工具箱（预设/世界书/缝合/快照/日志）'>${ICONS.toolbox}</button>
@@ -490,6 +531,8 @@ export function renderMain() {
 
   const nextBody = panelMainEl.querySelector('.td-body');
   if (nextBody && prevScrollTop > 0) nextBody.scrollTop = prevScrollTop;
+  bindBodyStickyScroll();
+  updateStickyGroupHeaders();
 }
 
 function renderPreservingFocus(targetLayer, renderFn) {
@@ -686,12 +729,24 @@ function handleRootClick(e) {
     return;
   }
 
+  if (handleMergeUiClick(e, actionEl, action, previewLayerEl, {
+    renderPreviewModal,
+    updatePresetMergeBody,
+    updateWbMergeBody,
+    pushEditSnapshot,
+  })) return;
+
   if (handleManagerClick(e, actionEl, action)) return;
 
   if (action === 'close-panel') { setPanelOpen(false); return; }
   if (action === 'toggle-tools-drawer') {
     const next = !state.store.settings.showToolsDrawer;
     state.store.settings.showToolsDrawer = next;
+    if (next && state.store.settings.showControlBar) {
+      state.store.settings.showControlBar = false;
+      panelMainEl.querySelector("[data-action='toggle-control-bar']")?.classList.remove('is-active');
+      panelMainEl.querySelector('#td-scheme-drawer')?.classList.remove('is-open');
+    }
     saveStore(state.store);
     actionEl.classList.toggle('is-active', next);
     panelMainEl.querySelector('#td-tools-drawer')?.classList.toggle('is-open', next);
@@ -700,6 +755,11 @@ function handleRootClick(e) {
   if (action === 'toggle-control-bar') {
     const next = !state.store.settings.showControlBar;
     state.store.settings.showControlBar = next;
+    if (next && state.store.settings.showToolsDrawer) {
+      state.store.settings.showToolsDrawer = false;
+      panelMainEl.querySelector("[data-action='toggle-tools-drawer']")?.classList.remove('is-active');
+      panelMainEl.querySelector('#td-tools-drawer')?.classList.remove('is-open');
+    }
     saveStore(state.store);
     actionEl.classList.toggle('is-active', next);
     panelMainEl.querySelector('#td-scheme-drawer')?.classList.toggle('is-open', next);
@@ -756,7 +816,6 @@ function handleRootClick(e) {
   if (action === 'open-settings') { state.modal = { type: 'settings' }; renderModal(); return; }
   if (action === 'open-snapshots') { state.modal = { type: 'snapshots', createMode: 'state', filter: 'current', draftName: '' }; renderModal(); return; }
 
-  // 预设对比与缝合
   if (action === 'open-preset-merge') { state.modal = { type: 'presetMergeSelect', oldName: '', newName: '' }; renderModal(); return; }
   if (action === 'swap-merge-presets' && state.modal?.type === 'presetMergeSelect') {
     const oldSel = modalLayerEl.querySelector('#td-merge-old-select'), newSel = modalLayerEl.querySelector('#td-merge-new-select');
@@ -800,27 +859,15 @@ function handleRootClick(e) {
     });
     updatePresetMergeBody(); notify('success', `已将 ${cnt} 个冲突条目的开关状态设为旧版，正文保留新版`); return;
   }
-  if (action === 'open-merge-custom' && state.modal?.type === 'presetMerge') {
+  if ((action === 'open-merge-custom' || action === 'open-merge-custom-content-only') && state.modal?.type === 'presetMerge') {
     e.stopPropagation();
     const entry = state.modal.session.entries.find((x) => x.key === actionEl.getAttribute('data-entry-key'));
     if (!entry) return;
-    state.previewKey = null; state.snapshotDetailId = null; state.previewCtx = { type: 'mergeCustom', entry }; renderPreviewModal(); return;
-  }
-  if (action === 'merge-fill-text' && state.previewCtx?.type === 'mergeCustom') {
-    const src = actionEl.getAttribute('data-side') === 'old' ? state.previewCtx.entry.oldPrompt : state.previewCtx.entry.newPrompt;
-    const ta = previewLayerEl.querySelector('#td-merge-custom-content');
-    if (ta && src) { ta.value = src.content || ''; pushEditSnapshot(true); }
-    return;
-  }
-  if (action === 'save-merge-custom' && state.previewCtx?.type === 'mergeCustom') {
-    const entry = state.previewCtx.entry;
-    const base = JSON.parse(JSON.stringify(entry.customPrompt || entry.newPrompt || entry.oldPrompt || { id: entry.id, role: 'system', position: { type: 'relative' } }));
-    if (entry.newPrompt) base.id = entry.newPrompt.id;
-    base.name = previewLayerEl.querySelector('#td-merge-custom-name')?.value || entry.name;
-    base.content = previewLayerEl.querySelector('#td-merge-custom-content')?.value || '';
-    base.enabled = !!previewLayerEl.querySelector('#td-merge-custom-enabled')?.checked;
-    entry.customPrompt = base; entry.choice = 'custom'; state.previewCtx = null;
-    renderPreviewModal(); updatePresetMergeBody(); notify('success', '已保存该条目的缝合结果'); return;
+    state.previewKey = null; state.snapshotDetailId = null;
+    state.previewCtx = initPresetMergeCustomCtx(entry, {
+      contentOnly: action === 'open-merge-custom-content-only',
+    });
+    renderPreviewModal(); return;
   }
   if (action === 'merge-apply-target' && state.modal?.type === 'presetMerge') {
     const session = state.modal.session;
@@ -838,7 +885,6 @@ function handleRootClick(e) {
     return;
   }
 
-  // 导入导出中心
   if (action === 'open-io-center') {
     const pool = ensureSchemesPool();
     state.modal = { type: 'ioCenter', selectedSchemeIds: new Set(pool.map((s) => s.id)), expSnapshots: true, expSettings: true, rawText: '', importPreview: null, impSchemes: true, impSnapshots: true, impSettings: true, impMode: 'merge' };
@@ -887,7 +933,6 @@ function handleRootClick(e) {
     return;
   }
 
-  // 快照逻辑
   if (action === 'set-snap-mode' && state.modal?.type === 'snapshots') {
     const nextMode = actionEl.getAttribute('data-mode') === 'full' ? 'full' : 'state';
     state.modal.createMode = nextMode;
@@ -947,7 +992,6 @@ function handleRootClick(e) {
     return;
   }
 
-  // 方案与分组操作
   if (action === 'open-bindings') { state.modal = { type: 'bindings', selectedIds: new Set(getBoundSchemeIds(state.presetName)) }; renderModal(); return; }
   if (action === 'toggle-bind-scheme' && state.modal?.type === 'bindings') {
     const sid = actionEl.getAttribute('data-scheme-id'); if (!sid) return;
@@ -1012,7 +1056,10 @@ function handleRootClick(e) {
     const found = findGroupNode(getActiveScheme().groups, groupId); if (!found) return;
     found.group.collapsed = !found.group.collapsed; saveStore(state.store);
     const groupEl = panelMainEl.querySelector(`.td-group[data-group-id='${groupId}']`);
-    if (groupEl) groupEl.classList.toggle('collapsed', found.group.collapsed); else renderMainBodyOnly();
+    if (groupEl) {
+      groupEl.classList.toggle('collapsed', found.group.collapsed);
+      updateStickyGroupHeaders();
+    } else renderMainBodyOnly();
     return;
   }
   if (action === 'toggle-multi-group') { e.stopPropagation(); const task = toggleMultiGroupAll(groupId); syncEntryStatesUI(); task.then(() => syncEntryStatesUI()); return; }
@@ -1126,7 +1173,7 @@ function handleRootClick(e) {
   }
   if (action === 'save-picker' && state.modal?.type === 'picker') { setGroupItems(state.modal.groupId, state.modal.selectedMap); state.modal = null; renderModal(); renderMain(); notify('success', '分组条目已更新'); return; }
 
-  // 设置交互（全部开关原地局部切换，绝不重建 DOM 导致回顶）
+  // 设置交互
   if (action === 'trigger-orb-upload') { modalLayerEl.querySelector('#td-orb-img-input')?.click(); return; }
   if (action === 'clear-orb-image') { state.store.settings.orbImage = ''; saveStore(state.store); renderOrb(); renderModal(); notify('info', '已恢复默认悬浮球图标'); return; }
   if (action === 'toggle-native-preset-collapse') {
@@ -1160,6 +1207,58 @@ function handleRootClick(e) {
     const nextVal = !state.store.settings.enableDragSort;
     state.store.settings.enableDragSort = nextVal;
     saveStore(state.store); actionEl.classList.toggle('on', nextVal); renderMain(); return;
+  }
+  if (action === 'toggle-orb-sliders-lock') {
+    const nextVal = !state.store.settings.unlockOrbSliders;
+    state.store.settings.unlockOrbSliders = nextVal;
+    saveStore(state.store);
+    actionEl.classList.toggle('on', nextVal);
+    const box = modalLayerEl.querySelector("[data-role='orb-sliders-box']");
+    const szRange = modalLayerEl.querySelector('#td-size-range');
+    const opRange = modalLayerEl.querySelector('#td-opacity-range');
+    const szLbl = modalLayerEl.querySelector("[data-role='orb-size-label']");
+    const opLbl = modalLayerEl.querySelector("[data-role='opacity-label']");
+    if (box) box.classList.toggle('is-locked', !nextVal);
+    if (szRange) szRange.disabled = !nextVal;
+    if (opRange) opRange.disabled = !nextVal;
+    const sz = getOrbSize();
+    const op = Math.round((state.store.settings.orbOpacity ?? 0.96) * 100);
+    if (szLbl) szLbl.textContent = `悬浮球大小 (${sz}px)${nextVal ? '' : ' · 已锁定'}`;
+    if (opLbl) opLbl.textContent = `悬浮球透明度 (${op}%)${nextVal ? '' : ' · 已锁定'}`;
+    return;
+  }
+  if (action === 'apply-panel-preset-default') {
+    const def = getDefaultPanelSize();
+    const wEl = modalLayerEl.querySelector('#td-panel-width-input');
+    const hEl = modalLayerEl.querySelector('#td-panel-height-input');
+    if (wEl) wEl.value = String(def.w);
+    if (hEl) hEl.value = String(def.h);
+    return;
+  }
+  if (action === 'apply-panel-size') {
+    const vp = getViewportRect();
+    const maxW = Math.max(280, Math.round(vp.w - 8));
+    const maxH = Math.max(280, Math.round(vp.h - 8));
+    const rawW = Number(modalLayerEl.querySelector('#td-panel-width-input')?.value);
+    const rawH = Number(modalLayerEl.querySelector('#td-panel-height-input')?.value);
+    if (Number.isNaN(rawW) || Number.isNaN(rawH)) {
+      notify('warning', '请输入有效的长宽数字');
+      return;
+    }
+    const nw = Math.max(280, Math.min(maxW, Math.round(rawW)));
+    const nh = Math.max(280, Math.min(maxH, Math.round(rawH)));
+    state.store.settings.fullscreen = false;
+    state.store.settings.panelSize = { w: nw, h: nh };
+    saveStore(state.store);
+    repositionUI();
+    const wEl = modalLayerEl.querySelector('#td-panel-width-input');
+    const hEl = modalLayerEl.querySelector('#td-panel-height-input');
+    if (wEl) wEl.value = String(nw);
+    if (hEl) hEl.value = String(nh);
+    const fsBtn = panelMainEl.querySelector("[data-action='toggle-fullscreen']");
+    if (fsBtn) { fsBtn.innerHTML = ICONS.maximize; fsBtn.title = '全屏显示'; }
+    notify('success', `已将控制台调整为 ${nw} × ${nh} px`);
+    return;
   }
   if (action === 'toggle-collapse-group') {
     const nextVal = !(state.store.settings.collapseGroupActions !== false);
@@ -1213,6 +1312,7 @@ function handleRootClick(e) {
 
 function handleRootInput(e) {
   if (!e.target) return;
+  if (handleMergeUiInput(e, previewLayerEl)) return;
   if (handleManagerInput(e)) return;
 
   const id = e.target.id, role = e.target.getAttribute('data-role') || '';
@@ -1238,12 +1338,14 @@ function handleRootInput(e) {
   if (id === 'td-snap-rename-input' && state.modal?.type === 'snapshotRename') { state.modal.name = e.target.value; return; }
   if (id === 'td-picker-search' && state.modal?.type === 'picker') { state.modal.query = e.target.value; state.modal.rangeAnchorKey = null; updatePickerList(); return; }
   if (id === 'td-size-range') {
+    if (!state.store.settings.unlockOrbSliders) return;
     const sz = Math.max(34, Math.min(72, Number(e.target.value) || 50));
     state.store.settings.orbSize = sz; applyOrbVisualState();
     const label = modalLayerEl.querySelector("[data-role='orb-size-label']"); if (label) label.textContent = `悬浮球大小 (${sz}px)`;
     return;
   }
   if (id === 'td-opacity-range') {
+    if (!state.store.settings.unlockOrbSliders) return;
     const val = Math.max(35, Math.min(100, Number(e.target.value) || 96)) / 100;
     state.store.settings.orbOpacity = val; orbEl.style.opacity = String(val);
     const label = modalLayerEl.querySelector("[data-role='opacity-label']"); if (label) label.textContent = `悬浮球透明度 (${Math.round(val * 100)}%)`;
@@ -1332,6 +1434,9 @@ function handleRootKeydown(e) {
     else if (e.target.id === 'td-scheme-name-input') modalLayerEl.querySelector("[data-action='submit-scheme-form']")?.click();
     else if (e.target.id === 'td-snap-rename-input') modalLayerEl.querySelector("[data-action='submit-snap-rename']")?.click();
     else if (e.target.id === 'td-snap-name-input') modalLayerEl.querySelector("[data-action='create-snapshot']")?.click();
+    else if (e.target.id === 'td-panel-width-input' || e.target.id === 'td-panel-height-input') {
+      modalLayerEl.querySelector("[data-action='apply-panel-size']")?.click();
+    }
   }
 }
 
@@ -1451,7 +1556,7 @@ function onGlobalPointerMove(e) {
     const grpEl = hit.closest('.td-group-head[data-group-id], .td-group-empty[data-group-id], .td-group-items[data-group-id]');
     if (grpEl) {
       const tGroupId = grpEl.getAttribute('data-group-id');
-      panelMainEl.querySelector(`.td-group[data-group-id='${tGroupId}'] > .td-group-head`)?.classList.add('td-drop-into');
+      panelMainEl.querySelector(`.td-group[data-group-id='${tGroupId}'] .td-group-head`)?.classList.add('td-drop-into');
       dragOp.dropTarget = { kind: 'group-append', groupId: tGroupId };
     }
     return;
@@ -1516,6 +1621,9 @@ export function mountUI() {
     getPreviewLayer: () => previewLayerEl,
     getSelectLayer: () => selectLayerEl,
     getConfirmLayer: () => confirmLayerEl,
+    getViewportRect,
+    getPanelSize,
+    getDefaultPanelSize,
     syncOverlayBounds,
     renderManagerModal: renderManagerModalView,
     renderManagerPreview: renderManagerPreviewView,
@@ -1525,6 +1633,7 @@ export function mountUI() {
     getModalLayer: () => modalLayerEl,
     getPreviewLayer: () => previewLayerEl,
     getSelectLayer: () => selectLayerEl,
+    getViewportRect,
     syncOverlayBounds,
     renderMain,
     renderModal: () => renderPreservingFocus(modalLayerEl, renderModal),

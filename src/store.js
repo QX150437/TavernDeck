@@ -40,6 +40,7 @@ export function createDefaultStore() {
         jailbreakPreset: '',
         model: '',
       },
+      unlockOrbSliders: false,
       orbSize: 50,
       orbOpacity: 0.96,
       orbPosition: null,
@@ -118,6 +119,7 @@ export function loadStore() {
       settings.orbImage = '';
     }
     settings.orbImageFit = settings.orbImageFit === 'contain' ? 'contain' : 'cover';
+    settings.unlockOrbSliders = !!settings.unlockOrbSliders;
     settings.collapsedGroupItems = Object.assign(
       {},
       def.settings.collapsedGroupItems,

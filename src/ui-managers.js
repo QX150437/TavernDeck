@@ -27,11 +27,13 @@ import {
   ICONS, THEME_OPTIONS, ORB_STYLE_OPTIONS, TEXT_COLOR_PRESETS,
   editHistory, readPreviewSnapshot, pushEditSnapshot, updatePreviewHistoryButtons,
 } from './ui-views.js';
+import { initWbMergeCustomCtx, renderWbMergeCustomModal } from './merge-ui.js';
 
 let ctx = {
   getModalLayer: () => null,
   getPreviewLayer: () => null,
   getSelectLayer: () => null,
+  getViewportRect: () => ({ x: 0, y: 0, w: window.innerWidth || 1200, h: window.innerHeight || 800 }),
   syncOverlayBounds: () => {},
   renderMain: () => {},
   renderModal: () => {},
@@ -70,7 +72,6 @@ export function drawOrbCropCanvas() {
 
   ctx2d.drawImage(img, dx, dy, drawW, drawH);
 
-  // 圆形遮罩指示圈
   ctx2d.save();
   ctx2d.fillStyle = 'rgba(0, 0, 0, 0.45)';
   ctx2d.beginPath();
@@ -339,6 +340,7 @@ export function updateWbMergeBody() {
           ${it.oldEntry ? `<button type='button' class='td-merge-choice ${it.choice === 'old' ? 'active-old' : ''}' data-action='set-wb-merge-choice' data-entry-key='${escapeHtml(it.key)}' data-choice='old'>保留旧版</button>` : ''}
           <button type='button' class='td-merge-choice ${it.choice === 'new' ? 'active-new' : ''}' data-action='set-wb-merge-choice' data-entry-key='${escapeHtml(it.key)}' data-choice='new'>${it.status === 'removed' ? '确认删除' : '采用新版'}</button>
           <button type='button' class='td-merge-choice ${it.choice === 'custom' ? 'active-custom' : ''}' data-action='open-wb-merge-custom' data-entry-key='${escapeHtml(it.key)}'>编辑缝合</button>
+          <button type='button' class='td-merge-choice' data-action='open-wb-merge-custom-content-only' data-entry-key='${escapeHtml(it.key)}'>只缝合内容</button>
         </div>`;
 
       bodyHtml = `<div class='td-merge-body'><div style='font-size:11.5px;color:var(--td-text-muted);'>差异原因：${escapeHtml(it.diffReasons.join(' · ') || '无差异')}</div>${actionsHtml}${diffHtml}</div>`;
@@ -895,30 +897,11 @@ export function renderManagerPreviewView() {
   }
 
   if (state.previewCtx.type === 'wbMergeCustom') {
-    const entry = state.previewCtx.entry;
-    const base = cloneWorldbookEntry(entry.customEntry || entry.newEntry || entry.oldEntry || buildDefaultWorldbookEntry({ name: entry.name }));
-    const oldText = entry.oldEntry?.content || '', newText = entry.newEntry?.content || '';
-    const defaultContent = typeof base.content === 'string' ? base.content : (oldText === newText ? newText : `<<<<<<< 旧版本\n${oldText}\n=======\n${newText}\n>>>>>>> 新版本`);
-    const stype = base.strategy?.type || 'selective';
-    previewLayerEl.classList.add('is-open');
-    previewLayerEl.innerHTML = `
-      <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'>
-          <div class='td-modal-title'>手动缝合世界书条目 · ${escapeHtml(entry.name)}</div>
-          <div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
-        </div>
-        <div class='td-modal-body'>
-          <div class='td-merge-refs'>
-            <div class='td-field'><div style='display:flex;justify-content:space-between;align-items:center;'><label class='td-label'>旧版本内容（只读）</label>${entry.oldEntry ? "<button type='button' class='td-chip' data-action='wbm-fill-text' data-side='old'>整段填入</button>" : ''}</div><textarea class='td-textarea td-readonly td-scroll' readonly>${escapeHtml(oldText)}</textarea></div>
-            <div class='td-field'><div style='display:flex;justify-content:space-between;align-items:center;'><label class='td-label'>新版本内容（只读）</label>${entry.newEntry ? "<button type='button' class='td-chip' data-action='wbm-fill-text' data-side='new'>整段填入</button>" : ''}</div><textarea class='td-textarea td-readonly td-scroll' readonly>${escapeHtml(newText)}</textarea></div>
-          </div>
-          <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>缝合后条目标题</label><input class='td-input' id='td-wbm-custom-name' type='text' value='${escapeHtml(base.name || entry.name)}' /></div><label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-wbm-custom-enabled' ${base.enabled ? 'checked' : ''} /><span>启用</span></label></div>
-          <div class='td-form-grid'><div class='td-field'><label class='td-label'>触发策略</label><select class='td-select' id='td-wbm-custom-stype'><option value='selective' ${stype === 'selective' ? 'selected' : ''}>绿灯 (关键词)</option><option value='constant' ${stype === 'constant' ? 'selected' : ''}>蓝灯 (常驻)</option><option value='vectorized' ${stype === 'vectorized' ? 'selected' : ''}>向量化</option></select></div><div class='td-field'><label class='td-label'>主要关键词（逗号或换行分隔）</label><input class='td-input' id='td-wbm-custom-keys' type='text' value='${escapeHtml(formatKeysInput(base.strategy?.keys))}' /></div></div>
-          <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>缝合后正文（支持撤销/重做）</label><textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:130px;'>${escapeHtml(defaultContent)}</textarea></div>
-        </div>
-        <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='wbm-save-merge-custom'>${ICONS.save} 保存缝合结果</button></div>
-      </div>`;
-    editHistory.stack = [readPreviewSnapshot()]; editHistory.index = 0; updatePreviewHistoryButtons(); ctx.syncOverlayBounds();
+    renderWbMergeCustomModal(previewLayerEl, ICONS, ctx.getViewportRect());
+    editHistory.stack = [readPreviewSnapshot()];
+    editHistory.index = 0;
+    updatePreviewHistoryButtons();
+    ctx.syncOverlayBounds();
     return true;
   }
 
@@ -1027,7 +1010,6 @@ export function handleManagerClick(e, actionEl, action) {
   const previewLayerEl = ctx.getPreviewLayer();
   const selectLayerEl = ctx.getSelectLayer();
 
-  // 运行日志
   if (action === 'open-logs') { state.modal = { type: 'logs', filter: 'ALL' }; ctx.renderModal(); return true; }
   if (action === 'logs-set-filter' && state.modal?.type === 'logs') { state.modal.filter = actionEl.getAttribute('data-filter') || 'ALL'; ctx.renderModal(); return true; }
   if (action === 'logs-refresh' && state.modal?.type === 'logs') { ctx.renderModal(); return true; }
@@ -1043,7 +1025,6 @@ export function handleManagerClick(e, actionEl, action) {
     return true;
   }
 
-  // 悬浮球图片裁剪
   if (action === 'orb-crop-reset' && state.previewCtx?.type === 'orbCrop') {
     state.previewCtx.zoom = 1;
     state.previewCtx.offsetX = 0;
@@ -1073,7 +1054,6 @@ export function handleManagerClick(e, actionEl, action) {
     return true;
   }
 
-  // 弹窗选择列表
   if (action === 'open-select-popup') { state.selectPopup = { type: actionEl.getAttribute('data-select-type') }; renderSelectPopupView(); return true; }
   if (action === 'close-select-popup') { state.selectPopup = null; renderSelectPopupView(); return true; }
   if (action === 'move-by-number' && state.selectPopup?.type === 'movePromptTarget') {
@@ -1107,7 +1087,6 @@ export function handleManagerClick(e, actionEl, action) {
     return true;
   }
 
-  // 世界书对比缝合
   if (action === 'open-wb-merge') { state.modal = { type: 'wbMergeSelect', oldName: '', newName: '' }; ctx.renderModal(); return true; }
   if (action === 'swap-wb-merge' && state.modal?.type === 'wbMergeSelect') {
     const oldSel = modalLayerEl.querySelector('#td-wb-merge-old-select'), newSel = modalLayerEl.querySelector('#td-wb-merge-new-select');
@@ -1148,32 +1127,15 @@ export function handleManagerClick(e, actionEl, action) {
     });
     updateWbMergeBody(); notify('success', `已将 ${cnt} 个冲突条目的开关迁移为旧版`); return true;
   }
-  if (action === 'open-wb-merge-custom' && state.modal?.type === 'wbMerge') {
+  if ((action === 'open-wb-merge-custom' || action === 'open-wb-merge-custom-content-only') && state.modal?.type === 'wbMerge') {
     e.stopPropagation();
     const entry = state.modal.session.entries.find((x) => x.key === actionEl.getAttribute('data-entry-key'));
     if (!entry) return true;
-    state.previewKey = null; state.snapshotDetailId = null; state.previewCtx = { type: 'wbMergeCustom', entry }; ctx.renderPreviewModal(); return true;
-  }
-  if (action === 'wbm-fill-text' && state.previewCtx?.type === 'wbMergeCustom') {
-    const src = actionEl.getAttribute('data-side') === 'old' ? state.previewCtx.entry.oldEntry : state.previewCtx.entry.newEntry;
-    const ta = previewLayerEl.querySelector('#td-edit-content');
-    if (ta && src) { ta.value = src.content || ''; pushEditSnapshot(true); }
-    return true;
-  }
-  if (action === 'wbm-save-merge-custom' && state.previewCtx?.type === 'wbMergeCustom') {
-    pushEditSnapshot(true);
-    const snap = readPreviewSnapshot();
-    const entry = state.previewCtx.entry;
-    const base = cloneWorldbookEntry(entry.customEntry || entry.newEntry || entry.oldEntry || buildDefaultWorldbookEntry({}));
-    if (entry.newEntry) base.uid = entry.newEntry.uid;
-    base.name = snap?.name || entry.name;
-    base.enabled = !!previewLayerEl.querySelector('#td-wbm-custom-enabled')?.checked;
-    base.strategy = base.strategy || { type: 'selective', keys: [], keys_secondary: { logic: 'and_any', keys: [] }, scan_depth: 'same_as_global' };
-    base.strategy.type = previewLayerEl.querySelector('#td-wbm-custom-stype')?.value || 'selective';
-    base.strategy.keys = parseKeysInput(snap?.find_regex || '');
-    base.content = snap?.content || '';
-    entry.customEntry = base; entry.choice = 'custom';
-    state.previewCtx = null; ctx.renderPreviewModal(); updateWbMergeBody(); notify('success', '已保存缝合结果'); return true;
+    state.previewKey = null; state.snapshotDetailId = null;
+    state.previewCtx = initWbMergeCustomCtx(entry, {
+      contentOnly: action === 'open-wb-merge-custom-content-only',
+    });
+    ctx.renderPreviewModal(); return true;
   }
   if (action === 'wb-merge-apply-target' && state.modal?.type === 'wbMerge') {
     const session = state.modal.session;
@@ -1191,7 +1153,6 @@ export function handleManagerClick(e, actionEl, action) {
     return true;
   }
 
-  // 预设管理与条目编辑
   if (action === 'open-preset-manager') { state.modal = { type: 'presetManager', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
   if (action === 'pm-toggle-tools' && state.modal?.type === 'presetManager') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
   if (action === 'pm-load') { ctx.performSwitchPreset(actionEl.getAttribute('data-name')); setTimeout(() => { if (state.modal?.type === 'presetManager') ctx.renderModal(); }, 180); return true; }
@@ -1352,7 +1313,6 @@ export function handleManagerClick(e, actionEl, action) {
     return true;
   }
 
-  // AI 智能编辑（仅酒馆当前连接 + 破甲预设）
   if (action === 'pm-open-ai-edit' && state.modal?.type === 'presetDetail') {
     state.previewKey = null; state.snapshotDetailId = null;
     state.previewCtx = { type: 'pmAiEdit', step: 'setup', selectedKeys: new Set(), instruction: '', search: '', loading: false, results: [] };
@@ -1445,7 +1405,6 @@ export function handleManagerClick(e, actionEl, action) {
     }
   }
 
-  // 世界书管理与条目编辑
   if (action === 'open-worldbook-manager') { state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
   if (action === 'wbm-toggle-tools' && state.modal?.type === 'worldbookManager') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
   if (action === 'wbm-set-filter' && state.modal?.type === 'worldbookManager') { state.modal.filter = actionEl.getAttribute('data-filter') || 'all'; ctx.renderModal(); return true; }

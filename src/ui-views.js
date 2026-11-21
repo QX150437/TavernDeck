@@ -8,6 +8,10 @@ import {
 import { computeSnapshotDiff } from './snapshot.js';
 import { computeLineDiff, findBestMatchingOldPreset } from './preset-merge.js';
 import { getTopBarPositionOptions } from './native-ui.js';
+import {
+  renderPresetMergeCustomModal,
+  syncPresetMergeCustomDraft, syncWbMergeCustomDraft,
+} from './merge-ui.js';
 
 export const ICONS = {
   deck: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='7' height='7' rx='1.5'/><rect x='14' y='3' width='7' height='7' rx='1.5'/><rect x='3' y='14' width='7' height='7' rx='1.5'/><circle cx='17.5' cy='17.5' r='3.5'/></svg>",
@@ -82,6 +86,9 @@ let uiCtx = {
   getPreviewLayer: () => null,
   getSelectLayer: () => null,
   getConfirmLayer: () => null,
+  getViewportRect: () => ({ x: 0, y: 0, w: window.innerWidth || 1200, h: window.innerHeight || 800 }),
+  getPanelSize: () => ({ w: 420, h: 560 }),
+  getDefaultPanelSize: () => ({ w: 420, h: 560 }),
   syncOverlayBounds: () => {},
   renderManagerModal: () => false,
   renderManagerPreview: () => false,
@@ -252,17 +259,19 @@ export function renderGroupHtml(group, depth) {
 
   return `
     <div class='td-group ${depth > 0 ? 'is-nested' : ''} ${isCollapsed ? 'collapsed' : ''}' data-group-id='${escapeHtml(group.id)}'>
-      <div class='td-group-head' data-action='toggle-collapse' data-group-id='${escapeHtml(group.id)}'>
-        <div class='td-group-left'>
-          ${groupGripHtml}
-          <span class='td-chevron'>${ICONS.chevron}</span>
-          <span class='td-group-name' title='${escapeHtml(group.name)}'>${escapeHtml(group.name)}</span>
-          <span class='td-mode-tag ${isMulti ? 'multi' : 'single'}'>${isMulti ? '多选' : '单选'}</span>
-          <span class='td-count-tag'>${activeCount}/${items.length}</span>
+      <div class='td-group-sticky-top' style='--td-sticky-z:${20 + Math.min(depth, 6) * 2};'>
+        <div class='td-group-head' data-action='toggle-collapse' data-group-id='${escapeHtml(group.id)}'>
+          <div class='td-group-left'>
+            ${groupGripHtml}
+            <span class='td-chevron'>${ICONS.chevron}</span>
+            <span class='td-group-name' title='${escapeHtml(group.name)}'>${escapeHtml(group.name)}</span>
+            <span class='td-mode-tag ${isMulti ? 'multi' : 'single'}'>${isMulti ? '多选' : '单选'}</span>
+            <span class='td-count-tag'>${activeCount}/${items.length}</span>
+          </div>
+          <div class='td-group-actions' data-stop-collapse='1'>${groupInlineActions}</div>
         </div>
-        <div class='td-group-actions' data-stop-collapse='1'>${groupInlineActions}</div>
+        ${menuBarHtml}
       </div>
-      ${menuBarHtml}
       <div class='td-group-body'>
         ${itemsHtml ? `<div class='td-group-items' data-group-id='${escapeHtml(group.id)}'>${itemsHtml}</div>` : ''}
         ${childrenHtml}
@@ -509,6 +518,7 @@ export function updatePresetMergeBody() {
           ${it.oldPrompt ? `<button type='button' class='td-merge-choice ${it.choice === 'old' ? 'active-old' : ''}' data-action='set-merge-choice' data-entry-key='${escapeHtml(it.key)}' data-choice='old'>保留旧版 (Current)</button>` : ''}
           <button type='button' class='td-merge-choice ${it.choice === 'new' ? 'active-new' : ''}' data-action='set-merge-choice' data-entry-key='${escapeHtml(it.key)}' data-choice='new'>${it.status === 'removed' ? '确认删除 (新版)' : '采用新版 (Incoming)'}</button>
           <button type='button' class='td-merge-choice ${it.choice === 'custom' ? 'active-custom' : ''}' data-action='open-merge-custom' data-entry-key='${escapeHtml(it.key)}'>编辑缝合</button>
+          <button type='button' class='td-merge-choice' data-action='open-merge-custom-content-only' data-entry-key='${escapeHtml(it.key)}'>只缝合内容</button>
         </div>`;
 
       bodyHtml = `<div class='td-merge-body'><div style='font-size:11.5px;color:var(--td-text-muted);'>差异原因：${escapeHtml(it.diffReasons.join(' · ') || '无差异')}</div>${actionsHtml}${diffHtml}</div>`;
@@ -730,10 +740,17 @@ export function renderModal() {
     const orbImg = s.orbImage || '';
     const orbFit = s.orbImageFit === 'contain' ? 'contain' : 'cover';
     const opacity = s.orbOpacity ?? 0.96, orbSize = getOrbSize();
+    const unlockOrb = !!s.unlockOrbSliders;
     const showOrb = s.showOrb !== false, enableExt = !!s.enableExtButton, enableTopBar = !!s.enableTopBarButton;
     const enableDrag = !!s.enableDragSort, collapseNative = !!s.collapseNativePresetSettings;
     const collapseGrp = s.collapseGroupActions !== false, grpCfg = s.collapsedGroupItems || {};
     const collapseEntry = s.collapseEntryActions !== false, entryCfg = s.collapsedEntryItems || {};
+
+    const vp = uiCtx.getViewportRect();
+    const curPanelSize = uiCtx.getPanelSize();
+    const defPanelSize = uiCtx.getDefaultPanelSize();
+    const maxW = Math.max(280, Math.round(vp.w - 8));
+    const maxH = Math.max(280, Math.round(vp.h - 8));
 
     modalLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
@@ -790,12 +807,41 @@ export function renderModal() {
           </div>
 
           <div class='td-field'>
-            <label class='td-label'>交互与悬浮球</label>
+            <label class='td-label'>交互、控制台尺寸与悬浮球</label>
             <div class='td-setting-row'><div><div class='td-setting-title'>启用拖拽排序与嵌套</div><div class='td-setting-desc'>开启后显示左侧拖拽手柄，可拖动调序、跨组及嵌套子分组</div></div><button type='button' class='td-switch ${enableDrag ? 'on' : ''}' data-action='toggle-drag-sort'></button></div>
-            <label class='td-label' data-role='orb-size-label'>悬浮球大小 (${orbSize}px)</label>
-            <input class='td-range' id='td-size-range' type='range' min='34' max='72' value='${orbSize}' />
-            <label class='td-label' data-role='opacity-label'>悬浮球透明度 (${Math.round(opacity * 100)}%)</label>
-            <input class='td-range' id='td-opacity-range' type='range' min='35' max='100' value='${Math.round(opacity * 100)}' />
+
+            <div class='td-size-box'>
+              <div class='td-size-box-head'>
+                <span class='td-setting-title'>控制台窗口自定义尺寸 (px)</span>
+                <button type='button' class='td-chip' data-action='apply-panel-preset-default'>填入推荐值</button>
+              </div>
+              <div class='td-size-inputs'>
+                <div class='td-size-input-col'>
+                  <span class='td-label'>宽度 (280 ~ ${maxW})</span>
+                  <input class='td-input' id='td-panel-width-input' type='number' min='280' max='${maxW}' value='${curPanelSize.w}' />
+                </div>
+                <div class='td-size-input-col'>
+                  <span class='td-label'>高度 (280 ~ ${maxH})</span>
+                  <input class='td-input' id='td-panel-height-input' type='number' min='280' max='${maxH}' value='${curPanelSize.h}' />
+                </div>
+                <button type='button' class='td-btn primary' data-action='apply-panel-size' style='height:38px;align-self:flex-end;'>应用</button>
+              </div>
+              <div class='td-setting-desc'>参考：当前屏幕 ${Math.round(vp.w)} × ${Math.round(vp.h)} px · 默认推荐 ${defPanelSize.w} × ${defPanelSize.h} px（手机建议宽度 330~380，电脑建议 460~620）</div>
+            </div>
+
+            <div class='td-setting-row'>
+              <div>
+                <div class='td-setting-title'>解锁悬浮球大小/透明度拖动</div>
+                <div class='td-setting-desc'>防止滑动设置页时误触滑块，仅开启后允许拖动调节</div>
+              </div>
+              <button type='button' class='td-switch ${unlockOrb ? 'on' : ''}' data-action='toggle-orb-sliders-lock'></button>
+            </div>
+            <div class='td-slider-lock-box ${unlockOrb ? '' : 'is-locked'}' data-role='orb-sliders-box'>
+              <label class='td-label' data-role='orb-size-label'>悬浮球大小 (${orbSize}px)${unlockOrb ? '' : ' · 已锁定'}</label>
+              <input class='td-range' id='td-size-range' type='range' min='34' max='72' value='${orbSize}' ${unlockOrb ? '' : 'disabled'} />
+              <label class='td-label' data-role='opacity-label'>悬浮球透明度 (${Math.round(opacity * 100)}%)${unlockOrb ? '' : ' · 已锁定'}</label>
+              <input class='td-range' id='td-opacity-range' type='range' min='35' max='100' value='${Math.round(opacity * 100)}' ${unlockOrb ? '' : 'disabled'} />
+            </div>
           </div>
 
           <div class='td-field'>
@@ -827,25 +873,23 @@ export function readPreviewSnapshot() {
   const previewLayerEl = uiCtx.getPreviewLayer();
   if (!previewLayerEl) return null;
   if (state.previewCtx?.type === 'mergeCustom') {
-    const nameEl = previewLayerEl.querySelector('#td-merge-custom-name');
-    const contentEl = previewLayerEl.querySelector('#td-merge-custom-content');
-    const enEl = previewLayerEl.querySelector('#td-merge-custom-enabled');
+    syncPresetMergeCustomDraft(previewLayerEl);
+    const d = state.previewCtx.draft;
     return {
-      name: nameEl ? nameEl.value : '',
-      content: contentEl ? contentEl.value : '',
-      find_regex: enEl ? String(!!enEl.checked) : 'true',
+      name: d.name || '',
+      content: d.content || '',
+      find_regex: JSON.stringify({ enabled: d.enabled, role: d.role, posType: d.posType, depth: d.depth, order: d.order }),
       replace_string: '',
     };
   }
   if (state.previewCtx?.type === 'wbMergeCustom') {
-    const nameEl = previewLayerEl.querySelector('#td-wbm-custom-name');
-    const contentEl = previewLayerEl.querySelector('#td-edit-content');
-    const keysEl = previewLayerEl.querySelector('#td-wbm-custom-keys');
+    syncWbMergeCustomDraft(previewLayerEl);
+    const d = state.previewCtx.draft;
     return {
-      name: nameEl ? nameEl.value : '',
-      content: contentEl ? contentEl.value : '',
-      find_regex: keysEl ? keysEl.value : '',
-      replace_string: '',
+      name: d.name || '',
+      content: d.content || '',
+      find_regex: d.keys || '',
+      replace_string: JSON.stringify({ enabled: d.enabled, stype: d.stype, posType: d.posType, order: d.order, depth: d.depth }),
     };
   }
   const nameEl = previewLayerEl.querySelector('#td-edit-name');
@@ -866,10 +910,15 @@ export function applyPreviewSnapshot(snap) {
   if (state.previewCtx?.type === 'mergeCustom') {
     const nameEl = previewLayerEl.querySelector('#td-merge-custom-name');
     const contentEl = previewLayerEl.querySelector('#td-merge-custom-content');
-    const enEl = previewLayerEl.querySelector('#td-merge-custom-enabled');
     if (nameEl) nameEl.value = snap.name;
     if (contentEl) contentEl.value = snap.content;
-    if (enEl && snap.find_regex) enEl.checked = snap.find_regex === 'true';
+    state.previewCtx.draft.name = snap.name;
+    state.previewCtx.draft.content = snap.content;
+    try {
+      const meta = JSON.parse(snap.find_regex || '{}');
+      const enEl = previewLayerEl.querySelector('#td-merge-custom-enabled');
+      if (enEl && typeof meta.enabled === 'boolean') enEl.checked = meta.enabled;
+    } catch (e) {}
     return;
   }
   if (state.previewCtx?.type === 'wbMergeCustom') {
@@ -879,6 +928,9 @@ export function applyPreviewSnapshot(snap) {
     if (nameEl) nameEl.value = snap.name;
     if (contentEl) contentEl.value = snap.content;
     if (keysEl) keysEl.value = snap.find_regex;
+    state.previewCtx.draft.name = snap.name;
+    state.previewCtx.draft.content = snap.content;
+    state.previewCtx.draft.keys = snap.find_regex;
     return;
   }
   const nameEl = previewLayerEl.querySelector('#td-edit-name');
@@ -940,35 +992,12 @@ export function renderPreviewModal() {
   if (uiCtx.renderManagerPreview()) return;
 
   if (state.previewCtx?.type === 'mergeCustom') {
-    const entry = state.previewCtx.entry;
-    const base = entry.customPrompt || entry.newPrompt || entry.oldPrompt || { name: entry.name, enabled: true, role: 'system', content: '' };
-    const oldText = entry.oldPrompt?.content || '';
-    const newText = entry.newPrompt?.content || '';
-    const defaultMergeVal = typeof base.content === 'string'
-      ? base.content
-      : (oldText === newText ? newText : `<<<<<<< 旧版本\n${oldText}\n=======\n${newText}\n>>>>>>> 新版本`);
-    previewLayerEl.classList.add('is-open');
-    previewLayerEl.innerHTML = `
-      <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'>
-          <div class='td-modal-title'>手动缝合条目 · ${escapeHtml(entry.name)}</div>
-          <div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='close-preview' title='关闭'>${ICONS.close}</button></div>
-        </div>
-        <div class='td-modal-body'>
-          <div class='td-merge-refs'>
-            <div class='td-field'><div style='display:flex;justify-content:space-between;align-items:center;'><label class='td-label'>旧版本内容（只读）</label>${entry.oldPrompt ? "<button type='button' class='td-chip' data-action='merge-fill-text' data-side='old'>整段填入</button>" : ''}</div><textarea class='td-textarea td-readonly td-scroll' readonly placeholder='（旧版无此条目或内容为空）'>${escapeHtml(oldText)}</textarea></div>
-            <div class='td-field'><div style='display:flex;justify-content:space-between;align-items:center;'><label class='td-label'>新版本内容（只读）</label>${entry.newPrompt ? "<button type='button' class='td-chip' data-action='merge-fill-text' data-side='new'>整段填入</button>" : ''}</div><textarea class='td-textarea td-readonly td-scroll' readonly placeholder='（新版已删除或内容为空）'>${escapeHtml(newText)}</textarea></div>
-          </div>
-          <div style='display:flex;gap:8px;align-items:center;'>
-            <div class='td-field' style='flex:1;'><label class='td-label'>缝合后条目名称</label><input class='td-input' id='td-merge-custom-name' type='text' value='${escapeHtml(base.name || entry.name)}' /></div>
-            <label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-merge-custom-enabled' ${base.enabled ? 'checked' : ''} /><span>启用</span></label>
-          </div>
-          <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>缝合后正文（支持撤销/重做）</label><textarea class='td-textarea td-scroll' id='td-merge-custom-content' style='flex:1;min-height:140px;'>${escapeHtml(defaultMergeVal)}</textarea></div>
-        </div>
-        <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='save-merge-custom'>${ICONS.save} 保存缝合结果</button></div>
-      </div>`;
-    editHistory.stack = [readPreviewSnapshot()]; editHistory.index = 0;
-    updatePreviewHistoryButtons(); uiCtx.syncOverlayBounds(); return;
+    renderPresetMergeCustomModal(previewLayerEl, ICONS, uiCtx.getViewportRect());
+    editHistory.stack = [readPreviewSnapshot()];
+    editHistory.index = 0;
+    updatePreviewHistoryButtons();
+    uiCtx.syncOverlayBounds();
+    return;
   }
 
   if (state.snapshotDetailId) {

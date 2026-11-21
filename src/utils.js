@@ -1,4 +1,5 @@
 export const APP_NAME = 'TavernDeck';
+export const APP_SHORT = 'TD';
 export const APP_CN = '酒馆总控台';
 export const APP_VERSION = 'v1.2';
 export const STORAGE_KEY = 'TavernDeck';
@@ -230,43 +231,211 @@ export function findBestMatchingName(targetName, allNames) {
   return bestName;
 }
 
-export function computeLineDiff(oldText, newText) {
-  const a = String(oldText || '').split('\n');
-  const b = String(newText || '').split('\n');
-  if (a.length * b.length > 90000) {
-    return [
-      ...a.slice(0, 40).map((l) => ({ type: 'del', text: l })),
-      ...b.slice(0, 40).map((l) => ({ type: 'add', text: l })),
-    ];
-  }
-  const m = a.length;
-  const n = b.length;
-  const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
-  for (let i = m - 1; i >= 0; i--) {
-    for (let j = n - 1; j >= 0; j--) {
-      if (a[i] === b[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
-      else dp[i][j] = dp[i + 1][j] >= dp[i][j + 1] ? dp[i + 1][j] : dp[i][j + 1];
-    }
-  }
+function fallbackLineDiff(a, b) {
+  const bPositions = new Map();
+  b.forEach((line, idx) => {
+    if (!bPositions.has(line)) bPositions.set(line, []);
+    bPositions.get(line).push(idx);
+  });
   const lines = [];
   let i = 0;
   let j = 0;
-  while (i < m && j < n) {
+  while (i < a.length && j < b.length) {
     if (a[i] === b[j]) {
       lines.push({ type: 'ctx', text: a[i] });
       i++;
       j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      lines.push({ type: 'del', text: a[i] });
-      i++;
+      continue;
+    }
+    const hits = bPositions.get(a[i]);
+    let matchJ = -1;
+    if (hits) {
+      for (let k = 0; k < hits.length; k++) {
+        if (hits[k] >= j && hits[k] - j <= 40) { matchJ = hits[k]; break; }
+      }
+    }
+    if (matchJ >= 0) {
+      while (j < matchJ) lines.push({ type: 'add', text: b[j++] });
     } else {
-      lines.push({ type: 'add', text: b[j] });
-      j++;
+      lines.push({ type: 'del', text: a[i++] });
     }
   }
-  while (i < m) lines.push({ type: 'del', text: a[i++] });
-  while (j < n) lines.push({ type: 'add', text: b[j++] });
+  while (i < a.length) lines.push({ type: 'del', text: a[i++] });
+  while (j < b.length) lines.push({ type: 'add', text: b[j++] });
   return lines;
+}
+
+export function computeLineDiff(oldText, newText) {
+  const a = String(oldText || '').split('\n');
+  const b = String(newText || '').split('\n');
+
+  let prefix = 0;
+  const minLen = Math.min(a.length, b.length);
+  while (prefix < minLen && a[prefix] === b[prefix]) prefix++;
+
+  let suffix = 0;
+  while (
+    suffix < (a.length - prefix)
+    && suffix < (b.length - prefix)
+    && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  const aMid = a.slice(prefix, a.length - suffix);
+  const bMid = b.slice(prefix, b.length - suffix);
+
+  let midLines;
+  if (aMid.length === 0 && bMid.length === 0) {
+    midLines = [];
+  } else if (aMid.length * bMid.length > 160000) {
+    midLines = fallbackLineDiff(aMid, bMid);
+  } else {
+    const m = aMid.length;
+    const n = bMid.length;
+    const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+    for (let i = m - 1; i >= 0; i--) {
+      for (let j = n - 1; j >= 0; j--) {
+        if (aMid[i] === bMid[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+        else dp[i][j] = dp[i + 1][j] >= dp[i][j + 1] ? dp[i + 1][j] : dp[i][j + 1];
+      }
+    }
+    midLines = [];
+    let i = 0;
+    let j = 0;
+    while (i < m && j < n) {
+      if (aMid[i] === bMid[j]) {
+        midLines.push({ type: 'ctx', text: aMid[i] });
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        midLines.push({ type: 'del', text: aMid[i++] });
+      } else {
+        midLines.push({ type: 'add', text: bMid[j++] });
+      }
+    }
+    while (i < m) midLines.push({ type: 'del', text: aMid[i++] });
+    while (j < n) midLines.push({ type: 'add', text: bMid[j++] });
+  }
+
+  const lines = [];
+  for (let i = 0; i < prefix; i++) lines.push({ type: 'ctx', text: a[i] });
+  for (let i = 0; i < midLines.length; i++) lines.push(midLines[i]);
+  for (let i = a.length - suffix; i < a.length; i++) lines.push({ type: 'ctx', text: a[i] });
+  return lines;
+}
+
+function mergeSpans(arr) {
+  const out = [];
+  arr.forEach((seg) => {
+    if (!seg.text) return;
+    const prev = out[out.length - 1];
+    if (prev && prev.changed === seg.changed) prev.text += seg.text;
+    else out.push({ text: seg.text, changed: seg.changed });
+  });
+  return out;
+}
+
+function computeInlineTokenDiff(oldLine, newLine) {
+  const ta = String(oldLine || '').match(/[A-Za-z0-9_]+|\s+|./g) || [];
+  const tb = String(newLine || '').match(/[A-Za-z0-9_]+|\s+|./g) || [];
+  let prefix = 0;
+  const minLen = Math.min(ta.length, tb.length);
+  while (prefix < minLen && ta[prefix] === tb[prefix]) prefix++;
+
+  let suffix = 0;
+  while (
+    suffix < (ta.length - prefix)
+    && suffix < (tb.length - prefix)
+    && ta[ta.length - 1 - suffix] === tb[tb.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  const aMid = ta.slice(prefix, ta.length - suffix);
+  const bMid = tb.slice(prefix, tb.length - suffix);
+
+  const oldSpans = [];
+  const newSpans = [];
+  if (prefix > 0) {
+    const pTxt = ta.slice(0, prefix).join('');
+    oldSpans.push({ text: pTxt, changed: false });
+    newSpans.push({ text: pTxt, changed: false });
+  }
+
+  if (aMid.length * bMid.length > 12000) {
+    if (aMid.length > 0) oldSpans.push({ text: aMid.join(''), changed: true });
+    if (bMid.length > 0) newSpans.push({ text: bMid.join(''), changed: true });
+  } else if (aMid.length > 0 || bMid.length > 0) {
+    const m = aMid.length;
+    const n = bMid.length;
+    const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+    for (let i = m - 1; i >= 0; i--) {
+      for (let j = n - 1; j >= 0; j--) {
+        if (aMid[i] === bMid[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+        else dp[i][j] = dp[i + 1][j] >= dp[i][j + 1] ? dp[i + 1][j] : dp[i][j + 1];
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < m && j < n) {
+      if (aMid[i] === bMid[j]) {
+        oldSpans.push({ text: aMid[i], changed: false });
+        newSpans.push({ text: bMid[j], changed: false });
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        oldSpans.push({ text: aMid[i++], changed: true });
+      } else {
+        newSpans.push({ text: bMid[j++], changed: true });
+      }
+    }
+    while (i < m) oldSpans.push({ text: aMid[i++], changed: true });
+    while (j < n) newSpans.push({ text: bMid[j++], changed: true });
+  }
+
+  if (suffix > 0) {
+    const sTxt = ta.slice(ta.length - suffix).join('');
+    oldSpans.push({ text: sTxt, changed: false });
+    newSpans.push({ text: sTxt, changed: false });
+  }
+
+  return { oldSpans: mergeSpans(oldSpans), newSpans: mergeSpans(newSpans) };
+}
+
+export function computeSideLineDiffs(oldText, newText) {
+  const ops = computeLineDiff(oldText, newText);
+  const oldLines = [];
+  const newLines = [];
+  let idx = 0;
+  while (idx < ops.length) {
+    if (ops[idx].type === 'ctx') {
+      oldLines.push({ text: ops[idx].text, status: 'ctx' });
+      newLines.push({ text: ops[idx].text, status: 'ctx' });
+      idx++;
+      continue;
+    }
+    const dels = [];
+    const adds = [];
+    while (idx < ops.length && ops[idx].type !== 'ctx') {
+      if (ops[idx].type === 'del') dels.push(ops[idx].text);
+      else adds.push(ops[idx].text);
+      idx++;
+    }
+    const pairCount = Math.min(dels.length, adds.length);
+    for (let k = 0; k < pairCount; k++) {
+      const { oldSpans, newSpans } = computeInlineTokenDiff(dels[k], adds[k]);
+      oldLines.push({ text: dels[k], status: 'mod', spans: oldSpans });
+      newLines.push({ text: adds[k], status: 'mod', spans: newSpans });
+    }
+    for (let k = pairCount; k < dels.length; k++) {
+      oldLines.push({ text: dels[k], status: 'del' });
+    }
+    for (let k = pairCount; k < adds.length; k++) {
+      newLines.push({ text: adds[k], status: 'add' });
+    }
+  }
+  return { oldLines, newLines };
 }
 
 function cloneWithRegExp(val) {
