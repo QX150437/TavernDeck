@@ -1,4 +1,4 @@
-import { APP_NAME, callTH, notify, genId, formatTime, makeItemKey, cloneItemRef } from './utils.js';
+import { callTH, notify, genId, formatTime, makeItemKey, cloneItemRef, logError } from './utils.js';
 import { state, getActiveScheme } from './store.js';
 import { applyItemMutations, refreshAllCatalogs } from './catalog.js';
 
@@ -140,7 +140,7 @@ export async function applySnapshot(snap, restoreFull) {
     return true;
   } catch (e) {
     state.isBusy = false;
-    console.error(`[${APP_NAME}] 恢复快照失败:`, e);
+    logError('恢复快照失败', e);
     notify('error', `恢复快照失败: ${e && e.message ? e.message : e}`);
     return false;
   }

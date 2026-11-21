@@ -4,6 +4,22 @@ const logBuffer = [];
 const MAX_LOGS = 200;
 let captureInstalled = false;
 
+function formatLogArg(a) {
+  if (a instanceof Error) {
+    return a.stack ? `${a.message} | ${a.stack.split('\n')[0]}` : (a.message || String(a));
+  }
+  if (a && typeof a === 'object') {
+    if (typeof a.message === 'string') return a.message;
+    try {
+      const s = JSON.stringify(a);
+      return s === '{}' ? String(a) : s;
+    } catch (e) {
+      return String(a);
+    }
+  }
+  return String(a);
+}
+
 export function pushDevLog(level, message) {
   const d = new Date();
   const pad = (n) => (n < 10 ? `0${n}` : String(n));
@@ -38,14 +54,14 @@ export function initDevErrorCapture() {
   const origError = console.error;
   console.warn = function (...args) {
     try {
-      const txt = args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+      const txt = args.map(formatLogArg).join(' ');
       if (txt.includes(APP_NAME)) pushDevLog('WARN', txt);
     } catch (e) {}
     return origWarn.apply(this, args);
   };
   console.error = function (...args) {
     try {
-      const txt = args.map((a) => (a instanceof Error ? `${a.message}\n${a.stack || ''}` : (typeof a === 'object' ? JSON.stringify(a) : String(a)))).join(' ');
+      const txt = args.map(formatLogArg).join(' ');
       if (txt.includes(APP_NAME)) pushDevLog('ERR', txt);
     } catch (e) {}
     return origError.apply(this, args);
@@ -58,7 +74,7 @@ export function initDevErrorCapture() {
     }
   });
   window.addEventListener('unhandledrejection', (ev) => {
-    const msg = ev.reason instanceof Error ? `${ev.reason.message}\n${ev.reason.stack || ''}` : String(ev.reason || '');
+    const msg = formatLogArg(ev.reason);
     if (msg.includes(APP_NAME) || msg.includes('TavernDeck')) {
       pushDevLog('ERR', `UnhandledRejection: ${msg}`);
     }

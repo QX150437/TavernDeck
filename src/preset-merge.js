@@ -1,4 +1,4 @@
-import { callTH, hasTH, notify, findBestMatchingName, computeLineDiff } from './utils.js';
+import { callTH, hasTH, notify, findBestMatchingName, computeLineDiff, logWarn } from './utils.js';
 
 export { computeLineDiff };
 export const findBestMatchingOldPreset = findBestMatchingName;
@@ -30,6 +30,7 @@ export function hasUnsavedPresetChanges(presetName) {
     }
     return false;
   } catch (e) {
+    logWarn('比对预设未保存修改状态失败', e);
     return false;
   }
 }

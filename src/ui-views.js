@@ -728,7 +728,6 @@ export function renderModal() {
     const gColor = s.groupTextColor || '';
     const eColor = s.entryTextColor || '';
     const orbImg = s.orbImage || '';
-    const orbIsUrl = /^https?:\/\//i.test(orbImg);
     const orbFit = s.orbImageFit === 'contain' ? 'contain' : 'cover';
     const opacity = s.orbOpacity ?? 0.96, orbSize = getOrbSize();
     const showOrb = s.showOrb !== false, enableExt = !!s.enableExtButton, enableTopBar = !!s.enableTopBarButton;
@@ -749,26 +748,16 @@ export function renderModal() {
           </div>
 
           <div class='td-field'>
-            <label class='td-label'>自定义悬浮球图片（本地上传或网络链接）</label>
-            <div class='td-setting-row' style='flex-direction:column;align-items:stretch;gap:8px;'>
-              <div style='display:flex;align-items:center;justify-content:space-between;gap:10px;'>
-                <div style='display:flex;align-items:center;gap:10px;min-width:0;flex:1;'>
-                  <div class='td-orb-preview-box'>${orbImg ? `<img class='td-orb-img ${orbFit === 'contain' ? 'fit-contain' : 'fit-cover'}' src='${escapeHtml(orbImg)}' />` : ICONS.deck}</div>
-                  <div style='min-width:0;'>
-                    <div class='td-setting-title'>${orbImg ? (orbIsUrl ? '已使用网络图片' : '已使用本地上传图片') : '使用默认图标'}</div>
-                    <div class='td-setting-desc'>填满：铺满圆形裁切；居中：完整缩小居中显示</div>
-                  </div>
-                </div>
-                <div style='display:flex;gap:5px;flex-wrap:wrap;'>
-                  <button type='button' class='td-btn sm' data-action='trigger-orb-upload'>${ICONS.upload} 上传</button>
-                  <input type='file' id='td-orb-img-input' accept='image/*' style='display:none;' />
-                  ${orbImg ? `<button type='button' class='td-btn sm' data-action='toggle-orb-fit'>${orbFit === 'cover' ? '填满 (点切居中)' : '居中 (点切填满)'}</button>` : ''}
-                  ${orbImg ? `<button type='button' class='td-btn sm danger' data-action='clear-orb-image'>恢复默认</button>` : ''}
-                </div>
+            <label class='td-label'>悬浮球图标</label>
+            <div class='td-setting-row'>
+              <div style='display:flex;align-items:center;gap:10px;min-width:0;flex:1;'>
+                <div class='td-orb-preview-box'>${orbImg ? `<img class='td-orb-img ${orbFit === 'contain' ? 'fit-contain' : 'fit-cover'}' src='${escapeHtml(orbImg)}' />` : ICONS.deck}</div>
+                <div class='td-setting-title'>${orbImg ? '自定义图标' : '默认图标'}</div>
               </div>
-              <div style='display:flex;gap:6px;align-items:center;'>
-                <input type='url' class='td-input' id='td-orb-url-input' placeholder='粘贴图片网络链接 https://...' value='${escapeHtml(orbIsUrl ? orbImg : '')}' style='flex:1;font-size:13px;' />
-                <button type='button' class='td-btn sm primary' data-action='apply-orb-url'>应用链接</button>
+              <div style='display:flex;gap:5px;flex-wrap:wrap;flex-shrink:0;'>
+                <button type='button' class='td-btn sm' data-action='trigger-orb-upload'>${ICONS.upload} 上传并裁剪</button>
+                <input type='file' id='td-orb-img-input' accept='image/*' style='display:none;' />
+                ${orbImg ? `<button type='button' class='td-btn sm danger' data-action='clear-orb-image'>恢复</button>` : ''}
               </div>
             </div>
           </div>
@@ -848,6 +837,17 @@ export function readPreviewSnapshot() {
       replace_string: '',
     };
   }
+  if (state.previewCtx?.type === 'wbMergeCustom') {
+    const nameEl = previewLayerEl.querySelector('#td-wbm-custom-name');
+    const contentEl = previewLayerEl.querySelector('#td-edit-content');
+    const keysEl = previewLayerEl.querySelector('#td-wbm-custom-keys');
+    return {
+      name: nameEl ? nameEl.value : '',
+      content: contentEl ? contentEl.value : '',
+      find_regex: keysEl ? keysEl.value : '',
+      replace_string: '',
+    };
+  }
   const nameEl = previewLayerEl.querySelector('#td-edit-name');
   const contentEl = previewLayerEl.querySelector('#td-edit-content');
   const findEl = previewLayerEl.querySelector('#td-edit-find-regex');
@@ -870,6 +870,15 @@ export function applyPreviewSnapshot(snap) {
     if (nameEl) nameEl.value = snap.name;
     if (contentEl) contentEl.value = snap.content;
     if (enEl && snap.find_regex) enEl.checked = snap.find_regex === 'true';
+    return;
+  }
+  if (state.previewCtx?.type === 'wbMergeCustom') {
+    const nameEl = previewLayerEl.querySelector('#td-wbm-custom-name');
+    const contentEl = previewLayerEl.querySelector('#td-edit-content');
+    const keysEl = previewLayerEl.querySelector('#td-wbm-custom-keys');
+    if (nameEl) nameEl.value = snap.name;
+    if (contentEl) contentEl.value = snap.content;
+    if (keysEl) keysEl.value = snap.find_regex;
     return;
   }
   const nameEl = previewLayerEl.querySelector('#td-edit-name');

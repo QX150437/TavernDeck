@@ -1,3 +1,4 @@
+import { logWarn } from './utils.js';
 import { state } from './store.js';
 
 const BAR_ID = 'td-st-preset-collapse-bar';
@@ -102,7 +103,9 @@ export function syncNativePresetCollapse() {
         syncNativePresetCollapse();
       });
     }
-  } catch (e) {}
+  } catch (e) {
+    logWarn('同步原生预设折叠区域失败', e);
+  }
 }
 
 export function getTopBarPositionOptions() {
@@ -167,5 +170,7 @@ export function syncTopBarButton(iconSvg, onClick, isOpen) {
         holder.appendChild(btn);
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    logWarn('同步顶部导航栏入口按钮失败', e);
+  }
 }

@@ -1,4 +1,4 @@
-import { callTH, hasTH, getST, notify, genId, downloadJsonFile } from './utils.js';
+import { callTH, hasTH, getST, notify, genId, downloadJsonFile, logWarn } from './utils.js';
 import { hasUnsavedPresetChanges } from './preset-merge.js';
 import { state } from './store.js';
 
@@ -25,7 +25,9 @@ export function getPresetSummaryList() {
       promptCount = prompts.length;
       enabledCount = prompts.filter((x) => !!x.enabled).length;
       unusedCount = unused.length;
-    } catch (e) {}
+    } catch (e) {
+      logWarn(`读取预设「${name}」摘要失败`, e);
+    }
     return {
       name,
       isLoaded: name === loadedName,
@@ -108,7 +110,9 @@ export function exportPresetFile(name) {
       const raw = pm.getCompletionPresetByName?.(name) || pm.getPresetSettings?.(name);
       if (raw && typeof raw === 'object') payload = raw;
     }
-  } catch (e) {}
+  } catch (e) {
+    logWarn(`从原生 PresetManager 导出预设「${name}」失败，改用助手数据`, e);
+  }
   if (!payload) {
     payload = getPresetDetail(name);
   }
@@ -132,16 +136,54 @@ export async function importPresetFromFile(file) {
   notify('success', `已导入预设「${baseName}」`);
 }
 
-export function movePromptBeforeIndex(list, fromIdx, beforeIdx) {
-  if (!Array.isArray(list)) return false;
-  if (fromIdx < 0 || fromIdx >= list.length) return false;
-  let target = Number(beforeIdx);
-  if (Number.isNaN(target) || target < 0 || target > list.length) return false;
-  if (target === fromIdx || target === fromIdx + 1) return false;
-  const [moved] = list.splice(fromIdx, 1);
-  if (target > fromIdx) target -= 1;
-  list.splice(target, 0, moved);
+export function movePromptsBatchBeforeIndex(list, fromIndices, beforeIdx) {
+  if (!Array.isArray(list) || !Array.isArray(fromIndices) || fromIndices.length === 0) return false;
+  const idxSet = new Set(fromIndices.map(Number).filter((n) => !Number.isNaN(n) && n >= 0 && n < list.length));
+  if (idxSet.size === 0) return false;
+
+  const target = Math.max(0, Math.min(list.length, Number(beforeIdx)));
+  if (Number.isNaN(target)) return false;
+
+  const movingItems = [];
+  const beforeItems = [];
+  const afterItems = [];
+
+  for (let i = 0; i < list.length; i++) {
+    if (idxSet.has(i)) movingItems.push(list[i]);
+    else if (i < target) beforeItems.push(list[i]);
+    else afterItems.push(list[i]);
+  }
+
+  const next = [...beforeItems, ...movingItems, ...afterItems];
+  let changed = false;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i] !== next[i]) { changed = true; break; }
+  }
+  if (!changed) return false;
+
+  list.splice(0, list.length, ...next);
   return true;
+}
+
+export function insertFromUnusedAt(presetData, unusedIndices, targetBeforeIdx) {
+  const unused = presetData?.prompts_unused;
+  const prompts = presetData?.prompts;
+  if (!Array.isArray(unused) || !Array.isArray(prompts)) return 0;
+
+  const idxSet = new Set(unusedIndices.map(Number).filter((n) => !Number.isNaN(n) && n >= 0 && n < unused.length));
+  if (idxSet.size === 0) return 0;
+
+  const moved = [];
+  const kept = [];
+  for (let i = 0; i < unused.length; i++) {
+    if (idxSet.has(i)) moved.push(unused[i]);
+    else kept.push(unused[i]);
+  }
+
+  const target = Math.max(0, Math.min(prompts.length, Number(targetBeforeIdx) || 0));
+  presetData.prompts_unused = kept;
+  prompts.splice(target, 0, ...moved);
+  return moved.length;
 }
 
 export function buildNewPromptEntry(fields) {

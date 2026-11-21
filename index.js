@@ -1,4 +1,4 @@
-import { APP_NAME, getST, hasTH } from './src/utils.js';
+import { APP_NAME, getST, hasTH, logWarn } from './src/utils.js';
 import { state, loadStore } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
 import { syncNativePresetCollapse } from './src/native-ui.js';
@@ -28,7 +28,7 @@ async function syncAndRefresh() {
       if (state.modal?.type === 'snapshots') updateSnapshotList();
     }
   } catch (e) {
-    console.warn(`[${APP_NAME}] 同步数据失败:`, e);
+    logWarn('同步数据失败', e);
   }
 }
 
@@ -36,7 +36,10 @@ function bindTavernEvents() {
   const st = getST();
   const es = st?.eventSource;
   const et = st?.eventTypes;
-  if (!es || !et) return;
+  if (!es || !et) {
+    logWarn('未检测到 SillyTavern.eventSource，跳过酒馆事件绑定');
+    return;
+  }
 
   const debouncedSync = (() => {
     let t = null;
@@ -50,11 +53,6 @@ function bindTavernEvents() {
     et.APP_READY,
     et.EXTENSIONS_FIRST_LOAD,
     et.SETTINGS_LOADED,
-    et.SETTINGS_UPDATED,
-    et.MAIN_API_CHANGED,
-    et.CHATCOMPLETION_SOURCE_CHANGED,
-    et.CHATCOMPLETION_MODEL_CHANGED,
-    et.CONNECTION_PROFILE_LOADED,
     et.PRESET_CHANGED,
     et.OAI_PRESET_CHANGED_AFTER,
     et.PRESET_RENAMED,
@@ -72,6 +70,8 @@ function waitForTavernHelperAndSync(retries = 25) {
   }
   if (retries > 0) {
     setTimeout(() => waitForTavernHelperAndSync(retries - 1), 300);
+  } else {
+    logWarn(`${APP_NAME} 等待酒馆助手 (TavernHelper) 初始化超时`);
   }
 }
 

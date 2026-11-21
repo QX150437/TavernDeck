@@ -1,6 +1,6 @@
 export const APP_NAME = 'TavernDeck';
 export const APP_CN = '酒馆总控台';
-export const APP_VERSION = 'v1.1';
+export const APP_VERSION = 'v1.2';
 export const STORAGE_KEY = 'TavernDeck';
 export const SCHEMA_VERSION = 3;
 export const ROOT_ID = 'tavern-deck-root';
@@ -19,6 +19,16 @@ export const SCOPE_LABELS = {
   preset: '预设',
   character: '角色卡',
 };
+
+export function logWarn(msg, err) {
+  if (err !== undefined) console.warn(`[${APP_NAME}] ${msg}:`, err);
+  else console.warn(`[${APP_NAME}] ${msg}`);
+}
+
+export function logError(msg, err) {
+  if (err !== undefined) console.error(`[${APP_NAME}] ${msg}:`, err);
+  else console.error(`[${APP_NAME}] ${msg}`);
+}
 
 export function getTH() {
   return (typeof window !== 'undefined' && window.TavernHelper) || null;
@@ -44,12 +54,17 @@ export function hasTH(name) {
 export function callTH(name, ...args) {
   const th = getTH();
   if (!th || typeof th[name] !== 'function') {
-    throw new Error(`TavernHelper.${name} 不可用，请确认已安装并启用酒馆助手`);
+    const err = new Error(`TavernHelper.${name} 不可用，请确认已安装并启用酒馆助手`);
+    logError(err.message);
+    throw err;
   }
   return th[name](...args);
 }
 
 export function notify(type, message) {
+  if (type === 'error') logError(message);
+  else if (type === 'warning') logWarn(message);
+
   try {
     if (typeof toastr !== 'undefined' && typeof toastr[type] === 'function') {
       toastr[type](message, APP_NAME);
@@ -59,7 +74,9 @@ export function notify(type, message) {
       window.toastr[type](message, APP_NAME);
       return;
     }
-  } catch (e) {}
+  } catch (e) {
+    logWarn('toastr 提示调用失败', e);
+  }
   console.log(`[${APP_NAME}][${type}]`, message);
 }
 
@@ -70,7 +87,9 @@ export function genId() {
     const st = getST();
     if (st && typeof st.uuidv4 === 'function') return st.uuidv4();
     if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
-  } catch (e) {}
+  } catch (e) {
+    logWarn('生成 UUID 失败，降级使用随机 ID', e);
+  }
   return `td-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -287,7 +306,7 @@ export function parseKeysInput(str) {
     .map((token) => {
       const m = token.match(/^\/(.+)\/([gimsuy]*)$/);
       if (m) {
-        try { return new RegExp(m[1], m[2]); } catch (e) {}
+        try { return new RegExp(m[1], m[2]); } catch (e) { logWarn(`正则关键词解析失败: ${token}`, e); }
       }
       return token;
     });
@@ -298,9 +317,8 @@ export function keysSignature(keys) {
   return keys.map(formatKeyItem).join('\x00');
 }
 
-export function downloadJsonFile(obj, filename) {
-  const json = JSON.stringify(obj, null, 2);
-  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+export function downloadTextFile(text, filename, mimeType = 'text/plain;charset=utf-8') {
+  const blob = new Blob([String(text || '')], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -308,4 +326,8 @@ export function downloadJsonFile(obj, filename) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 100);
+}
+
+export function downloadJsonFile(obj, filename) {
+  downloadTextFile(JSON.stringify(obj, null, 2), filename, 'application/json;charset=utf-8');
 }

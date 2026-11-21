@@ -1,27 +1,29 @@
-import { callTH, hasTH } from './utils.js';
+import { callTH, hasTH, logWarn, formatKeysInput } from './utils.js';
 
-export function buildAiCustomApi(cfg) {
-  const out = {};
-  if (!cfg || cfg.mode === 'current') {
-    if (cfg?.model?.trim()) out.model = cfg.model.trim();
-  } else if (cfg.mode === 'proxy') {
-    if (cfg.proxyPreset?.trim()) out.proxy_preset = cfg.proxyPreset.trim();
-    if (cfg.model?.trim()) out.model = cfg.model.trim();
-  } else if (cfg.mode === 'direct') {
-    if (cfg.apiUrl?.trim()) out.apiurl = cfg.apiUrl.trim();
-    if (cfg.apiKey?.trim()) out.key = cfg.apiKey.trim();
-    if (cfg.source?.trim()) out.source = cfg.source.trim();
-    if (cfg.model?.trim()) out.model = cfg.model.trim();
+function buildCurrentApiOverride(cfg) {
+  const model = String(cfg?.model || '').trim();
+  return model ? { model } : undefined;
+}
+
+function extractJailbreakPrompts(jailbreakPresetName) {
+  const name = String(jailbreakPresetName || '').trim();
+  if (!name || !hasTH('getPreset')) return [];
+  try {
+    const preset = callTH('getPreset', name);
+    const list = Array.isArray(preset?.prompts) ? preset.prompts : [];
+    const out = [];
+    list.forEach((p) => {
+      if (!p || !p.enabled) return;
+      const content = typeof p.content === 'string' ? p.content.trim() : '';
+      if (!content) return;
+      const role = ['system', 'user', 'assistant'].includes(p.role) ? p.role : 'system';
+      out.push({ role, content });
+    });
+    return out;
+  } catch (e) {
+    logWarn(`加载破甲预设「${name}」失败，已忽略`, e);
+    return [];
   }
-  const temp = Number(cfg?.temperature);
-  if (cfg?.temperature !== '' && cfg?.temperature !== undefined && !Number.isNaN(temp)) {
-    out.temperature = temp;
-  }
-  const maxTok = Number(cfg?.maxTokens);
-  if (cfg?.maxTokens !== '' && cfg?.maxTokens !== undefined && !Number.isNaN(maxTok) && maxTok > 0) {
-    out.max_tokens = maxTok;
-  }
-  return out;
 }
 
 export function extractJsonFromAiReply(rawText) {
@@ -94,14 +96,15 @@ export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
     `【待编辑条目列表 JSON】\n${JSON.stringify(inputPayload, null, 2)}`,
   ].join('\n\n');
 
-  const customApi = buildAiCustomApi(apiCfg);
+  const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
   const rawResult = await callTH('generateRaw', {
     user_input: userPrompt,
     should_stream: false,
     should_silence: true,
     max_chat_history: 0,
-    custom_api: Object.keys(customApi).length > 0 ? customApi : undefined,
+    custom_api: buildCurrentApiOverride(apiCfg),
     ordered_prompts: [
+      ...jbPrompts,
       { role: 'system', content: systemPrompt },
       'user_input',
     ],
@@ -137,6 +140,89 @@ export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
 
   if (results.length === 0) {
     throw new Error('无法将 AI 返回的条目匹配回原始条目，请重试');
+  }
+  return { rawReply: replyText, results };
+}
+
+export async function runAiWorldbookEdit({ selectedItems, instruction, apiCfg }) {
+  if (!hasTH('generateRaw')) {
+    throw new Error('当前酒馆助手版本不支持 generateRaw 接口');
+  }
+  if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
+    throw new Error('请至少选择一个需要由 AI 编辑的世界书条目');
+  }
+  const cleanInstruction = String(instruction || '').trim();
+  if (!cleanInstruction) {
+    throw new Error('请输入对这些世界书条目的修改指令');
+  }
+
+  const inputPayload = selectedItems.map((it) => ({
+    index: it.index,
+    uid: it.entry.uid,
+    name: it.entry.name || `条目 #${it.entry.uid}`,
+    enabled: !!it.entry.enabled,
+    keys: formatKeysInput(it.entry.strategy?.keys),
+    content: typeof it.entry.content === 'string' ? it.entry.content : '',
+  }));
+
+  const systemPrompt = [
+    '你是一个专业的 SillyTavern (酒馆) 世界书 (Lorebook / World Info) 编写与编辑助手。',
+    '用户会提供若干个世界书条目（JSON 数组）以及一段修改要求。',
+    '请严格按照用户要求修改对应条目的内容（如有需要也可修改 name、keys 或 enabled）。',
+    '输出要求：',
+    '1. 必须仅输出一个合法的 JSON 对象，不要包含额外解释文字。',
+    '2. 格式为：{"entries": [{"index": 原样数字index, "uid": 原样数字uid, "name": "条目标题", "enabled": true, "keys": "逗号分隔的关键词字符串", "content": "修改后的完整正文", "note": "简短修改说明"}]}',
+    '3. 必须完整保留每个条目的 index 与 uid，不得遗漏；若不需更改关键词，请原样保留 keys 字段。',
+  ].join('\n');
+
+  const userPrompt = [
+    `【修改需求】\n${cleanInstruction}`,
+    `【待编辑世界书条目 JSON】\n${JSON.stringify(inputPayload, null, 2)}`,
+  ].join('\n\n');
+
+  const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
+  const rawResult = await callTH('generateRaw', {
+    user_input: userPrompt,
+    should_stream: false,
+    should_silence: true,
+    max_chat_history: 0,
+    custom_api: buildCurrentApiOverride(apiCfg),
+    ordered_prompts: [
+      ...jbPrompts,
+      { role: 'system', content: systemPrompt },
+      'user_input',
+    ],
+  });
+
+  const replyText = typeof rawResult === 'string' ? rawResult : (rawResult?.content || '');
+  const list = extractJsonFromAiReply(replyText);
+  if (!list || list.length === 0) {
+    throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
+  }
+
+  const byIndex = new Map(selectedItems.map((it) => [it.index, it]));
+  const byUid = new Map(selectedItems.map((it) => [it.entry.uid, it]));
+  const results = [];
+  list.forEach((out) => {
+    if (!out || typeof out !== 'object') return;
+    const match = byIndex.get(Number(out.index)) || byUid.get(Number(out.uid));
+    if (!match) return;
+    results.push({
+      index: match.index,
+      uid: match.entry.uid,
+      oldContent: match.entry.content || '',
+      oldKeys: formatKeysInput(match.entry.strategy?.keys),
+      newName: typeof out.name === 'string' && out.name.trim() ? out.name.trim() : (match.entry.name || `条目 #${match.entry.uid}`),
+      newEnabled: typeof out.enabled === 'boolean' ? out.enabled : !!match.entry.enabled,
+      newKeys: typeof out.keys === 'string' ? out.keys : formatKeysInput(match.entry.strategy?.keys),
+      newContent: typeof out.content === 'string' ? out.content : (match.entry.content || ''),
+      note: typeof out.note === 'string' ? out.note : '',
+      accepted: true,
+    });
+  });
+
+  if (results.length === 0) {
+    throw new Error('无法将 AI 返回的世界书条目匹配回原条目，请重试');
   }
   return { rawReply: replyText, results };
 }

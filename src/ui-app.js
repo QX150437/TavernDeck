@@ -1,7 +1,7 @@
 import {
   APP_NAME, APP_CN, APP_VERSION, ROOT_ID, EXT_BTN_ID, EXT_SETTINGS_ID,
   hasTH, callTH, notify, genId, escapeHtml, cssEscape, makeItemKey,
-  cloneItemRef, copyToClipboard, downloadJsonFile,
+  cloneItemRef, copyToClipboard, downloadJsonFile, logWarn, logError,
 } from './utils.js';
 import {
   state, saveStore, ensureSchemesPool, getBoundSchemeIds, getVisibleSchemes,
@@ -251,11 +251,15 @@ export function syncExtensionButton() {
       try {
         if (window.$ && window.$('#extensionsMenu').length) window.$('#extensionsMenu').hide();
         else menu.style.display = 'none';
-      } catch (err) { menu.style.display = 'none'; }
+      } catch (err) {
+        menu.style.display = 'none';
+      }
       setTimeout(() => setPanelOpen(!state.panelOpen), 40);
     });
     menu.appendChild(btn);
-  } catch (e) {}
+  } catch (e) {
+    logWarn('同步魔法棒扩展菜单按钮失败', e);
+  }
 }
 
 export function mountExtensionSettingsPanel() {
@@ -291,7 +295,9 @@ export function mountExtensionSettingsPanel() {
       if (state.panelOpen) renderMain();
       notify('success', '窗口与悬浮球已重置');
     });
-  } catch (e) {}
+  } catch (e) {
+    logWarn('挂载扩展设置面板失败', e);
+  }
 }
 
 export function applyThemeAttributes() {
@@ -394,7 +400,7 @@ function buildGroupListHtml() {
       <div class='td-empty'>
         <div class='td-empty-icon'>${ICONS.layers}</div>
         <div class='td-empty-title'>方案「${escapeHtml(activeScheme.name)}」暂无分组</div>
-        <div class='td-empty-desc'>点击右上角管理栏或工具箱图标，即可新建分组、管理预设/世界书/API 或版本缝合。</div>
+        <div class='td-empty-desc'>点击右上角管理栏或工具箱图标，即可新建分组、管理预设与世界书、对比缝合或查看快照日志。</div>
         <button class='td-btn primary' data-action='new-group'>${ICONS.plus} 新建第一个分组</button>
       </div>`;
   }
@@ -443,7 +449,7 @@ export function renderMain() {
         <div class='td-brand-title'>${APP_NAME} <span class='td-ver'>${APP_VERSION}</span></div>
       </div>
       <div class='td-header-actions'>
-        <button class='td-icon-btn ${showTools ? 'is-active' : ''}' data-action='toggle-tools-drawer' title='工具箱（预设/世界书/API/缝合/快照/日志）'>${ICONS.toolbox}</button>
+        <button class='td-icon-btn ${showTools ? 'is-active' : ''}' data-action='toggle-tools-drawer' title='工具箱（预设/世界书/缝合/快照/日志）'>${ICONS.toolbox}</button>
         <button class='td-icon-btn ${showCtrl ? 'is-active' : ''}' data-action='toggle-control-bar' title='方案与预设栏'>${ICONS.sliders}</button>
         <button class='td-icon-btn' data-action='toggle-fullscreen' title='${isFs ? '退出全屏' : '全屏显示'}'>${isFs ? ICONS.minimize : ICONS.maximize}</button>
         <button class='td-icon-btn' data-action='open-settings' title='设置与主题'>${ICONS.settings}</button>
@@ -456,9 +462,8 @@ export function renderMain() {
         <button class='td-btn' data-action='open-worldbook-manager'>${ICONS.layers} 世界书管理</button>
         <button class='td-btn' data-action='open-preset-merge'>${ICONS.gitMerge} 预设对比缝合</button>
         <button class='td-btn' data-action='open-wb-merge'>${ICONS.gitMerge} 世界书对比缝合</button>
-        <button class='td-btn' data-action='open-api-manager'>${ICONS.sliders} 酒馆 API 管理</button>
         <button class='td-btn' data-action='open-snapshots'>${ICONS.camera} 预设快照${snapCount > 0 ? ` (${snapCount})` : ''}</button>
-        <button class='td-btn full' data-action='open-logs'>${ICONS.code} 插件运行日志</button>
+        <button class='td-btn' data-action='open-logs'>${ICONS.code} 运行日志</button>
       </div>
     </div>
     <div class='td-control-drawer ${showCtrl ? 'is-open' : ''}' id='td-scheme-drawer'>
@@ -496,7 +501,18 @@ function renderPreservingFocus(targetLayer, renderFn) {
     focusId = active.id;
     try { selStart = active.selectionStart; selEnd = active.selectionEnd; } catch (e) {}
   }
+  const scroller = targetLayer?.querySelector('.td-picker-list, .td-modal-body');
+  const prevTop = scroller ? scroller.scrollTop : 0;
+
   renderFn();
+
+  if (prevTop > 0 && targetLayer) {
+    const nextScroller = targetLayer.querySelector('.td-picker-list, .td-modal-body');
+    if (nextScroller) {
+      nextScroller.scrollTop = prevTop;
+      requestAnimationFrame(() => { nextScroller.scrollTop = prevTop; });
+    }
+  }
   if (focusId && targetLayer) {
     const nextEl = targetLayer.querySelector(`#${cssEscape(focusId)}`);
     if (nextEl) {
@@ -527,7 +543,7 @@ export function setPanelOpen(open) {
         if (state.modal?.type === 'picker') updatePickerList();
         if (state.modal?.type === 'snapshots') updateSnapshotList();
       })
-      .catch((e) => console.warn(`[${APP_NAME}] 同步数据异常:`, e));
+      .catch((e) => logWarn('同步数据异常', e));
   } else {
     state.modal = null;
     state.previewKey = null;
@@ -547,35 +563,19 @@ export function setPanelOpen(open) {
   }
 }
 
-function compressOrbImageFile(file) {
+function loadOrbImageForCrop(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('读取图片失败'));
     reader.onload = () => {
       const rawUrl = String(reader.result || '');
       if (file.type === 'image/gif' && file.size <= 400 * 1024) {
-        resolve(rawUrl);
+        resolve({ isGif: true, rawUrl });
         return;
       }
       const img = new Image();
       img.onerror = () => reject(new Error('解析图片失败'));
-      img.onload = () => {
-        const maxSide = 220;
-        const scale = Math.min(1, maxSide / Math.max(img.width || 1, img.height || 1));
-        const w = Math.max(1, Math.round((img.width || maxSide) * scale));
-        const h = Math.max(1, Math.round((img.height || maxSide) * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx2d = canvas.getContext('2d');
-        ctx2d.drawImage(img, 0, 0, w, h);
-        try {
-          const webp = canvas.toDataURL('image/webp', 0.88);
-          resolve(webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/png'));
-        } catch (err) {
-          resolve(canvas.toDataURL('image/png'));
-        }
-      };
+      img.onload = () => resolve({ isGif: false, img });
       img.src = rawUrl;
     };
     reader.readAsDataURL(file);
@@ -600,6 +600,7 @@ function performSwitchPreset(nextPreset) {
       }, 70);
     }
   } catch (err) {
+    logError('切换预设出错', err);
     notify('error', '切换预设出错');
   }
 }
@@ -1035,7 +1036,7 @@ function handleRootClick(e) {
   if (action === 'preview-redo') { if (editHistory.index < editHistory.stack.length - 1) { editHistory.index++; applyPreviewSnapshot(editHistory.stack[editHistory.index]); updatePreviewHistoryButtons(); } return; }
   if (action === 'copy-preview') {
     const contentEl = previewLayerEl.querySelector('#td-edit-content') || previewLayerEl.querySelector('#td-edit-replace-string');
-    copyToClipboard(contentEl ? contentEl.value : '').then(() => notify('success', '内容已复制到剪贴板')).catch(() => notify('error', '复制失败'));
+    copyToClipboard(contentEl ? contentEl.value : '').then(() => notify('success', '内容已复制到剪贴板')).catch((err) => { logError('复制预览内容失败', err); notify('error', '复制失败'); });
     return;
   }
   if (action === 'toggle-preview-entry') {
@@ -1125,16 +1126,8 @@ function handleRootClick(e) {
   }
   if (action === 'save-picker' && state.modal?.type === 'picker') { setGroupItems(state.modal.groupId, state.modal.selectedMap); state.modal = null; renderModal(); renderMain(); notify('success', '分组条目已更新'); return; }
 
-  // 设置交互（所有开关原地局部切换，绝不重建 DOM 导致回顶）
+  // 设置交互（全部开关原地局部切换，绝不重建 DOM 导致回顶）
   if (action === 'trigger-orb-upload') { modalLayerEl.querySelector('#td-orb-img-input')?.click(); return; }
-  if (action === 'apply-orb-url') {
-    const urlInp = modalLayerEl.querySelector('#td-orb-url-input');
-    const url = (urlInp ? urlInp.value : '').trim();
-    if (!url) { state.store.settings.orbImage = ''; saveStore(state.store); renderOrb(); renderModal(); notify('info', '已清空悬浮球链接并恢复默认图标'); return; }
-    if (!/^https?:\/\/|^data:image\//i.test(url)) { notify('warning', '请输入以 http:// 或 https:// 开头的图片网络链接'); return; }
-    state.store.settings.orbImage = url; saveStore(state.store); renderOrb(); renderModal(); notify('success', '悬浮球网络图片已应用'); return;
-  }
-  if (action === 'toggle-orb-fit') { state.store.settings.orbImageFit = state.store.settings.orbImageFit === 'contain' ? 'cover' : 'contain'; saveStore(state.store); renderOrb(); renderModal(); return; }
   if (action === 'clear-orb-image') { state.store.settings.orbImage = ''; saveStore(state.store); renderOrb(); renderModal(); notify('info', '已恢复默认悬浮球图标'); return; }
   if (action === 'toggle-native-preset-collapse') {
     const nextVal = !state.store.settings.collapseNativePresetSettings;
@@ -1256,7 +1249,7 @@ function handleRootInput(e) {
     const label = modalLayerEl.querySelector("[data-role='opacity-label']"); if (label) label.textContent = `悬浮球透明度 (${Math.round(val * 100)}%)`;
     return;
   }
-  if (['td-edit-name', 'td-edit-content', 'td-edit-find-regex', 'td-edit-replace-string', 'td-merge-custom-name', 'td-merge-custom-content'].includes(id)) {
+  if (['td-edit-name', 'td-edit-content', 'td-edit-find-regex', 'td-edit-replace-string', 'td-merge-custom-name', 'td-merge-custom-content', 'td-wbm-custom-name', 'td-wbm-custom-keys'].includes(id)) {
     const isLarge = e.inputType === 'insertFromPaste' || e.inputType === 'deleteByCut';
     if (isLarge) pushEditSnapshot(true); else scheduleEditSnapshot();
   }
@@ -1284,11 +1277,21 @@ function handleRootChange(e) {
     performSwitchPreset(nextPreset); return;
   }
   if (id === 'td-orb-img-input') {
-    const file = e.target.files?.[0]; if (!file) return;
-    compressOrbImageFile(file).then((dataUrl) => {
-      state.store.settings.orbImage = dataUrl;
-      saveStore(state.store); renderOrb(); renderModal(); notify('success', '悬浮球图片已更新');
-    }).catch((err) => notify('error', err.message || '图片处理失败'));
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    loadOrbImageForCrop(file).then((res) => {
+      if (res.isGif) {
+        state.store.settings.orbImage = res.rawUrl;
+        state.store.settings.orbImageFit = 'cover';
+        saveStore(state.store); renderOrb(); renderModal(); notify('success', 'GIF 悬浮球图片已应用');
+      } else {
+        state.previewKey = null;
+        state.snapshotDetailId = null;
+        state.previewCtx = { type: 'orbCrop', img: res.img, zoom: 1, offsetX: 0, offsetY: 0 };
+        renderPreviewModal();
+      }
+    }).catch((err) => notify('error', err.message || '图片加载失败'));
     return;
   }
   if (id === 'td-io-file-input' && state.modal?.type === 'ioCenter') {
@@ -1324,7 +1327,7 @@ function handleRootChange(e) {
 function handleRootKeydown(e) {
   if (e.key === 'Enter' && !e.isComposing && e.target) {
     if (e.target.id === 'td-sp-color-input') selectLayerEl.querySelector("[data-action='select-popup-apply-color']")?.click();
-    else if (e.target.id === 'td-orb-url-input') modalLayerEl.querySelector("[data-action='apply-orb-url']")?.click();
+    else if (e.target.id === 'td-move-idx-input') selectLayerEl.querySelector("[data-action='move-by-number']")?.click();
     else if (e.target.id === 'td-group-name-input') modalLayerEl.querySelector("[data-action='submit-group-form']")?.click();
     else if (e.target.id === 'td-scheme-name-input') modalLayerEl.querySelector("[data-action='submit-scheme-form']")?.click();
     else if (e.target.id === 'td-snap-rename-input') modalLayerEl.querySelector("[data-action='submit-snap-rename']")?.click();
@@ -1533,25 +1536,51 @@ export function mountUI() {
     performSwitchPreset,
   });
 
-  orbEl.addEventListener('pointerdown', onOrbPointerDown); orbEl.addEventListener('pointermove', onOrbPointerMove);
-  orbEl.addEventListener('pointerup', onOrbPointerUp); orbEl.addEventListener('pointercancel', onOrbPointerUp); orbEl.addEventListener('click', onOrbClick);
-  panelEl.addEventListener('pointerdown', onPanelHeaderPointerDown); panelEl.addEventListener('pointerdown', onSortGripPointerDown);
-  panelEl.addEventListener('pointermove', onPanelPointerMove); panelEl.addEventListener('pointerup', onPanelPointerUp); panelEl.addEventListener('pointercancel', onPanelPointerUp);
-  resizeHandleEl.addEventListener('pointerdown', onResizePointerDown); resizeHandleEl.addEventListener('pointermove', onPanelPointerMove);
-  resizeHandleEl.addEventListener('pointerup', onPanelPointerUp); resizeHandleEl.addEventListener('pointercancel', onPanelPointerUp);
-  rootEl.addEventListener('click', handleRootClickCapture, true); rootEl.addEventListener('click', handleRootClick);
-  rootEl.addEventListener('input', handleRootInput); rootEl.addEventListener('change', handleRootChange); rootEl.addEventListener('keydown', handleRootKeydown);
-  window.addEventListener('pointermove', onGlobalPointerMove); window.addEventListener('pointerup', onGlobalPointerUp); window.addEventListener('pointercancel', onGlobalPointerUp);
-  document.addEventListener('click', onHostWandClick, true); window.addEventListener('resize', onHostResize);
-  if (window.visualViewport) { window.visualViewport.addEventListener('resize', onHostResize); window.visualViewport.addEventListener('scroll', onHostResize); }
+  orbEl.addEventListener('pointerdown', onOrbPointerDown);
+  orbEl.addEventListener('pointermove', onOrbPointerMove);
+  orbEl.addEventListener('pointerup', onOrbPointerUp);
+  orbEl.addEventListener('pointercancel', onOrbPointerUp);
+  orbEl.addEventListener('click', onOrbClick);
+  panelEl.addEventListener('pointerdown', onPanelHeaderPointerDown);
+  panelEl.addEventListener('pointerdown', onSortGripPointerDown);
+  panelEl.addEventListener('pointermove', onPanelPointerMove);
+  panelEl.addEventListener('pointerup', onPanelPointerUp);
+  panelEl.addEventListener('pointercancel', onPanelPointerUp);
+  resizeHandleEl.addEventListener('pointerdown', onResizePointerDown);
+  resizeHandleEl.addEventListener('pointermove', onPanelPointerMove);
+  resizeHandleEl.addEventListener('pointerup', onPanelPointerUp);
+  resizeHandleEl.addEventListener('pointercancel', onPanelPointerUp);
+  rootEl.addEventListener('click', handleRootClickCapture, true);
+  rootEl.addEventListener('click', handleRootClick);
+  rootEl.addEventListener('input', handleRootInput);
+  rootEl.addEventListener('change', handleRootChange);
+  rootEl.addEventListener('keydown', handleRootKeydown);
+  window.addEventListener('pointermove', onGlobalPointerMove);
+  window.addEventListener('pointerup', onGlobalPointerUp);
+  window.addEventListener('pointercancel', onGlobalPointerUp);
+  document.addEventListener('click', onHostWandClick, true);
+  window.addEventListener('resize', onHostResize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', onHostResize);
+    window.visualViewport.addEventListener('scroll', onHostResize);
+  }
 }
 
 export function cleanupDOM() {
-  clearOrbIdleTimer(); if (editHistory.timer) clearTimeout(editHistory.timer);
-  window.removeEventListener('pointermove', onGlobalPointerMove); window.removeEventListener('pointerup', onGlobalPointerUp); window.removeEventListener('pointercancel', onGlobalPointerUp);
-  document.removeEventListener('click', onHostWandClick, true); window.removeEventListener('resize', onHostResize);
-  if (window.visualViewport) { window.visualViewport.removeEventListener('resize', onHostResize); window.visualViewport.removeEventListener('scroll', onHostResize); }
-  document.getElementById(EXT_BTN_ID)?.remove(); document.getElementById(EXT_SETTINGS_ID)?.remove();
-  document.getElementById('tavern-deck-top-bar-btn')?.remove(); document.getElementById(ROOT_ID)?.remove();
+  clearOrbIdleTimer();
+  if (editHistory.timer) clearTimeout(editHistory.timer);
+  window.removeEventListener('pointermove', onGlobalPointerMove);
+  window.removeEventListener('pointerup', onGlobalPointerUp);
+  window.removeEventListener('pointercancel', onGlobalPointerUp);
+  document.removeEventListener('click', onHostWandClick, true);
+  window.removeEventListener('resize', onHostResize);
+  if (window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', onHostResize);
+    window.visualViewport.removeEventListener('scroll', onHostResize);
+  }
+  document.getElementById(EXT_BTN_ID)?.remove();
+  document.getElementById(EXT_SETTINGS_ID)?.remove();
+  document.getElementById('tavern-deck-top-bar-btn')?.remove();
+  document.getElementById(ROOT_ID)?.remove();
   rootEl = orbEl = panelEl = panelMainEl = resizeHandleEl = modalLayerEl = previewLayerEl = selectLayerEl = confirmLayerEl = null;
 }

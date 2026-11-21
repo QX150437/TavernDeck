@@ -1,7 +1,18 @@
 import {
-  callTH, hasTH, getST, notify, cloneWorldbookEntries, downloadJsonFile,
+  callTH, hasTH, getST, notify, cloneWorldbookEntries, downloadJsonFile, logWarn,
 } from './utils.js';
 import { state, saveStore } from './store.js';
+
+export function isInActiveChat() {
+  try {
+    const st = getST();
+    const chatId = st?.getCurrentChatId?.() || st?.chatId;
+    return !!(chatId && String(chatId).trim());
+  } catch (e) {
+    logWarn('检测当前聊天状态失败', e);
+    return false;
+  }
+}
 
 export function getWorldbookBindingsSnapshot() {
   const allBooks = hasTH('getWorldbookNames') ? (callTH('getWorldbookNames') || []) : [];
@@ -18,14 +29,19 @@ export function getWorldbookBindingsSnapshot() {
         charPrimary = cw.primary || null;
         charAdditional = Array.isArray(cw.additional) ? cw.additional.slice() : [];
       }
-    } catch (e) {}
+    } catch (e) {
+      logWarn('读取角色卡绑定世界书失败', e);
+    }
   }
 
+  const inChat = isInActiveChat();
   let chatBook = null;
-  if (hasTH('getChatWorldbookName')) {
+  if (inChat && hasTH('getChatWorldbookName')) {
     try {
       chatBook = callTH('getChatWorldbookName', 'current');
-    } catch (e) {}
+    } catch (e) {
+      logWarn('读取聊天绑定世界书失败', e);
+    }
   }
 
   return {
@@ -33,6 +49,7 @@ export function getWorldbookBindingsSnapshot() {
     globalList,
     globalSet,
     hasCharacter,
+    inChat,
     charPrimary,
     charAdditional,
     charAdditionalSet: new Set(charAdditional),
@@ -69,11 +86,37 @@ export async function toggleCharAdditionalWorldbook(bookName) {
 }
 
 export async function bindChatWorldbookSafe(bookName) {
-  await callTH('rebindChatWorldbook', 'current', bookName || '');
-  notify('success', bookName ? `已绑定当前聊天世界书「${bookName}」` : '已更新当前聊天世界书');
+  if (!isInActiveChat()) {
+    throw new Error('当前未处于任何聊天中，请先打开角色卡聊天后再绑定/解绑聊天世界书');
+  }
+  const st = getST();
+  if (!bookName) {
+    if (st && st.chatMetadata) {
+      delete st.chatMetadata.world_info;
+      if (typeof st.saveMetadata === 'function') await st.saveMetadata();
+    }
+    const curCheck = hasTH('getChatWorldbookName') ? callTH('getChatWorldbookName', 'current') : null;
+    if (curCheck) {
+      const unbindBtn = document.getElementById('world_info_chat_unbind')
+        || document.querySelector('[data-action="unbind-chat-lorebook"], #chat_lorebook_unbind');
+      if (unbindBtn) unbindBtn.click();
+    }
+    notify('success', '已解绑当前聊天世界书');
+    return;
+  }
+
+  await callTH('rebindChatWorldbook', 'current', bookName);
+  const verified = hasTH('getChatWorldbookName') ? callTH('getChatWorldbookName', 'current') : bookName;
+  if (verified !== bookName) {
+    throw new Error('绑定聊天世界书未生效，请确认当前已打开有效聊天');
+  }
+  notify('success', `已绑定当前聊天世界书「${bookName}」`);
 }
 
 export async function createOrBindChatWorldbookSafe(customName) {
+  if (!isInActiveChat()) {
+    throw new Error('当前未处于任何聊天中，无法新建或绑定聊天世界书');
+  }
   const created = await callTH('getOrCreateChatWorldbook', 'current', customName || undefined);
   notify('success', `已启用当前聊天世界书「${created}」`);
   return created;
@@ -128,7 +171,7 @@ export async function renameWorldbookSafe(oldName, newName) {
     await callTH('rebindCharWorldbooks', 'current', { primary: nextPrimary, additional: nextAdd });
   }
   if (snap.chatBook === oldName) {
-    try { await callTH('rebindChatWorldbook', 'current', clean); } catch (e) {}
+    try { await callTH('rebindChatWorldbook', 'current', clean); } catch (e) { logWarn('重命名时迁移聊天世界书绑定失败', e); }
   }
 
   (state.store.schemes || []).forEach((s) => replaceBookRefInGroups(s.groups, oldName, clean));
@@ -152,7 +195,9 @@ export async function exportWorldbookFile(name) {
       const raw = await st.loadWorldInfo(name);
       if (raw && typeof raw === 'object') payload = raw;
     }
-  } catch (e) {}
+  } catch (e) {
+    logWarn(`从酒馆加载世界书「${name}」原始数据失败，改用助手导出`, e);
+  }
   if (!payload) {
     payload = await callTH('getWorldbook', name);
   }

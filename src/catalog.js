@@ -1,6 +1,6 @@
 import {
-  APP_NAME, SCOPE_LABELS,
-  hasTH, callTH, notify, makeItemKey,
+  SCOPE_LABELS,
+  getST, hasTH, callTH, notify, makeItemKey, logWarn, logError,
 } from './utils.js';
 import { state, getActiveScheme, findGroupNode } from './store.js';
 
@@ -91,18 +91,21 @@ export function refreshSyncSources() {
   try {
     state.presetName = hasTH('getLoadedPresetName') ? (callTH('getLoadedPresetName') || '当前预设') : '当前预设';
   } catch (e) {
+    logWarn('获取当前预设名称失败', e);
     state.presetName = state.presetName || '当前预设';
   }
 
   try {
     state.presetNames = hasTH('getPresetNames') ? (callTH('getPresetNames') || []) : [];
   } catch (e) {
+    logWarn('获取预设列表失败', e);
     state.presetNames = [];
   }
 
   try {
     state.hasCharacter = hasTH('getCurrentCharacterName') ? !!callTH('getCurrentCharacterName') : false;
   } catch (e) {
+    logWarn('检测当前角色卡状态失败', e);
     state.hasCharacter = false;
   }
 
@@ -124,6 +127,7 @@ export function refreshSyncSources() {
       };
     });
   } catch (e) {
+    logWarn('读取当前预设条目失败', e);
     state.catalog.preset = [];
   }
 
@@ -136,7 +140,9 @@ export function refreshSyncSources() {
         const items = [];
         flattenScripts(trees, scope, '', items);
         scriptGroups.push({ scopeKey: `script-${scope}`, title: `${SCOPE_LABELS[scope]}脚本`, items });
-      } catch (e) {}
+      } catch (e) {
+        logWarn(`读取 ${scope} 脚本失败`, e);
+      }
     });
   } else if (currentPresetObj && currentPresetObj.extensions && currentPresetObj.extensions.tavern_helper) {
     const trees = currentPresetObj.extensions.tavern_helper.scripts || [];
@@ -172,7 +178,9 @@ export function refreshSyncSources() {
           };
         });
         regexGroups.push({ scopeKey: `regex-${cfg.scope}`, title: cfg.title, items });
-      } catch (e) {}
+      } catch (e) {
+        logWarn(`读取 ${cfg.title} 失败`, e);
+      }
     });
   }
   state.catalog.regex = regexGroups;
@@ -190,14 +198,18 @@ async function refreshCharacterScriptsFallback() {
     others.push({ scopeKey: 'script-character', title: '角色卡脚本', items });
     state.catalog.script = others;
     rebuildCatalogIndex();
-  } catch (e) {}
+  } catch (e) {
+    logWarn('回退读取角色卡脚本失败', e);
+  }
 }
 
 function getNeededExtraBooksFromStore() {
   const set = new Set(Object.keys(state.extraLoadedBooks));
   try {
     collectWorldbooksFromGroups(getActiveScheme().groups, set);
-  } catch (e) {}
+  } catch (e) {
+    logWarn('扫描方案引用世界书失败', e);
+  }
   return set;
 }
 
@@ -216,13 +228,20 @@ export async function refreshWorldbookCatalog(includeAllBooks = false) {
           charPrimary = cw.primary || null;
           (cw.additional || []).forEach((n) => charAddSet.add(n));
         }
-      } catch (e) {}
+      } catch (e) {
+        logWarn('读取角色卡绑定世界书失败', e);
+      }
     }
+
+    const st = getST();
+    const hasActiveChat = !!(st?.getCurrentChatId?.() || st?.chatId);
     let chatBook = null;
-    if (hasTH('getChatWorldbookName')) {
+    if (hasActiveChat && hasTH('getChatWorldbookName')) {
       try {
         chatBook = callTH('getChatWorldbookName', 'current');
-      } catch (e) {}
+      } catch (e) {
+        logWarn('读取聊天绑定世界书失败', e);
+      }
     }
 
     const neededExtra = getNeededExtraBooksFromStore();
@@ -272,7 +291,9 @@ export async function refreshWorldbookCatalog(includeAllBooks = false) {
             };
           });
           groups.push({ scopeKey: `wb-${meta.name}`, bookName: meta.name, title: meta.title, items });
-        } catch (e) {}
+        } catch (e) {
+          logWarn(`加载世界书「${meta.name}」条目失败`, e);
+        }
       }));
     }
 
@@ -434,13 +455,16 @@ export function applyItemMutations(mutations) {
           rb.item.raw.enabled = rb.prevEnabled;
         }
       });
-      console.error(`[${APP_NAME}] 批量应用开关失败:`, e);
+      logError('批量应用开关失败', e);
       notify('error', `操作失败: ${e && e.message ? e.message : e}`);
       return false;
     }
   });
 
-  mutationQueue = task.catch(() => false);
+  mutationQueue = task.catch((err) => {
+    logError('状态队列执行异常', err);
+    return false;
+  });
   return task;
 }
 
@@ -504,7 +528,9 @@ export async function saveEditedEntry(itemKey, fields) {
         if (loadedName && loadedName !== 'in_use') {
           await callTH('updatePresetWith', loadedName, applyPresetEdit);
         }
-      } catch (err) {}
+      } catch (err) {
+        logWarn('同步更新已保存预设文件失败', err);
+      }
     } else if (ref.type === 'worldbook') {
       await callTH('updateWorldbookWith', ref.book, (entries) =>
         (entries || []).map((e) => {
@@ -541,7 +567,7 @@ export async function saveEditedEntry(itemKey, fields) {
     notify('success', '已保存并持久化');
     return true;
   } catch (e) {
-    console.error(`[${APP_NAME}] 保存条目失败:`, e);
+    logError('保存条目失败', e);
     notify('error', `保存失败: ${e && e.message ? e.message : e}`);
     return false;
   } finally {

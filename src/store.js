@@ -1,6 +1,6 @@
 import {
-  APP_NAME, STORAGE_KEY, SCHEMA_VERSION,
-  hasTH, callTH, notify, genId, makeItemKey, cloneItemRef,
+  STORAGE_KEY, SCHEMA_VERSION,
+  hasTH, callTH, notify, genId, makeItemKey, cloneItemRef, logError,
 } from './utils.js';
 
 export function createDefaultStore() {
@@ -37,14 +37,8 @@ export function createDefaultStore() {
         remove: true,
       },
       aiEditConfig: {
-        mode: 'proxy',
-        proxyPreset: '',
-        apiUrl: '',
-        apiKey: '',
-        source: 'openai',
+        jailbreakPreset: '',
         model: '',
-        temperature: '',
-        maxTokens: '',
       },
       orbSize: 50,
       orbOpacity: 0.96,
@@ -120,6 +114,10 @@ export function loadStore() {
     const settings = Object.assign({}, def.settings, raw.settings || {});
     delete settings.enableDevMode;
     delete settings.githubRepo;
+    if (/^https?:\/\//i.test(settings.orbImage || '')) {
+      settings.orbImage = '';
+    }
+    settings.orbImageFit = settings.orbImageFit === 'contain' ? 'contain' : 'cover';
     settings.collapsedGroupItems = Object.assign(
       {},
       def.settings.collapsedGroupItems,
@@ -130,11 +128,11 @@ export function loadStore() {
       def.settings.collapsedEntryItems,
       (raw.settings && raw.settings.collapsedEntryItems) || {},
     );
-    settings.aiEditConfig = Object.assign(
-      {},
-      def.settings.aiEditConfig,
-      (raw.settings && raw.settings.aiEditConfig) || {},
-    );
+    const oldAi = (raw.settings && raw.settings.aiEditConfig) || {};
+    settings.aiEditConfig = {
+      jailbreakPreset: typeof oldAi.jailbreakPreset === 'string' ? oldAi.jailbreakPreset : '',
+      model: typeof oldAi.model === 'string' ? oldAi.model : '',
+    };
     ensureAtLeastOneEntry(settings);
     const schemes = Array.isArray(raw.schemes) && raw.schemes.length > 0
       ? raw.schemes.map((s) => ({
@@ -154,7 +152,7 @@ export function loadStore() {
       extensions: raw.extensions && typeof raw.extensions === 'object' ? raw.extensions : {},
     };
   } catch (e) {
-    console.error(`[${APP_NAME}] 读取全局变量失败:`, e);
+    logError('读取全局变量失败', e);
     return createDefaultStore();
   }
 }
@@ -168,7 +166,7 @@ export function saveStore(store = state.store) {
       return next;
     }, { type: 'global' });
   } catch (e) {
-    console.error(`[${APP_NAME}] 保存全局变量失败:`, e);
+    logError('保存全局变量失败', e);
     notify('error', '保存配置到全局变量失败');
   }
 }
@@ -428,7 +426,7 @@ export function performDrop(op) {
 
 export function exportStoreData(opts) {
   const payload = {
-    app: APP_NAME,
+    app: 'TavernDeck',
     schemaVersion: SCHEMA_VERSION,
     exportedAt: Date.now(),
     scope: 'partial',
@@ -462,7 +460,7 @@ export function exportStoreData(opts) {
 }
 
 export function importStoreData(data, opts) {
-  if (!data || typeof data !== 'object' || data.app !== APP_NAME) {
+  if (!data || typeof data !== 'object' || data.app !== 'TavernDeck') {
     throw new Error('无效的 TavernDeck 备份文件格式');
   }
   const mode = opts.mode === 'overwrite' ? 'overwrite' : 'merge';

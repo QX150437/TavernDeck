@@ -144,7 +144,6 @@ export async function executeWorldbookStitch(session, targetMode, customTargetNa
     }
   });
 
-  // 确保 uid 唯一不冲突
   let nextUid = rawList.reduce((mx, e) => Math.max(mx, Number(e.uid) || 0), 0) + 1;
   const seenUid = new Set();
   const finalEntries = rawList.map((e) => {

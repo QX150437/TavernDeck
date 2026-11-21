@@ -1,7 +1,7 @@
 import {
   escapeHtml, notify, normalizeColorInput, findBestMatchingName,
   computeLineDiff, cloneWorldbookEntry, formatKeysInput, parseKeysInput,
-  hasTH, callTH, copyToClipboard,
+  hasTH, callTH, copyToClipboard, downloadTextFile, logWarn, logError,
 } from './utils.js';
 import { state, saveStore } from './store.js';
 import { refreshAllCatalogs, refreshWorldbookCatalog } from './catalog.js';
@@ -10,7 +10,8 @@ import { buildWorldbookDiffSession, executeWorldbookStitch } from './worldbook-m
 import {
   PRESET_SYSTEM_IDS, PRESET_SETTING_FIELDS, getPresetSummaryList, getPresetDetail,
   savePresetDetail, createNewPresetSafe, renameSavedPresetSafe, deleteSavedPresetSafe,
-  exportPresetFile, importPresetFromFile, buildNewPromptEntry, movePromptBeforeIndex,
+  exportPresetFile, importPresetFromFile, buildNewPromptEntry,
+  movePromptsBatchBeforeIndex, insertFromUnusedAt,
 } from './preset-manager.js';
 import {
   WB_POSITION_OPTIONS, getWorldbookBindingsSnapshot, toggleGlobalWorldbook,
@@ -20,12 +21,7 @@ import {
   buildDefaultWorldbookEntry, disableAllRecursionInEntries,
 } from './worldbook-manager.js';
 import { getTopBarPositionOptions } from './native-ui.js';
-import { runAiPresetEdit } from './ai-preset-edit.js';
-import {
-  getApiSnapshot, switchMainApi, switchChatCompletionSource, switchChatCompletionModel,
-  updateCustomEndpoint, switchProxyPreset, switchConnectionProfile,
-  triggerNativeApiConnectTest, fetchCustomModelList, testAiPromptPing,
-} from './api-manager.js';
+import { runAiPresetEdit, runAiWorldbookEdit } from './ai-preset-edit.js';
 import { getDevLogs, clearDevLogs, formatLogsReport } from './dev-tools.js';
 import {
   ICONS, THEME_OPTIONS, ORB_STYLE_OPTIONS, TEXT_COLOR_PRESETS,
@@ -47,8 +43,106 @@ let ctx = {
   performSwitchPreset: () => {},
 };
 
+let cropDrag = null;
+
 export function setUiManagersContext(nextCtx) {
   ctx = Object.assign(ctx, nextCtx || {});
+}
+
+export function drawOrbCropCanvas() {
+  const previewLayerEl = ctx.getPreviewLayer();
+  if (!previewLayerEl || state.previewCtx?.type !== 'orbCrop') return;
+  const canvas = previewLayerEl.querySelector('#td-crop-canvas');
+  const crop = state.previewCtx;
+  if (!canvas || !crop.img) return;
+
+  const size = 240;
+  const ctx2d = canvas.getContext('2d');
+  ctx2d.clearRect(0, 0, size, size);
+
+  const img = crop.img;
+  const baseScale = Math.max(size / (img.width || size), size / (img.height || size));
+  const scale = baseScale * (crop.zoom || 1);
+  const drawW = img.width * scale;
+  const drawH = img.height * scale;
+  const dx = (size - drawW) / 2 + (crop.offsetX || 0);
+  const dy = (size - drawH) / 2 + (crop.offsetY || 0);
+
+  ctx2d.drawImage(img, dx, dy, drawW, drawH);
+
+  // 圆形遮罩指示圈
+  ctx2d.save();
+  ctx2d.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx2d.beginPath();
+  ctx2d.rect(0, 0, size, size);
+  ctx2d.arc(size / 2, size / 2, size / 2 - 8, 0, Math.PI * 2, true);
+  ctx2d.fill('evenodd');
+  ctx2d.strokeStyle = 'rgba(255, 255, 255, 0.88)';
+  ctx2d.lineWidth = 2;
+  ctx2d.beginPath();
+  ctx2d.arc(size / 2, size / 2, size / 2 - 8, 0, Math.PI * 2);
+  ctx2d.stroke();
+  ctx2d.restore();
+}
+
+function exportCroppedOrbDataUrl(crop) {
+  const outSize = 180;
+  const stageSize = 240;
+  const radiusRatio = (stageSize / 2 - 8) / (stageSize / 2);
+  const canvas = document.createElement('canvas');
+  canvas.width = outSize;
+  canvas.height = outSize;
+  const ctx2d = canvas.getContext('2d');
+
+  ctx2d.beginPath();
+  ctx2d.arc(outSize / 2, outSize / 2, outSize / 2, 0, Math.PI * 2);
+  ctx2d.clip();
+
+  const img = crop.img;
+  const baseScale = Math.max(stageSize / (img.width || stageSize), stageSize / (img.height || stageSize));
+  const scale = baseScale * (crop.zoom || 1);
+  const factor = (outSize / stageSize) / radiusRatio;
+
+  const drawW = img.width * scale * factor;
+  const drawH = img.height * scale * factor;
+  const dx = (outSize - drawW) / 2 + (crop.offsetX || 0) * factor;
+  const dy = (outSize - drawH) / 2 + (crop.offsetY || 0) * factor;
+
+  ctx2d.drawImage(img, dx, dy, drawW, drawH);
+  try {
+    const webp = canvas.toDataURL('image/webp', 0.9);
+    return webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/png');
+  } catch (e) {
+    logWarn('转换 WebP 头像失败，降级使用 PNG', e);
+    return canvas.toDataURL('image/png');
+  }
+}
+
+export function bindOrbCropPointerEvents(previewLayerEl) {
+  const stage = previewLayerEl?.querySelector('#td-crop-stage');
+  if (!stage || stage.dataset.tdBound) return;
+  stage.dataset.tdBound = '1';
+
+  stage.addEventListener('pointerdown', (e) => {
+    if (state.previewCtx?.type !== 'orbCrop') return;
+    e.preventDefault();
+    cropDrag = {
+      x: e.clientX,
+      y: e.clientY,
+      ox: state.previewCtx.offsetX || 0,
+      oy: state.previewCtx.offsetY || 0,
+    };
+    try { stage.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (!cropDrag || state.previewCtx?.type !== 'orbCrop') return;
+    state.previewCtx.offsetX = cropDrag.ox + (e.clientX - cropDrag.x);
+    state.previewCtx.offsetY = cropDrag.oy + (e.clientY - cropDrag.y);
+    drawOrbCropCanvas();
+  });
+  const endDrag = () => { cropDrag = null; };
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
 }
 
 export function renderSelectPopupView() {
@@ -69,10 +163,7 @@ export function renderSelectPopupView() {
     const title = isTheme ? '选择界面主题' : '选择悬浮球颜色样式';
     const itemsHtml = list.map((o) => `
       <button type='button' class='td-select-option ${o.id === curVal ? 'active' : ''}' data-action='select-popup-pick' data-value='${escapeHtml(o.id)}'>
-        <span class='td-select-option-left'>
-          <span class='td-swatch' style='background:${escapeHtml(o.swatch)};'></span>
-          <span class='td-select-option-name'>${escapeHtml(o.name)}</span>
-        </span>
+        <span class='td-select-option-left'><span class='td-swatch' style='background:${escapeHtml(o.swatch)};'></span><span class='td-select-option-name'>${escapeHtml(o.name)}</span></span>
         ${o.id === curVal ? "<span class='td-mode-tag multi'>当前</span>" : ''}
       </button>`).join('');
 
@@ -104,31 +195,41 @@ export function renderSelectPopupView() {
   }
 
   if (sp.type === 'movePromptTarget' && state.modal?.type === 'presetDetail') {
-    const list = state.modal.data[sp.listName] || [];
-    const fromIdx = sp.fromIdx;
-    const src = list[fromIdx];
-    const itemsHtml = list.map((p, idx) => {
-      const disabled = idx === fromIdx || idx === fromIdx + 1;
+    const targetList = sp.mode === 'insertFromUnused'
+      ? (state.modal.data.prompts || [])
+      : (state.modal.data[sp.listName] || []);
+    const fromSet = new Set(sp.fromIndices || []);
+    const isInsert = sp.mode === 'insertFromUnused';
+    const title = isInsert
+      ? `加入主列表（${fromSet.size} 项）· 选择插入位置`
+      : (fromSet.size > 1 ? `批量移动 ${fromSet.size} 个条目` : `移动 #${(sp.fromIndices?.[0] ?? 0) + 1} 条目`);
+
+    const itemsHtml = targetList.map((p, idx) => {
+      const isSelf = !isInsert && fromSet.has(idx);
       return `
-        <button type='button' class='td-select-option ${idx === fromIdx ? 'active' : ''}' ${disabled ? 'disabled style="opacity:0.45;cursor:not-allowed;"' : ''} data-action='select-popup-pick' data-value='${idx}'>
+        <button type='button' class='td-select-option ${isSelf ? 'active' : ''}' data-action='select-popup-pick' data-value='${idx}'>
           <span class='td-select-option-left'>
             <span class='td-idx-badge'>#${idx + 1}</span>
-            <span class='td-select-option-name'>移动到「${escapeHtml(p.name || p.id)}」之前</span>
+            <span class='td-select-option-name'>放在「${escapeHtml(p.name || p.id)}」之前</span>
           </span>
-          ${idx === fromIdx ? "<span class='td-mode-tag single'>当前</span>" : ''}
+          ${isSelf ? "<span class='td-mode-tag single'>已选</span>" : ''}
         </button>`;
     }).join('');
-    const endDisabled = fromIdx === list.length - 1;
 
     layer.innerHTML = `
       <div class='td-modal td-modal-sm'>
-        <div class='td-modal-head'><div class='td-modal-title'>移动 #${fromIdx + 1} ${escapeHtml(src?.name || '')}</div><button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button></div>
+        <div class='td-modal-head'><div class='td-modal-title'>${escapeHtml(title)}</div><button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button></div>
         <div class='td-modal-body'>
-          <div class='td-select-list td-scroll' style='max-height:380px;overflow-y:auto;'>
-            ${itemsHtml}
-            <button type='button' class='td-select-option' ${endDisabled ? 'disabled style="opacity:0.45;cursor:not-allowed;"' : ''} data-action='select-popup-pick' data-value='${list.length}'>
-              <span class='td-select-option-left'><span class='td-idx-badge'>末尾</span><span class='td-select-option-name'>移动到列表最末尾</span></span>
-            </button>
+          <div style='display:grid;grid-template-columns:1fr 1fr;gap:6px;'>
+            <button type='button' class='td-btn primary' data-action='select-popup-pick' data-value='0'>移到最头部 (#1前)</button>
+            <button type='button' class='td-btn primary' data-action='select-popup-pick' data-value='${targetList.length}'>移到最尾部 (末尾)</button>
+          </div>
+          <div style='display:flex;gap:6px;align-items:center;'>
+            <input type='number' class='td-input' id='td-move-idx-input' min='1' max='${Math.max(1, targetList.length + 1)}' placeholder='输入目标序号 (1-${targetList.length + 1})' style='flex:1;height:34px;font-size:13.5px;' />
+            <button type='button' class='td-btn sm' data-action='move-by-number'>移到此序号前</button>
+          </div>
+          <div class='td-select-list td-scroll' style='max-height:300px;overflow-y:auto;'>
+            ${itemsHtml || "<div class='td-group-empty'>主列表暂无条目</div>"}
           </div>
         </div>
       </div>`;
@@ -259,10 +360,7 @@ export function renderManagerModalView(m) {
 
     modalLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'>
-          <div class='td-modal-title'>${ICONS.code} 运行日志 (${allLogs.length})</div>
-          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
-        </div>
+        <div class='td-modal-head'><div class='td-modal-title'>${ICONS.code} 运行日志 (${allLogs.length})</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         <div class='td-modal-body td-picker-body'>
           <div class='td-filter-bar'>
             <button class='td-chip ${levelFilter === 'ALL' ? 'active' : ''}' data-action='logs-set-filter' data-filter='ALL'>全部 (${allLogs.length})</button>
@@ -272,74 +370,20 @@ export function renderManagerModalView(m) {
           </div>
           <div style='display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;'>
             <button class='td-btn sm' data-action='logs-refresh'>${ICONS.refresh} 刷新</button>
-            <button class='td-btn sm' data-action='logs-copy'>${ICONS.copy} 复制当前日志</button>
-            <button class='td-btn sm danger' data-action='logs-clear'>清空日志</button>
+            <button class='td-btn sm' data-action='logs-copy'>${ICONS.copy} 复制</button>
+            <button class='td-btn sm primary' data-action='logs-export'>${ICONS.download} 导出 (.txt)</button>
+            <button class='td-btn sm danger' data-action='logs-clear'>清空</button>
           </div>
           <div class='td-picker-list td-scroll'>
             ${logs.length === 0
               ? "<div class='td-group-empty'>当前筛选下暂无日志记录</div>"
-              : logs.map((l) => `<div class='td-code-block'>[${escapeHtml(l.time)}][${escapeHtml(l.level)}] ${escapeHtml(l.message)}</div>`).join('')}
+              : logs.map((l) => {
+                  const cls = l.level === 'ERR' ? 'is-err' : (l.level === 'WARN' ? 'is-warn' : 'is-info');
+                  return `<div class='td-log-row ${cls}'><span class='td-log-badge'>${escapeHtml(l.level)}</span><span>[${escapeHtml(l.time)}] ${escapeHtml(l.message)}</span></div>`;
+                }).join('')}
           </div>
         </div>
         <div class='td-modal-foot'><button class='td-btn primary' data-action='close-modal'>关闭</button></div>
-      </div>`;
-    ctx.syncOverlayBounds();
-    return true;
-  }
-
-  if (m.type === 'apiManager') {
-    const snap = getApiSnapshot();
-    const mainApiOpts = snap.mainApiOptions.map((o) => `<option value='${escapeHtml(o.value)}' ${o.value === snap.mainApi ? 'selected' : ''}>${escapeHtml(o.text)}</option>`).join('');
-    const sourceOpts = snap.sourceOptions.map((o) => `<option value='${escapeHtml(o.value)}' ${o.value === snap.source ? 'selected' : ''}>${escapeHtml(o.text)}</option>`).join('');
-    const modelOpts = snap.modelOptions.map((o) => `<option value='${escapeHtml(o.value)}' ${o.value === snap.model ? 'selected' : ''}>${escapeHtml(o.text)}</option>`).join('');
-    const proxyOpts = [`<option value=''>（不使用代理预设）</option>`, ...snap.proxyPresets.map((p) => `<option value='${escapeHtml(p)}' ${p === snap.currentProxy ? 'selected' : ''}>${escapeHtml(p)}</option>`)].join('');
-    const profileOpts = [`<option value=''>（选择连接配置）</option>`, ...snap.profiles.map((p) => `<option value='${escapeHtml(p.value)}' ${p.value === snap.currentProfile ? 'selected' : ''}>${escapeHtml(p.text)}</option>`)].join('');
-
-    modalLayerEl.innerHTML = `
-      <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'>
-          <div class='td-modal-title'>${ICONS.sliders} 酒馆 API 管理与控制</div>
-          <div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='api-refresh' title='刷新状态'>${ICONS.refresh}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
-        </div>
-        <div class='td-modal-body'>
-          <div class='td-preview-meta'>
-            <span class='td-meta-tag'>主模式: ${escapeHtml(snap.mainApi)}</span>
-            <span class='td-meta-tag'>当前源: ${escapeHtml(snap.source)}</span>
-            <span class='td-meta-tag'>当前模型: ${escapeHtml(snap.model || '未设置')}</span>
-            <span class='td-meta-tag'>在线状态: ${escapeHtml(snap.onlineStatus)}</span>
-          </div>
-          <div class='td-form-grid'>
-            <div class='td-field'><label class='td-label'>主 API 模式 (Main API)</label><select class='td-select' id='td-api-main-select'>${mainApiOpts}</select></div>
-            <div class='td-field'><label class='td-label'>对话补全源 (Source)</label><select class='td-select' id='td-api-source-select'>${sourceOpts}</select></div>
-          </div>
-          <div class='td-field'>
-            <label class='td-label'>当前模型选择（下拉列表或手动指定）</label>
-            ${snap.modelOptions.length > 0 ? `<select class='td-select' id='td-api-model-select'>${modelOpts}</select>` : ''}
-            <div style='display:flex;gap:6px;'><input class='td-input' id='td-api-model-input' type='text' placeholder='输入或修改模型 ID...' value='${escapeHtml(snap.model || '')}' style='flex:1;' /><button class='td-btn primary' data-action='api-apply-model'>应用模型</button></div>
-          </div>
-          <div class='td-field' style='padding:10px;border-radius:12px;background:var(--td-surface);border:1px solid var(--td-border-strong);'>
-            <label class='td-label'>自定义 OpenAI 兼容端点 & 模型拉取</label>
-            <input class='td-input' id='td-api-custom-url' type='text' placeholder='自定义 Endpoint URL (https://.../v1)' value='${escapeHtml(snap.customUrl || '')}' />
-            <div style='display:flex;gap:6px;flex-wrap:wrap;'>
-              <input class='td-input' id='td-api-custom-key' type='password' placeholder='拉取模型列表用 API Key（可选）' value='${escapeHtml(m.tempKey || '')}' style='flex:1;min-width:160px;' />
-              <button class='td-btn sm' data-action='api-save-custom'>保存自定义地址</button>
-              <button class='td-btn sm' data-action='api-fetch-models'>拉取模型列表</button>
-            </div>
-            ${Array.isArray(m.fetchedModels) && m.fetchedModels.length > 0
-              ? `<select class='td-select' id='td-api-fetched-select'><option value=''>-- 选择拉取到的模型 (${m.fetchedModels.length}) --</option>${m.fetchedModels.map((md) => `<option value='${escapeHtml(md)}'>${escapeHtml(md)}</option>`).join('')}</select>`
-              : ''}
-          </div>
-          <div class='td-form-grid'>
-            <div class='td-field'><label class='td-label'>代理预设 (Proxy Preset)</label><select class='td-select' id='td-api-proxy-select'>${proxyOpts}</select></div>
-            <div class='td-field'><label class='td-label'>连接配置 (Connection Profile)</label><select class='td-select' id='td-api-profile-select'>${profileOpts}</select></div>
-          </div>
-          <div style='display:flex;gap:8px;flex-wrap:wrap;'>
-            <button class='td-btn' data-action='api-native-test'>触发酒馆连接测试</button>
-            <button class='td-btn primary' data-action='api-ping-test'>${m.pinging ? '测试发送中...' : '发送静默连通测试 (OK)'}</button>
-          </div>
-          ${m.pingResult ? `<div class='td-code-block'>${escapeHtml(m.pingResult)}</div>` : ''}
-        </div>
-        <div class='td-modal-foot'><button class='td-btn primary' data-action='close-modal'>完成</button></div>
       </div>`;
     ctx.syncOverlayBounds();
     return true;
@@ -425,10 +469,7 @@ export function renderManagerModalView(m) {
 
     modalLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'>
-          <div class='td-modal-title'>${ICONS.layers} 预设管理 (${info.list.length})</div>
-          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
-        </div>
+        <div class='td-modal-head'><div class='td-modal-title'>${ICONS.layers} 预设管理 (${info.list.length})</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         <div class='td-modal-body td-picker-body'>
           <div class='td-mgr-topbar'>
             <input class='td-input' id='td-pm-search' type='text' placeholder='搜索预设名称...' value='${escapeHtml(m.query || '')}' />
@@ -453,6 +494,8 @@ export function renderManagerModalView(m) {
     const data = m.data, tab = m.tab || 'prompts', q = (m.query || '').trim().toLowerCase();
     const listName = tab === 'unused' ? 'prompts_unused' : 'prompts';
     const list = Array.isArray(data[listName]) ? data[listName] : [];
+    const batchMode = !!m.batchMode;
+    const selectedSet = m.selectedIdx instanceof Set ? m.selectedIdx : (m.selectedIdx = new Set());
 
     let bodyHtml = '';
     if (tab === 'settings') {
@@ -475,10 +518,12 @@ export function renderManagerModalView(m) {
       const rows = indexed.map(({ p, idx }) => {
         const isSys = PRESET_SYSTEM_IDS.has(p.id);
         const posLabel = p.position?.type === 'in_chat' ? `@D${p.position.depth ?? 0}` : '相对';
+        const checked = selectedSet.has(idx);
         return `
-          <div class='td-mgr-row'>
+          <div class='td-mgr-row ${batchMode && checked ? 'is-active' : ''}'>
             <div class='td-mgr-row-head'>
               <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
+                ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='pm-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
                 <span class='td-idx-badge'>#${idx + 1}</span>
                 <button type='button' class='td-switch sm ${p.enabled ? 'on' : ''}' data-action='pm-toggle-prompt' data-list='${listName}' data-idx='${idx}'></button>
                 <span class='td-mgr-row-title' title='${escapeHtml(p.name || p.id)}'>${escapeHtml(p.name || p.id)}</span>
@@ -498,7 +543,13 @@ export function renderManagerModalView(m) {
         <div class='td-mgr-topbar'>
           <input class='td-input' id='td-pm-detail-search' type='text' placeholder='搜索条目名称、ID 或正文...' value='${escapeHtml(m.query || '')}' />
           <button class='td-btn sm primary' data-action='pm-add-prompt' data-list='${listName}'>${ICONS.plus} 新增</button>
-          <button class='td-btn sm warn' data-action='pm-open-ai-edit'>${ICONS.sliders} AI 编辑</button>
+          <button class='td-icon-btn ${m.toolsOpen || batchMode ? 'is-active' : ''}' data-action='pm-detail-toggle-tools' title='批量移动与 AI 编辑'>${ICONS.more}</button>
+        </div>
+        <div class='td-mgr-subtools ${m.toolsOpen || batchMode ? 'is-open' : ''}'>
+          <button class='td-btn sm ${batchMode ? 'primary' : ''}' data-action='pm-toggle-batch'>${batchMode ? `退出批量 (已选 ${selectedSet.size})` : '批量选择移动'}</button>
+          ${batchMode ? `<button class='td-btn sm warn' data-action='pm-batch-move'>批量移动到...</button>` : ''}
+          ${batchMode && tab === 'unused' ? `<button class='td-btn sm primary' data-action='pm-batch-join'>批量加入主列表</button>` : ''}
+          <button class='td-btn sm warn' data-action='pm-open-ai-edit'>${ICONS.sliders} AI 智能编辑</button>
         </div>
         <div class='td-picker-list td-scroll'>${rows || "<div class='td-group-empty'>暂无匹配条目</div>"}</div>`;
     }
@@ -507,17 +558,17 @@ export function renderManagerModalView(m) {
       <div class='td-modal td-modal-tall'>
         <div class='td-modal-head'>
           <div class='td-modal-title'>预设编辑 · ${escapeHtml(m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName)}</div>
-          <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='pm-back-list'>返回列表</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='pm-back-list'>返回</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         </div>
         <div class='td-modal-body td-picker-body'>
           <div class='td-source-tabs cols-3'>
             <button class='td-source-tab ${tab === 'prompts' ? 'active' : ''}' data-action='pm-detail-tab' data-tab='prompts'>提示词 (${data.prompts.length})</button>
-            <button class='td-source-tab ${tab === 'unused' ? 'active' : ''}' data-action='pm-detail-tab' data-tab='unused'>未添加池 (${data.prompts_unused.length})</button>
+            <button class='td-source-tab ${tab === 'unused' ? 'active' : ''}' data-action='pm-detail-tab' data-tab='unused'>未添加 (${data.prompts_unused.length})</button>
             <button class='td-source-tab ${tab === 'settings' ? 'active' : ''}' data-action='pm-detail-tab' data-tab='settings'>生成参数</button>
           </div>
           ${bodyHtml}
         </div>
-        <div class='td-modal-foot'><span style='margin-right:auto;font-size:11.5px;color:var(--td-text-muted);'>${m.dirty ? '有未保存修改' : '已同步'}</span><button class='td-btn' data-action='pm-back-list'>返回</button><button class='td-btn primary' data-action='pm-save-detail'>${ICONS.save} 保存预设</button></div>
+        <div class='td-modal-foot'><span data-role='pm-dirty-label' style='margin-right:auto;font-size:11.5px;color:var(--td-text-muted);'>${m.dirty ? '有未保存修改' : '已同步'}</span><button class='td-btn' data-action='pm-back-list'>返回</button><button class='td-btn primary' data-action='pm-save-detail'>${ICONS.save} 保存预设</button></div>
       </div>`;
     ctx.syncOverlayBounds();
     return true;
@@ -551,7 +602,7 @@ export function renderManagerModalView(m) {
             <button class='td-btn sm ${isGlobal ? 'primary' : ''}' data-action='wbm-toggle-global' data-name='${escapeHtml(name)}'>${isGlobal ? '取消全局' : '全局启用'}</button>
             ${snap.hasCharacter ? `<button class='td-btn sm ${isCharPri ? 'primary' : ''}' data-action='wbm-toggle-char-pri' data-name='${escapeHtml(name)}'>${isCharPri ? '取消主书' : '角色主书'}</button>` : ''}
             ${snap.hasCharacter ? `<button class='td-btn sm ${isCharAdd ? 'primary' : ''}' data-action='wbm-toggle-char-add' data-name='${escapeHtml(name)}'>${isCharAdd ? '移除附加' : '角色附加'}</button>` : ''}
-            <button class='td-btn sm ${isChat ? 'warn' : ''}' data-action='wbm-toggle-chat' data-name='${escapeHtml(name)}'>${isChat ? '解绑聊天' : '绑定聊天'}</button>
+            <button class='td-btn sm ${isChat ? 'warn' : ''}' data-action='wbm-toggle-chat' data-name='${escapeHtml(name)}' ${!snap.inChat ? 'title="需先进入角色卡聊天"' : ''}>${isChat ? '解绑聊天' : '绑定聊天'}</button>
             <button class='td-btn sm' data-action='wbm-open-detail' data-name='${escapeHtml(name)}'>${ICONS.edit} 条目</button>
             <button class='td-btn sm' data-action='wbm-duplicate' data-name='${escapeHtml(name)}'>复制</button>
             <button class='td-btn sm' data-action='wbm-rename' data-name='${escapeHtml(name)}'>重命名</button>
@@ -563,10 +614,7 @@ export function renderManagerModalView(m) {
 
     modalLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'>
-          <div class='td-modal-title'>${ICONS.layers} 世界书管理 (${snap.allBooks.length})</div>
-          <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
-        </div>
+        <div class='td-modal-head'><div class='td-modal-title'>${ICONS.layers} 世界书管理 (${snap.allBooks.length})</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         <div class='td-modal-body td-picker-body'>
           <div class='td-mgr-topbar'>
             <input class='td-input' id='td-wbm-search' type='text' placeholder='搜索世界书名称...' value='${escapeHtml(m.query || '')}' />
@@ -626,22 +674,23 @@ export function renderManagerModalView(m) {
       <div class='td-modal td-modal-tall'>
         <div class='td-modal-head'>
           <div class='td-modal-title'>世界书条目 · ${escapeHtml(m.bookName)} (${entries.length})</div>
-          <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='wbd-back-list'>返回列表</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='wbd-back-list'>返回</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         </div>
         <div class='td-modal-body td-picker-body'>
           <div class='td-mgr-topbar'>
             <input class='td-input' id='td-wbd-search' type='text' placeholder='搜索条目标题、关键词或正文...' value='${escapeHtml(m.query || '')}' />
             <button class='td-btn sm primary' data-action='wbd-add-entry'>${ICONS.plus} 新增</button>
-            <button class='td-icon-btn ${m.toolsOpen ? 'is-active' : ''}' data-action='wbd-toggle-tools' title='批量操作'>${ICONS.more}</button>
+            <button class='td-icon-btn ${m.toolsOpen ? 'is-active' : ''}' data-action='wbd-toggle-tools' title='批量操作与 AI 编辑'>${ICONS.more}</button>
           </div>
           <div class='td-mgr-subtools ${m.toolsOpen ? 'is-open' : ''}'>
             <button class='td-btn sm' data-action='wbd-batch-enable' data-val='1'>全开可见</button>
             <button class='td-btn sm' data-action='wbd-batch-enable' data-val='0'>全关可见</button>
             <button class='td-btn sm warn' data-action='wbd-disable-recursion'>一键禁止递归</button>
+            <button class='td-btn sm warn' data-action='wbd-open-ai-edit'>${ICONS.sliders} AI 智能编辑</button>
           </div>
           <div class='td-picker-list td-scroll'>${rows || "<div class='td-group-empty'>暂无匹配的世界书条目</div>"}</div>
         </div>
-        <div class='td-modal-foot'><span style='margin-right:auto;font-size:11.5px;color:var(--td-text-muted);'>${m.dirty ? '有未保存修改' : '已同步'}</span><button class='td-btn' data-action='wbd-back-list'>返回</button><button class='td-btn primary' data-action='wbd-save-book'>${ICONS.save} 保存世界书</button></div>
+        <div class='td-modal-foot'><span data-role='wbd-dirty-label' style='margin-right:auto;font-size:11.5px;color:var(--td-text-muted);'>${m.dirty ? '有未保存修改' : '已同步'}</span><button class='td-btn' data-action='wbd-back-list'>返回</button><button class='td-btn primary' data-action='wbd-save-book'>${ICONS.save} 保存世界书</button></div>
       </div>`;
     ctx.syncOverlayBounds();
     return true;
@@ -650,15 +699,80 @@ export function renderManagerModalView(m) {
   return false;
 }
 
+function renderAiEditSetupHtml({ title, ai, items, itemLabelFn }) {
+  const cfg = state.store.settings.aiEditConfig || { jailbreakPreset: '', model: '' };
+  const presetList = hasTH('getPresetNames') ? (callTH('getPresetNames') || []).filter((n) => n && n !== 'in_use') : [];
+  const q = (ai.search || '').trim().toLowerCase();
+  const visible = items.filter((it) => !q || itemLabelFn(it).toLowerCase().includes(q));
+  const jbOpts = [`<option value=''>（不使用破甲预设）</option>`, ...presetList.map((pn) => `<option value='${escapeHtml(pn)}' ${pn === cfg.jailbreakPreset ? 'selected' : ''}>${escapeHtml(pn)}</option>`)].join('');
+
+  return `
+    <div class='td-modal td-modal-tall'>
+      <div class='td-modal-head'><div class='td-modal-title'>${escapeHtml(title)}</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+      <div class='td-modal-body'>
+        <div class='td-field'>
+          <label class='td-label'>1. 酒馆当前连接设置与破甲预设</label>
+          <div class='td-form-grid'>
+            <div class='td-field'>
+              <span class='td-label' style='font-size:11.5px;'>破甲预设（可选）</span>
+              <select class='td-select' id='td-ai-jailbreak-preset'>${jbOpts}</select>
+            </div>
+            <div class='td-field'>
+              <span class='td-label' style='font-size:11.5px;'>覆盖模型名（留空用酒馆当前模型）</span>
+              <input class='td-input' id='td-ai-model' type='text' placeholder='留空使用当前模型' value='${escapeHtml(cfg.model || '')}' />
+            </div>
+          </div>
+        </div>
+        <div class='td-field'><label class='td-label'>2. 修改指令</label><textarea class='td-textarea' id='td-ai-instruction' style='min-height:80px;font-family:inherit;' placeholder='输入修改指令...'>${escapeHtml(ai.instruction || '')}</textarea></div>
+        <div class='td-field' style='flex:1;min-height:130px;display:flex;flex-direction:column;'>
+          <div style='display:flex;justify-content:space-between;align-items:center;gap:6px;'>
+            <label class='td-label'>3. 勾选待编辑条目 (已选 ${ai.selectedKeys.size} 项)</label>
+            <input class='td-input' id='td-ai-search' type='text' placeholder='筛选...' value='${escapeHtml(ai.search || '')}' style='width:140px;height:28px;font-size:12px;' />
+          </div>
+          <div class='td-picker-list td-scroll' style='border:1px solid var(--td-border);border-radius:10px;padding:6px;'>
+            ${visible.map((it) => {
+              const checked = ai.selectedKeys.has(it.key);
+              return `<label class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:36px;padding:6px 10px;'><div class='td-picker-left'><input type='checkbox' class='td-checkbox' data-action='ai-toggle-item' data-key='${escapeHtml(it.key)}' ${checked ? 'checked' : ''} /><span class='td-item-name'>${escapeHtml(itemLabelFn(it))}</span></div></label>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+      <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='ai-run' ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'AI 处理中，请稍候...' : '发送给 AI 编辑'}</button></div>
+    </div>`;
+}
+
 export function renderManagerPreviewView() {
   const previewLayerEl = ctx.getPreviewLayer();
   if (!previewLayerEl || !state.panelOpen || !state.previewCtx) return false;
 
+  if (state.previewCtx.type === 'orbCrop') {
+    const crop = state.previewCtx;
+    previewLayerEl.classList.add('is-open');
+    previewLayerEl.innerHTML = `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'><div class='td-modal-title'>裁剪悬浮球图片</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+        <div class='td-modal-body' style='align-items:center;'>
+          <div style='font-size:12px;color:var(--td-text-muted);text-align:center;'>拖动图片调整中心位置，滑动下方滑块缩放大小</div>
+          <div class='td-crop-stage' id='td-crop-stage'><canvas class='td-crop-canvas' id='td-crop-canvas' width='240' height='240'></canvas></div>
+          <div style='width:100%;'>
+            <label class='td-label' data-role='crop-zoom-label'>缩放倍数 (${Math.round((crop.zoom || 1) * 100)}%)</label>
+            <input class='td-range' id='td-crop-zoom' type='range' min='50' max='300' value='${Math.round((crop.zoom || 1) * 100)}' />
+          </div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' data-action='orb-crop-reset'>重置居中</button>
+          <button class='td-btn' data-action='close-preview'>取消</button>
+          <button class='td-btn primary' data-action='orb-crop-confirm'>${ICONS.check} 保存头像</button>
+        </div>
+      </div>`;
+    ctx.syncOverlayBounds();
+    bindOrbCropPointerEvents(previewLayerEl);
+    drawOrbCropCanvas();
+    return true;
+  }
+
   if (state.previewCtx.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
     const ai = state.previewCtx;
-    const cfg = state.store.settings.aiEditConfig || { mode: 'proxy', proxyPreset: '', apiUrl: '', apiKey: '', source: 'openai', model: '' };
-    const proxyList = hasTH('getProxyPresetNames') ? (callTH('getProxyPresetNames') || []) : [];
-
     if (ai.step === 'review') {
       const reviewRows = (ai.results || []).map((r, rIdx) => {
         const lines = computeLineDiff(r.oldPrompt?.content || '', r.newContent || '');
@@ -666,7 +780,7 @@ export function renderManagerPreviewView() {
           <div class='td-mgr-row ${r.accepted ? 'is-active' : ''}'>
             <div class='td-mgr-row-head'>
               <label style='display:flex;align-items:center;gap:8px;min-width:0;flex:1;cursor:pointer;'>
-                <input type='checkbox' class='td-checkbox' data-action='pm-ai-toggle-accept' data-ridx='${rIdx}' ${r.accepted ? 'checked' : ''} />
+                <input type='checkbox' class='td-checkbox' data-action='ai-toggle-accept' data-ridx='${rIdx}' ${r.accepted ? 'checked' : ''} />
                 <span class='td-idx-badge'>#${r.index + 1}</span>
                 <span class='td-mgr-row-title'>${escapeHtml(r.newName)}</span>
               </label>
@@ -682,55 +796,62 @@ export function renderManagerPreviewView() {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'><div class='td-modal-title'>检视 AI 修改结果 (${(ai.results || []).filter((x) => x.accepted).length}/${(ai.results || []).length})</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
           <div class='td-modal-body td-picker-body'><div class='td-picker-list td-scroll'>${reviewRows}</div></div>
-          <div class='td-modal-foot'><button class='td-btn' data-action='pm-ai-back-setup'>返回修改需求</button><button class='td-btn primary' data-action='pm-ai-apply-results'>${ICONS.check} 写回已勾选条目</button></div>
+          <div class='td-modal-foot'><button class='td-btn' data-action='ai-back-setup'>返回修改需求</button><button class='td-btn primary' data-action='ai-apply-results'>${ICONS.check} 写回已勾选条目</button></div>
         </div>`;
       ctx.syncOverlayBounds();
       return true;
     }
 
     const pList = state.modal.data.prompts || [], uList = state.modal.data.prompts_unused || [];
-    const allItems = [
-      ...pList.map((p, i) => ({ uidKey: `prompts::${i}`, listName: 'prompts', index: i, label: `[主列表 #${i + 1}] ${p.name || p.id}` })),
-      ...uList.map((p, i) => ({ uidKey: `prompts_unused::${i}`, listName: 'prompts_unused', index: i, label: `[未添加 #${i + 1}] ${p.name || p.id}` })),
+    const items = [
+      ...pList.map((p, i) => ({ key: `prompts::${i}`, listName: 'prompts', index: i, label: `[主列表 #${i + 1}] ${p.name || p.id}` })),
+      ...uList.map((p, i) => ({ key: `prompts_unused::${i}`, listName: 'prompts_unused', index: i, label: `[未添加 #${i + 1}] ${p.name || p.id}` })),
     ];
-    const q = (ai.search || '').trim().toLowerCase();
-    const visible = allItems.filter((it) => !q || it.label.toLowerCase().includes(q));
-    const proxyOpts = [`<option value=''>-- 请选择代理预设 --</option>`, ...proxyList.map((pn) => `<option value='${escapeHtml(pn)}' ${pn === cfg.proxyPreset ? 'selected' : ''}>${escapeHtml(pn)}</option>`)].join('');
-
     previewLayerEl.classList.add('is-open');
-    previewLayerEl.innerHTML = `
-      <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'><div class='td-modal-title'>AI 智能编辑预设条目</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
-        <div class='td-modal-body'>
-          <div class='td-field'>
-            <label class='td-label'>1. 选择发送方式</label>
-            <div class='td-source-tabs cols-3'>
-              <button type='button' class='td-source-tab ${cfg.mode === 'proxy' ? 'active' : ''}' data-action='pm-ai-mode' data-mode='proxy'>酒馆代理预设</button>
-              <button type='button' class='td-source-tab ${cfg.mode === 'direct' ? 'active' : ''}' data-action='pm-ai-mode' data-mode='direct'>直连 API</button>
-              <button type='button' class='td-source-tab ${cfg.mode === 'current' ? 'active' : ''}' data-action='pm-ai-mode' data-mode='current'>酒馆当前连接</button>
+    previewLayerEl.innerHTML = renderAiEditSetupHtml({ title: 'AI 智能编辑预设条目', ai, items, itemLabelFn: (it) => it.label });
+    ctx.syncOverlayBounds();
+    return true;
+  }
+
+  if (state.previewCtx.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
+    const ai = state.previewCtx;
+    if (ai.step === 'review') {
+      const reviewRows = (ai.results || []).map((r, rIdx) => {
+        const lines = computeLineDiff(r.oldContent || '', r.newContent || '');
+        return `
+          <div class='td-mgr-row ${r.accepted ? 'is-active' : ''}'>
+            <div class='td-mgr-row-head'>
+              <label style='display:flex;align-items:center;gap:8px;min-width:0;flex:1;cursor:pointer;'>
+                <input type='checkbox' class='td-checkbox' data-action='ai-toggle-accept' data-ridx='${rIdx}' ${r.accepted ? 'checked' : ''} />
+                <span class='td-idx-badge'>#${r.index + 1}</span>
+                <span class='td-mgr-row-title'>${escapeHtml(r.newName)}</span>
+              </label>
+              <span class='td-src-badge'>${r.newEnabled ? '开' : '关'}</span>
             </div>
-            ${cfg.mode === 'proxy'
-              ? `<div class='td-form-grid'><select class='td-select' id='td-ai-proxy-preset'>${proxyOpts}</select><input class='td-input' id='td-ai-model' type='text' placeholder='模型名（可选）' value='${escapeHtml(cfg.model || '')}' /></div>`
-              : (cfg.mode === 'direct'
-                ? `<div class='td-form-grid'><input class='td-input' id='td-ai-url' type='text' placeholder='API URL (https://...)' value='${escapeHtml(cfg.apiUrl || '')}' /><input class='td-input' id='td-ai-key' type='password' placeholder='API Key' value='${escapeHtml(cfg.apiKey || '')}' /><input class='td-input' id='td-ai-source' type='text' placeholder='Source (默认 openai)' value='${escapeHtml(cfg.source || 'openai')}' /><input class='td-input' id='td-ai-model' type='text' placeholder='模型名称 (如 gpt-4o)' value='${escapeHtml(cfg.model || '')}' /></div>`
-                : `<input class='td-input' id='td-ai-model' type='text' placeholder='覆盖模型名（留空使用酒馆当前模型）' value='${escapeHtml(cfg.model || '')}' />`)}
-          </div>
-          <div class='td-field'><label class='td-label'>2. 修改指令</label><textarea class='td-textarea' id='td-ai-instruction' style='min-height:84px;font-family:inherit;' placeholder='例如：将所选条目的语气改得更克制冷静，并统一用中文重写注释...'>${escapeHtml(ai.instruction || '')}</textarea></div>
-          <div class='td-field' style='flex:1;min-height:140px;display:flex;flex-direction:column;'>
-            <div style='display:flex;justify-content:space-between;align-items:center;gap:6px;'>
-              <label class='td-label'>3. 勾选要交给 AI 编辑的条目 (已选 ${ai.selectedKeys.size} 项)</label>
-              <input class='td-input' id='td-ai-search' type='text' placeholder='筛选...' value='${escapeHtml(ai.search || '')}' style='width:140px;height:28px;font-size:12px;' />
-            </div>
-            <div class='td-picker-list td-scroll' style='border:1px solid var(--td-border);border-radius:10px;padding:6px;'>
-              ${visible.map((it) => {
-                const checked = ai.selectedKeys.has(it.uidKey);
-                return `<label class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:36px;padding:6px 10px;'><div class='td-picker-left'><input type='checkbox' class='td-checkbox' data-action='pm-ai-toggle-item' data-uidkey='${escapeHtml(it.uidKey)}' ${checked ? 'checked' : ''} /><span class='td-item-name'>${escapeHtml(it.label)}</span></div></label>`;
-              }).join('')}
-            </div>
-          </div>
-        </div>
-        <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='pm-ai-run' ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'AI 处理中，请稍候...' : '发送给 AI 编辑'}</button></div>
-      </div>`;
+            ${r.newKeys !== r.oldKeys ? `<div style='font-size:11.5px;color:var(--td-single);'>关键词：${escapeHtml(r.newKeys)}</div>` : ''}
+            ${r.note ? `<div style='font-size:11.5px;color:var(--td-text-muted);'>AI 说明：${escapeHtml(r.note)}</div>` : ''}
+            <div class='td-diff-box td-scroll'>${lines.map((l) => `<div class='td-diff-line ${l.type}'>${l.type === 'add' ? '+ ' : (l.type === 'del' ? '- ' : '  ')}${escapeHtml(l.text)}</div>`).join('')}</div>
+          </div>`;
+      }).join('');
+
+      previewLayerEl.classList.add('is-open');
+      previewLayerEl.innerHTML = `
+        <div class='td-modal td-modal-tall'>
+          <div class='td-modal-head'><div class='td-modal-title'>检视 AI 世界书修改 (${(ai.results || []).filter((x) => x.accepted).length}/${(ai.results || []).length})</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+          <div class='td-modal-body td-picker-body'><div class='td-picker-list td-scroll'>${reviewRows}</div></div>
+          <div class='td-modal-foot'><button class='td-btn' data-action='ai-back-setup'>返回修改需求</button><button class='td-btn primary' data-action='ai-apply-results'>${ICONS.check} 写回已勾选条目</button></div>
+        </div>`;
+      ctx.syncOverlayBounds();
+      return true;
+    }
+
+    const items = (state.modal.entries || []).map((e, i) => ({
+      key: String(i),
+      index: i,
+      label: `[#${i + 1}] ${e.name || `条目 #${e.uid}`}`,
+    }));
+    previewLayerEl.classList.add('is-open');
+    previewLayerEl.innerHTML = renderAiEditSetupHtml({ title: `AI 编辑世界书 · ${state.modal.bookName}`, ai, items, itemLabelFn: (it) => it.label });
     ctx.syncOverlayBounds();
     return true;
   }
@@ -782,7 +903,10 @@ export function renderManagerPreviewView() {
     previewLayerEl.classList.add('is-open');
     previewLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'><div class='td-modal-title'>手动缝合世界书条目 · ${escapeHtml(entry.name)}</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>手动缝合世界书条目 · ${escapeHtml(entry.name)}</div>
+          <div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+        </div>
         <div class='td-modal-body'>
           <div class='td-merge-refs'>
             <div class='td-field'><div style='display:flex;justify-content:space-between;align-items:center;'><label class='td-label'>旧版本内容（只读）</label>${entry.oldEntry ? "<button type='button' class='td-chip' data-action='wbm-fill-text' data-side='old'>整段填入</button>" : ''}</div><textarea class='td-textarea td-readonly td-scroll' readonly>${escapeHtml(oldText)}</textarea></div>
@@ -790,11 +914,11 @@ export function renderManagerPreviewView() {
           </div>
           <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>缝合后条目标题</label><input class='td-input' id='td-wbm-custom-name' type='text' value='${escapeHtml(base.name || entry.name)}' /></div><label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-wbm-custom-enabled' ${base.enabled ? 'checked' : ''} /><span>启用</span></label></div>
           <div class='td-form-grid'><div class='td-field'><label class='td-label'>触发策略</label><select class='td-select' id='td-wbm-custom-stype'><option value='selective' ${stype === 'selective' ? 'selected' : ''}>绿灯 (关键词)</option><option value='constant' ${stype === 'constant' ? 'selected' : ''}>蓝灯 (常驻)</option><option value='vectorized' ${stype === 'vectorized' ? 'selected' : ''}>向量化</option></select></div><div class='td-field'><label class='td-label'>主要关键词（逗号或换行分隔）</label><input class='td-input' id='td-wbm-custom-keys' type='text' value='${escapeHtml(formatKeysInput(base.strategy?.keys))}' /></div></div>
-          <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>缝合后正文</label><textarea class='td-textarea td-scroll' id='td-wbm-custom-content' style='flex:1;min-height:130px;'>${escapeHtml(defaultContent)}</textarea></div>
+          <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>缝合后正文（支持撤销/重做）</label><textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:130px;'>${escapeHtml(defaultContent)}</textarea></div>
         </div>
         <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='wbm-save-merge-custom'>${ICONS.save} 保存缝合结果</button></div>
       </div>`;
-    ctx.syncOverlayBounds();
+    editHistory.stack = [readPreviewSnapshot()]; editHistory.index = 0; updatePreviewHistoryButtons(); ctx.syncOverlayBounds();
     return true;
   }
 
@@ -870,6 +994,34 @@ export function renderManagerPreviewView() {
   return false;
 }
 
+function applyMoveTargetPick(sp, rawIdx) {
+  const m = state.modal;
+  if (!m || m.type !== 'presetDetail') return;
+  const beforeIdx = Number(rawIdx);
+  if (Number.isNaN(beforeIdx)) return;
+
+  if (sp.mode === 'insertFromUnused') {
+    const cnt = insertFromUnusedAt(m.data, sp.fromIndices, beforeIdx);
+    if (cnt > 0) {
+      m.dirty = true;
+      if (m.selectedIdx instanceof Set) m.selectedIdx.clear();
+      notify('success', `已将 ${cnt} 个条目加入主列表`);
+    }
+  } else {
+    const list = m.data[sp.listName];
+    if (movePromptsBatchBeforeIndex(list, sp.fromIndices, beforeIdx)) {
+      m.dirty = true;
+      if (m.selectedIdx instanceof Set) m.selectedIdx.clear();
+      notify('success', '已调整条目顺序');
+    } else {
+      notify('info', '条目位置未发生变化');
+    }
+  }
+  state.selectPopup = null;
+  renderSelectPopupView();
+  ctx.renderModal();
+}
+
 export function handleManagerClick(e, actionEl, action) {
   const modalLayerEl = ctx.getModalLayer();
   const previewLayerEl = ctx.getPreviewLayer();
@@ -881,20 +1033,58 @@ export function handleManagerClick(e, actionEl, action) {
   if (action === 'logs-refresh' && state.modal?.type === 'logs') { ctx.renderModal(); return true; }
   if (action === 'logs-clear' && state.modal?.type === 'logs') { clearDevLogs(); ctx.renderModal(); return true; }
   if (action === 'logs-copy' && state.modal?.type === 'logs') {
-    copyToClipboard(formatLogsReport(state.modal.filter || 'ALL')).then(() => notify('success', '日志已复制到剪贴板')).catch(() => notify('error', '复制失败'));
+    copyToClipboard(formatLogsReport(state.modal.filter || 'ALL')).then(() => notify('success', '日志已复制到剪贴板')).catch((err) => { logError('复制日志失败', err); notify('error', '复制失败'); });
+    return true;
+  }
+  if (action === 'logs-export' && state.modal?.type === 'logs') {
+    const filter = state.modal.filter || 'ALL';
+    downloadTextFile(formatLogsReport(filter), `TavernDeck-logs-${new Date().toISOString().slice(0, 10)}.txt`);
+    notify('success', '已导出运行日志 (.txt)');
+    return true;
+  }
+
+  // 悬浮球图片裁剪
+  if (action === 'orb-crop-reset' && state.previewCtx?.type === 'orbCrop') {
+    state.previewCtx.zoom = 1;
+    state.previewCtx.offsetX = 0;
+    state.previewCtx.offsetY = 0;
+    const zr = previewLayerEl.querySelector('#td-crop-zoom');
+    if (zr) zr.value = '100';
+    const zl = previewLayerEl.querySelector("[data-role='crop-zoom-label']");
+    if (zl) zl.textContent = '缩放倍数 (100%)';
+    drawOrbCropCanvas();
+    return true;
+  }
+  if (action === 'orb-crop-confirm' && state.previewCtx?.type === 'orbCrop') {
+    try {
+      const dataUrl = exportCroppedOrbDataUrl(state.previewCtx);
+      state.store.settings.orbImage = dataUrl;
+      state.store.settings.orbImageFit = 'cover';
+      saveStore(state.store);
+      state.previewCtx = null;
+      ctx.renderPreviewModal();
+      ctx.renderOrb();
+      if (state.modal?.type === 'settings') ctx.renderModal();
+      notify('success', '悬浮球图片已裁剪并应用');
+    } catch (err) {
+      logError('裁剪悬浮球图片失败', err);
+      notify('error', `裁剪失败: ${err.message || err}`);
+    }
     return true;
   }
 
   // 弹窗选择列表
   if (action === 'open-select-popup') { state.selectPopup = { type: actionEl.getAttribute('data-select-type') }; renderSelectPopupView(); return true; }
   if (action === 'close-select-popup') { state.selectPopup = null; renderSelectPopupView(); return true; }
+  if (action === 'move-by-number' && state.selectPopup?.type === 'movePromptTarget') {
+    const val = Number(selectLayerEl?.querySelector('#td-move-idx-input')?.value);
+    if (Number.isNaN(val) || val < 1) { notify('warning', '请输入有效序号（>= 1）'); return true; }
+    applyMoveTargetPick(state.selectPopup, val - 1);
+    return true;
+  }
   if (action === 'select-popup-pick' && state.selectPopup) {
     const val = actionEl.getAttribute('data-value') || '', t = state.selectPopup.type;
-    if (t === 'movePromptTarget' && state.modal?.type === 'presetDetail') {
-      const list = state.modal.data[state.selectPopup.listName];
-      if (movePromptBeforeIndex(list, state.selectPopup.fromIdx, Number(val))) { state.modal.dirty = true; notify('success', '已调整条目顺序'); }
-      state.selectPopup = null; renderSelectPopupView(); ctx.renderModal(); return true;
-    }
+    if (t === 'movePromptTarget') { applyMoveTargetPick(state.selectPopup, val); return true; }
     if (t === 'theme') state.store.settings.theme = val || 'dark';
     else if (t === 'orbStyle') state.store.settings.orbStyle = val || 'indigo';
     else if (t === 'groupTextColor') state.store.settings.groupTextColor = val;
@@ -917,33 +1107,6 @@ export function handleManagerClick(e, actionEl, action) {
     return true;
   }
 
-  // API 管理
-  if (action === 'open-api-manager') { state.modal = { type: 'apiManager', tempKey: '', fetchedModels: [], pinging: false, pingResult: '' }; ctx.renderModal(); return true; }
-  if (action === 'api-refresh' && state.modal?.type === 'apiManager') { ctx.renderModal(); return true; }
-  if (action === 'api-apply-model' && state.modal?.type === 'apiManager') {
-    const snap = getApiSnapshot(), md = (modalLayerEl.querySelector('#td-api-model-input')?.value || '').trim();
-    if (!md) { notify('warning', '请输入模型名称'); return true; }
-    switchChatCompletionModel(snap.source, md); ctx.renderModal(); return true;
-  }
-  if (action === 'api-save-custom' && state.modal?.type === 'apiManager') {
-    updateCustomEndpoint({ apiUrl: (modalLayerEl.querySelector('#td-api-custom-url')?.value || '').trim(), customModel: (modalLayerEl.querySelector('#td-api-model-input')?.value || '').trim() });
-    ctx.renderModal(); return true;
-  }
-  if (action === 'api-fetch-models' && state.modal?.type === 'apiManager') {
-    const url = (modalLayerEl.querySelector('#td-api-custom-url')?.value || '').trim(), key = (modalLayerEl.querySelector('#td-api-custom-key')?.value || '').trim();
-    state.modal.tempKey = key;
-    fetchCustomModelList(url, key).then((models) => { state.modal.fetchedModels = models || []; notify('success', `成功获取 ${state.modal.fetchedModels.length} 个模型`); ctx.renderModal(); })
-      .catch((err) => notify('error', `拉取模型失败: ${err.message || err}`));
-    return true;
-  }
-  if (action === 'api-native-test' && state.modal?.type === 'apiManager') { triggerNativeApiConnectTest(); return true; }
-  if (action === 'api-ping-test' && state.modal?.type === 'apiManager') {
-    state.modal.pinging = true; state.modal.pingResult = ''; ctx.renderModal();
-    testAiPromptPing({}).then((res) => { state.modal.pinging = false; state.modal.pingResult = `连接成功，模型响应：${res}`; ctx.renderModal(); })
-      .catch((err) => { state.modal.pinging = false; state.modal.pingResult = `测试失败：${err.message || err}`; ctx.renderModal(); });
-    return true;
-  }
-
   // 世界书对比缝合
   if (action === 'open-wb-merge') { state.modal = { type: 'wbMergeSelect', oldName: '', newName: '' }; ctx.renderModal(); return true; }
   if (action === 'swap-wb-merge' && state.modal?.type === 'wbMergeSelect') {
@@ -957,7 +1120,7 @@ export function handleManagerClick(e, actionEl, action) {
     const newName = modalLayerEl.querySelector('#td-wb-merge-new-select')?.value || state.modal.newName;
     if (!oldName || !newName || oldName === newName) { notify('warning', '请选择两本不同的世界书'); return true; }
     buildWorldbookDiffSession(oldName, newName).then((session) => { state.modal = { type: 'wbMerge', session }; ctx.renderModal(); })
-      .catch((err) => notify('error', `读取世界书失败: ${err.message || err}`));
+      .catch((err) => { logError('读取对比世界书失败', err); notify('error', `读取世界书失败: ${err.message || err}`); });
     return true;
   }
   if (action === 'toggle-wb-merge-controls' && state.modal?.type === 'wbMerge') { state.modal.session.controlsOpen = !state.modal.session.controlsOpen; updateWbMergeBody(); return true; }
@@ -993,20 +1156,22 @@ export function handleManagerClick(e, actionEl, action) {
   }
   if (action === 'wbm-fill-text' && state.previewCtx?.type === 'wbMergeCustom') {
     const src = actionEl.getAttribute('data-side') === 'old' ? state.previewCtx.entry.oldEntry : state.previewCtx.entry.newEntry;
-    const ta = previewLayerEl.querySelector('#td-wbm-custom-content');
-    if (ta && src) ta.value = src.content || '';
+    const ta = previewLayerEl.querySelector('#td-edit-content');
+    if (ta && src) { ta.value = src.content || ''; pushEditSnapshot(true); }
     return true;
   }
   if (action === 'wbm-save-merge-custom' && state.previewCtx?.type === 'wbMergeCustom') {
+    pushEditSnapshot(true);
+    const snap = readPreviewSnapshot();
     const entry = state.previewCtx.entry;
     const base = cloneWorldbookEntry(entry.customEntry || entry.newEntry || entry.oldEntry || buildDefaultWorldbookEntry({}));
     if (entry.newEntry) base.uid = entry.newEntry.uid;
-    base.name = previewLayerEl.querySelector('#td-wbm-custom-name')?.value || entry.name;
+    base.name = snap?.name || entry.name;
     base.enabled = !!previewLayerEl.querySelector('#td-wbm-custom-enabled')?.checked;
     base.strategy = base.strategy || { type: 'selective', keys: [], keys_secondary: { logic: 'and_any', keys: [] }, scan_depth: 'same_as_global' };
     base.strategy.type = previewLayerEl.querySelector('#td-wbm-custom-stype')?.value || 'selective';
-    base.strategy.keys = parseKeysInput(previewLayerEl.querySelector('#td-wbm-custom-keys')?.value || '');
-    base.content = previewLayerEl.querySelector('#td-wbm-custom-content')?.value || '';
+    base.strategy.keys = parseKeysInput(snap?.find_regex || '');
+    base.content = snap?.content || '';
     entry.customEntry = base; entry.choice = 'custom';
     state.previewCtx = null; ctx.renderPreviewModal(); updateWbMergeBody(); notify('success', '已保存缝合结果'); return true;
   }
@@ -1060,34 +1225,65 @@ export function handleManagerClick(e, actionEl, action) {
   }
   if (action === 'pm-open-detail') {
     const name = actionEl.getAttribute('data-name');
-    try { state.modal = { type: 'presetDetail', presetName: name, data: getPresetDetail(name), tab: 'prompts', query: '', dirty: false }; ctx.renderModal(); }
+    try { state.modal = { type: 'presetDetail', presetName: name, data: getPresetDetail(name), tab: 'prompts', query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() }; ctx.renderModal(); }
     catch (err) { notify('error', err.message || String(err)); }
     return true;
   }
   if (action === 'pm-back-list' && state.modal?.type === 'presetDetail') { state.modal = { type: 'presetManager', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
-  if (action === 'pm-detail-tab' && state.modal?.type === 'presetDetail') { state.modal.tab = actionEl.getAttribute('data-tab') || 'prompts'; ctx.renderModal(); return true; }
+  if (action === 'pm-detail-tab' && state.modal?.type === 'presetDetail') { state.modal.tab = actionEl.getAttribute('data-tab') || 'prompts'; state.modal.selectedIdx = new Set(); ctx.renderModal(); return true; }
+  if (action === 'pm-detail-toggle-tools' && state.modal?.type === 'presetDetail') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
+  if (action === 'pm-toggle-batch' && state.modal?.type === 'presetDetail') {
+    state.modal.batchMode = !state.modal.batchMode; state.modal.selectedIdx = new Set(); ctx.renderModal(); return true;
+  }
+  if (action === 'pm-batch-check' && state.modal?.type === 'presetDetail') {
+    const idx = Number(actionEl.getAttribute('data-idx'));
+    if (state.modal.selectedIdx.has(idx)) state.modal.selectedIdx.delete(idx);
+    else state.modal.selectedIdx.add(idx);
+    actionEl.closest('.td-mgr-row')?.classList.toggle('is-active', state.modal.selectedIdx.has(idx));
+    const batchBtn = modalLayerEl.querySelector("[data-action='pm-toggle-batch']");
+    if (batchBtn) batchBtn.textContent = `退出批量 (已选 ${state.modal.selectedIdx.size})`;
+    return true;
+  }
+  if (action === 'pm-batch-move' && state.modal?.type === 'presetDetail') {
+    const indices = Array.from(state.modal.selectedIdx || []);
+    if (indices.length === 0) { notify('warning', '请先勾选要移动的条目'); return true; }
+    const listName = state.modal.tab === 'unused' ? 'prompts_unused' : 'prompts';
+    state.selectPopup = { type: 'movePromptTarget', mode: 'move', listName, fromIndices: indices };
+    renderSelectPopupView(); return true;
+  }
+  if (action === 'pm-batch-join' && state.modal?.type === 'presetDetail' && state.modal.tab === 'unused') {
+    const indices = Array.from(state.modal.selectedIdx || []);
+    if (indices.length === 0) { notify('warning', '请先勾选要加入主列表的条目'); return true; }
+    state.selectPopup = { type: 'movePromptTarget', mode: 'insertFromUnused', listName: 'prompts', fromIndices: indices };
+    renderSelectPopupView(); return true;
+  }
   if (action === 'pm-toggle-prompt' && state.modal?.type === 'presetDetail') {
     const list = state.modal.data[actionEl.getAttribute('data-list')], idx = Number(actionEl.getAttribute('data-idx'));
-    if (list && list[idx]) { list[idx].enabled = !list[idx].enabled; state.modal.dirty = true; ctx.renderModal(); }
+    if (list && list[idx]) {
+      list[idx].enabled = !list[idx].enabled;
+      state.modal.dirty = true;
+      actionEl.classList.toggle('on', !!list[idx].enabled);
+      const dirtyEl = modalLayerEl.querySelector("[data-role='pm-dirty-label']");
+      if (dirtyEl) dirtyEl.textContent = '有未保存修改';
+    }
     return true;
   }
   if (action === 'pm-move-before' && state.modal?.type === 'presetDetail') {
-    state.selectPopup = { type: 'movePromptTarget', listName: actionEl.getAttribute('data-list'), fromIdx: Number(actionEl.getAttribute('data-idx')) };
-    renderSelectPopupView();
-    return true;
+    state.selectPopup = { type: 'movePromptTarget', mode: 'move', listName: actionEl.getAttribute('data-list'), fromIndices: [Number(actionEl.getAttribute('data-idx'))] };
+    renderSelectPopupView(); return true;
   }
   if (action === 'pm-swap-pool' && state.modal?.type === 'presetDetail') {
     const listName = actionEl.getAttribute('data-list'), idx = Number(actionEl.getAttribute('data-idx'));
     const p = state.modal.data[listName]?.[idx]; if (!p) return true;
-    const toUnused = listName === 'prompts';
+    if (listName === 'prompts_unused') {
+      state.selectPopup = { type: 'movePromptTarget', mode: 'insertFromUnused', listName: 'prompts', fromIndices: [idx] };
+      renderSelectPopupView(); return true;
+    }
     ctx.openConfirm({
-      title: toUnused ? '移入未添加池确认' : '加入提示词列表确认',
-      message: `确定要将条目 #${idx + 1}「${p.name || p.id}」${toUnused ? '移入未添加池' : '加入提示词列表'}吗？`,
-      confirmText: '确认移动', confirmClass: 'warn',
+      title: '移入未添加池确认', message: `确定要将条目 #${idx + 1}「${p.name || p.id}」移入未添加池吗？`, confirmText: '确认移动', confirmClass: 'warn',
       onConfirm: () => {
-        const otherName = toUnused ? 'prompts_unused' : 'prompts';
-        const [moved] = state.modal.data[listName].splice(idx, 1);
-        if (moved) { state.modal.data[otherName].push(moved); state.modal.dirty = true; ctx.renderModal(); }
+        const [moved] = state.modal.data.prompts.splice(idx, 1);
+        if (moved) { state.modal.data.prompts_unused.push(moved); state.modal.dirty = true; ctx.renderModal(); }
       },
     });
     return true;
@@ -1096,9 +1292,7 @@ export function handleManagerClick(e, actionEl, action) {
     const listName = actionEl.getAttribute('data-list'), idx = Number(actionEl.getAttribute('data-idx'));
     const p = state.modal.data[listName]?.[idx]; if (!p) return true;
     ctx.openConfirm({
-      title: '删除预设条目确认',
-      message: `确定要从当前预设中永久删除条目 #${idx + 1}「${p.name || p.id}」吗？`,
-      confirmText: '确认删除',
+      title: '删除预设条目确认', message: `确定要从当前预设中永久删除条目 #${idx + 1}「${p.name || p.id}」吗？`, confirmText: '确认删除',
       onConfirm: () => { state.modal.data[listName].splice(idx, 1); state.modal.dirty = true; ctx.renderModal(); },
     });
     return true;
@@ -1108,8 +1302,7 @@ export function handleManagerClick(e, actionEl, action) {
     const p = state.modal.data[listName]?.[idx]; if (!p) return true;
     state.previewKey = null; state.snapshotDetailId = null;
     state.previewCtx = { type: 'pmContentEdit', listName, idx, prompt: JSON.parse(JSON.stringify(p)) };
-    ctx.renderPreviewModal();
-    return true;
+    ctx.renderPreviewModal(); return true;
   }
   if (action === 'pm-save-content' && state.previewCtx?.type === 'pmContentEdit' && state.modal?.type === 'presetDetail') {
     pushEditSnapshot(true);
@@ -1159,64 +1352,97 @@ export function handleManagerClick(e, actionEl, action) {
     return true;
   }
 
-  // AI 智能编辑预设条目
+  // AI 智能编辑（仅酒馆当前连接 + 破甲预设）
   if (action === 'pm-open-ai-edit' && state.modal?.type === 'presetDetail') {
     state.previewKey = null; state.snapshotDetailId = null;
     state.previewCtx = { type: 'pmAiEdit', step: 'setup', selectedKeys: new Set(), instruction: '', search: '', loading: false, results: [] };
     ctx.renderPreviewModal(); return true;
   }
-  if (action === 'pm-ai-mode' && state.previewCtx?.type === 'pmAiEdit') {
-    state.store.settings.aiEditConfig.mode = actionEl.getAttribute('data-mode') || 'proxy';
-    saveStore(state.store); ctx.renderPreviewModal(); return true;
-  }
-  if (action === 'pm-ai-toggle-item' && state.previewCtx?.type === 'pmAiEdit') {
-    const uk = actionEl.getAttribute('data-uidkey');
-    if (state.previewCtx.selectedKeys.has(uk)) state.previewCtx.selectedKeys.delete(uk);
-    else state.previewCtx.selectedKeys.add(uk);
+  if (action === 'wbd-open-ai-edit' && state.modal?.type === 'worldbookDetail') {
+    state.previewKey = null; state.snapshotDetailId = null;
+    state.previewCtx = { type: 'wbAiEdit', step: 'setup', selectedKeys: new Set(), instruction: '', search: '', loading: false, results: [] };
     ctx.renderPreviewModal(); return true;
   }
-  if (action === 'pm-ai-run' && state.previewCtx?.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
+  if (action === 'ai-toggle-item' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+    const k = actionEl.getAttribute('data-key');
+    if (state.previewCtx.selectedKeys.has(k)) state.previewCtx.selectedKeys.delete(k);
+    else state.previewCtx.selectedKeys.add(k);
+    const labelEl = previewLayerEl.querySelector('.td-picker-list')?.previousElementSibling?.querySelector('.td-label');
+    if (labelEl) labelEl.textContent = `3. 勾选待编辑条目 (已选 ${state.previewCtx.selectedKeys.size} 项)`;
+    actionEl.closest('.td-picker-row')?.classList.toggle('checked', state.previewCtx.selectedKeys.has(k));
+    return true;
+  }
+  if (action === 'ai-run' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
     const ai = state.previewCtx, cfg = state.store.settings.aiEditConfig;
-    cfg.proxyPreset = previewLayerEl.querySelector('#td-ai-proxy-preset')?.value ?? cfg.proxyPreset;
-    cfg.apiUrl = previewLayerEl.querySelector('#td-ai-url')?.value ?? cfg.apiUrl;
-    cfg.apiKey = previewLayerEl.querySelector('#td-ai-key')?.value ?? cfg.apiKey;
-    cfg.source = previewLayerEl.querySelector('#td-ai-source')?.value ?? cfg.source;
+    cfg.jailbreakPreset = previewLayerEl.querySelector('#td-ai-jailbreak-preset')?.value ?? cfg.jailbreakPreset;
     cfg.model = previewLayerEl.querySelector('#td-ai-model')?.value ?? cfg.model;
     ai.instruction = previewLayerEl.querySelector('#td-ai-instruction')?.value ?? ai.instruction;
     saveStore(state.store);
 
-    const selectedItems = [];
-    ['prompts', 'prompts_unused'].forEach((listName) => {
-      (state.modal.data[listName] || []).forEach((p, idx) => {
-        const uk = `${listName}::${idx}`;
-        if (ai.selectedKeys.has(uk)) selectedItems.push({ uidKey: uk, listName, index: idx, prompt: p });
+    if (ai.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
+      const selectedItems = [];
+      ['prompts', 'prompts_unused'].forEach((listName) => {
+        (state.modal.data[listName] || []).forEach((p, idx) => {
+          const uk = `${listName}::${idx}`;
+          if (ai.selectedKeys.has(uk)) selectedItems.push({ uidKey: uk, listName, index: idx, prompt: p });
+        });
       });
-    });
+      ai.loading = true; ctx.renderPreviewModal();
+      runAiPresetEdit({ selectedItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results }) => {
+        ai.loading = false; ai.results = results; ai.step = 'review'; ctx.renderPreviewModal();
+      }).catch((err) => { ai.loading = false; ctx.renderPreviewModal(); notify('error', err.message || String(err)); });
+      return true;
+    }
 
-    ai.loading = true; ctx.renderPreviewModal();
-    runAiPresetEdit({ selectedItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results }) => {
-      ai.loading = false; ai.results = results; ai.step = 'review'; ctx.renderPreviewModal();
-    }).catch((err) => { ai.loading = false; ctx.renderPreviewModal(); notify('error', err.message || String(err)); });
-    return true;
+    if (ai.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
+      const selectedItems = [];
+      (state.modal.entries || []).forEach((entry, idx) => {
+        if (ai.selectedKeys.has(String(idx))) selectedItems.push({ index: idx, entry });
+      });
+      ai.loading = true; ctx.renderPreviewModal();
+      runAiWorldbookEdit({ selectedItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results }) => {
+        ai.loading = false; ai.results = results; ai.step = 'review'; ctx.renderPreviewModal();
+      }).catch((err) => { ai.loading = false; ctx.renderPreviewModal(); notify('error', err.message || String(err)); });
+      return true;
+    }
   }
-  if (action === 'pm-ai-toggle-accept' && state.previewCtx?.type === 'pmAiEdit') {
+  if (action === 'ai-toggle-accept' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
     const r = state.previewCtx.results?.[Number(actionEl.getAttribute('data-ridx'))];
     if (r) { r.accepted = !r.accepted; ctx.renderPreviewModal(); }
     return true;
   }
-  if (action === 'pm-ai-back-setup' && state.previewCtx?.type === 'pmAiEdit') { state.previewCtx.step = 'setup'; ctx.renderPreviewModal(); return true; }
-  if (action === 'pm-ai-apply-results' && state.previewCtx?.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
+  if (action === 'ai-back-setup' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+    state.previewCtx.step = 'setup'; ctx.renderPreviewModal(); return true;
+  }
+  if (action === 'ai-apply-results' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
     let applied = 0;
-    (state.previewCtx.results || []).forEach((r) => {
-      if (!r.accepted) return;
-      const target = state.modal.data[r.listName]?.[r.index]; if (!target) return;
-      target.name = r.newName; target.role = r.newRole; target.enabled = r.newEnabled;
-      if (typeof target.content === 'string' || r.newContent.length > 0 || !PRESET_SYSTEM_IDS.has(target.id)) target.content = r.newContent;
-      applied++;
-    });
-    if (applied > 0) state.modal.dirty = true;
-    state.previewCtx = null; ctx.renderPreviewModal(); ctx.renderModal();
-    notify('success', `已将 ${applied} 个 AI 修改结果写回预设草稿（请点击底部「保存预设」持久化）`); return true;
+    if (state.previewCtx.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
+      (state.previewCtx.results || []).forEach((r) => {
+        if (!r.accepted) return;
+        const target = state.modal.data[r.listName]?.[r.index]; if (!target) return;
+        target.name = r.newName; target.role = r.newRole; target.enabled = r.newEnabled;
+        if (typeof target.content === 'string' || r.newContent.length > 0 || !PRESET_SYSTEM_IDS.has(target.id)) target.content = r.newContent;
+        applied++;
+      });
+      if (applied > 0) state.modal.dirty = true;
+      state.previewCtx = null; ctx.renderPreviewModal(); ctx.renderModal();
+      notify('success', `已将 ${applied} 个 AI 修改结果写回预设草稿（请点击「保存预设」持久化）`);
+      return true;
+    }
+    if (state.previewCtx.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
+      (state.previewCtx.results || []).forEach((r) => {
+        if (!r.accepted) return;
+        const target = state.modal.entries?.[r.index]; if (!target) return;
+        target.name = r.newName; target.enabled = r.newEnabled; target.content = r.newContent;
+        target.strategy = target.strategy || { type: 'selective', keys: [], keys_secondary: { logic: 'and_any', keys: [] }, scan_depth: 'same_as_global' };
+        target.strategy.keys = parseKeysInput(r.newKeys);
+        applied++;
+      });
+      if (applied > 0) state.modal.dirty = true;
+      state.previewCtx = null; ctx.renderPreviewModal(); ctx.renderModal();
+      notify('success', `已将 ${applied} 个 AI 修改结果写回世界书草稿（请点击「保存世界书」持久化）`);
+      return true;
+    }
   }
 
   // 世界书管理与条目编辑
@@ -1269,7 +1495,13 @@ export function handleManagerClick(e, actionEl, action) {
   if (action === 'wbd-back-list' && state.modal?.type === 'worldbookDetail') { state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
   if (action === 'wbd-toggle-entry' && state.modal?.type === 'worldbookDetail') {
     const idx = Number(actionEl.getAttribute('data-idx'));
-    if (state.modal.entries[idx]) { state.modal.entries[idx].enabled = !state.modal.entries[idx].enabled; state.modal.dirty = true; ctx.renderModal(); }
+    if (state.modal.entries[idx]) {
+      state.modal.entries[idx].enabled = !state.modal.entries[idx].enabled;
+      state.modal.dirty = true;
+      actionEl.classList.toggle('on', !!state.modal.entries[idx].enabled);
+      const dirtyEl = modalLayerEl.querySelector("[data-role='wbd-dirty-label']");
+      if (dirtyEl) dirtyEl.textContent = '有未保存修改';
+    }
     return true;
   }
   if (action === 'wbd-batch-enable' && state.modal?.type === 'worldbookDetail') {
@@ -1369,6 +1601,14 @@ export function handleManagerClick(e, actionEl, action) {
 
 export function handleManagerInput(e) {
   const id = e.target?.id || '';
+  if (id === 'td-crop-zoom' && state.previewCtx?.type === 'orbCrop') {
+    const z = Math.max(50, Math.min(300, Number(e.target.value) || 100));
+    state.previewCtx.zoom = z / 100;
+    const lbl = ctx.getPreviewLayer()?.querySelector("[data-role='crop-zoom-label']");
+    if (lbl) lbl.textContent = `缩放倍数 (${z}%)`;
+    drawOrbCropCanvas();
+    return true;
+  }
   if (id === 'td-sp-color-native') { const txt = ctx.getSelectLayer()?.querySelector('#td-sp-color-input'); if (txt) txt.value = e.target.value; return true; }
   if (id === 'td-sp-color-input') { const nat = ctx.getSelectLayer()?.querySelector('#td-sp-color-native'); if (nat && /^#[0-9a-fA-F]{6}$/.test(e.target.value.trim())) nat.value = e.target.value.trim(); return true; }
   if (id === 'td-wb-merge-search' && state.modal?.type === 'wbMerge') { state.modal.session.query = e.target.value; updateWbMergeBody(); return true; }
@@ -1376,8 +1616,8 @@ export function handleManagerInput(e) {
   if (id === 'td-pm-detail-search' && state.modal?.type === 'presetDetail') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
   if (id === 'td-wbm-search' && state.modal?.type === 'worldbookManager') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
   if (id === 'td-wbd-search' && state.modal?.type === 'worldbookDetail') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
-  if (id === 'td-ai-instruction' && state.previewCtx?.type === 'pmAiEdit') { state.previewCtx.instruction = e.target.value; return true; }
-  if (id === 'td-ai-search' && state.previewCtx?.type === 'pmAiEdit') { state.previewCtx.search = e.target.value; ctx.renderPreviewModal(); return true; }
+  if (id === 'td-ai-instruction' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) { state.previewCtx.instruction = e.target.value; return true; }
+  if (id === 'td-ai-search' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) { state.previewCtx.search = e.target.value; ctx.renderPreviewModal(); return true; }
   return false;
 }
 
@@ -1385,15 +1625,6 @@ export function handleManagerChange(e) {
   const target = e.target;
   if (!target) return false;
   const id = target.id || '';
-
-  if (id === 'td-api-main-select' && state.modal?.type === 'apiManager') { switchMainApi(target.value); setTimeout(() => ctx.renderModal(), 120); return true; }
-  if (id === 'td-api-source-select' && state.modal?.type === 'apiManager') { switchChatCompletionSource(target.value); setTimeout(() => ctx.renderModal(), 120); return true; }
-  if (id === 'td-api-model-select' && state.modal?.type === 'apiManager') { const snap = getApiSnapshot(); switchChatCompletionModel(snap.source, target.value); ctx.renderModal(); return true; }
-  if (id === 'td-api-fetched-select' && state.modal?.type === 'apiManager' && target.value) {
-    const inp = ctx.getModalLayer()?.querySelector('#td-api-model-input'); if (inp) inp.value = target.value; return true;
-  }
-  if (id === 'td-api-proxy-select' && state.modal?.type === 'apiManager') { switchProxyPreset(target.value); ctx.renderModal(); return true; }
-  if (id === 'td-api-profile-select' && state.modal?.type === 'apiManager' && target.value) { switchConnectionProfile(target.value).then(() => setTimeout(() => ctx.renderModal(), 250)); return true; }
 
   if (id === 'td-wb-merge-old-select' && state.modal?.type === 'wbMergeSelect') { state.modal.oldName = target.value; return true; }
   if (id === 'td-wb-merge-new-select' && state.modal?.type === 'wbMergeSelect') {
