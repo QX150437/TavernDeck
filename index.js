@@ -1,20 +1,26 @@
 import { APP_NAME, getST, hasTH } from './src/utils.js';
 import { state, loadStore } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
+import { syncNativePresetCollapse } from './src/native-ui.js';
+import { initDevErrorCapture } from './src/dev-tools.js';
 import { updatePickerList, updateSnapshotList, syncPreviewStatusUi } from './src/ui-views.js';
 import {
-  mountUI, renderOrb, renderMain, syncExtensionButton, mountExtensionSettingsPanel,
+  mountUI, renderOrb, renderMain, syncExtensionButton, syncTopBarUI, mountExtensionSettingsPanel,
 } from './src/ui-app.js';
 
 let booted = false;
 
 async function syncAndRefresh() {
+  syncNativePresetCollapse();
+  syncTopBarUI();
   if (!hasTH('getPreset')) return;
   try {
     state.store = loadStore();
     await refreshAllCatalogs();
     renderOrb();
     syncExtensionButton();
+    syncTopBarUI();
+    syncNativePresetCollapse();
     if (state.panelOpen) {
       renderMain();
       if (state.previewKey) syncPreviewStatusUi();
@@ -43,6 +49,12 @@ function bindTavernEvents() {
   [
     et.APP_READY,
     et.EXTENSIONS_FIRST_LOAD,
+    et.SETTINGS_LOADED,
+    et.SETTINGS_UPDATED,
+    et.MAIN_API_CHANGED,
+    et.CHATCOMPLETION_SOURCE_CHANGED,
+    et.CHATCOMPLETION_MODEL_CHANGED,
+    et.CONNECTION_PROFILE_LOADED,
     et.PRESET_CHANGED,
     et.OAI_PRESET_CHANGED_AFTER,
     et.PRESET_RENAMED,
@@ -66,11 +78,14 @@ function waitForTavernHelperAndSync(retries = 25) {
 function bootstrap() {
   if (booted) return;
   booted = true;
+  initDevErrorCapture();
   state.store = loadStore();
   mountUI();
   renderOrb();
   syncExtensionButton();
+  syncTopBarUI();
   mountExtensionSettingsPanel();
+  syncNativePresetCollapse();
   bindTavernEvents();
   waitForTavernHelperAndSync();
 }

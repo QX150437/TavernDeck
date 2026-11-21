@@ -1,6 +1,6 @@
 export const APP_NAME = 'TavernDeck';
 export const APP_CN = '酒馆总控台';
-export const APP_VERSION = 'v1.0';
+export const APP_VERSION = 'v1.1';
 export const STORAGE_KEY = 'TavernDeck';
 export const SCHEMA_VERSION = 3;
 export const ROOT_ID = 'tavern-deck-root';
@@ -130,4 +130,182 @@ export async function copyToClipboard(text) {
   ta.select();
   document.execCommand('copy');
   ta.remove();
+}
+
+export function normalizeColorInput(raw) {
+  let val = String(raw || '').trim();
+  if (!val) return { ok: true, value: '' };
+  if (/^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$|^[0-9a-fA-F]{8}$/.test(val)) {
+    val = `#${val}`;
+  }
+  if (typeof CSS !== 'undefined' && typeof CSS.supports === 'function') {
+    return CSS.supports('color', val) ? { ok: true, value: val } : { ok: false, value: '' };
+  }
+  const el = document.createElement('span');
+  el.style.color = '';
+  el.style.color = val;
+  return el.style.color ? { ok: true, value: val } : { ok: false, value: '' };
+}
+
+function normalizeTitleForMatch(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[\[\(（【].*?[\]\)）】]/g, ' ')
+    .replace(/v?\d+(\.\d+)*([a-z])?/g, ' ')
+    .replace(/(20\d{2}[-./]?\d{1,2}[-./]?\d{1,2}|\d{4,8})/g, ' ')
+    .replace(/[\s_\-·.]+/g, '')
+    .trim();
+}
+
+function charDiceSimilarity(a, b) {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) {
+    return 0.75 + 0.25 * (Math.min(a.length, b.length) / Math.max(a.length, b.length));
+  }
+  const bigrams = (s) => {
+    const arr = [];
+    for (let i = 0; i < s.length - 1; i++) arr.push(s.slice(i, i + 2));
+    if (arr.length === 0 && s.length === 1) arr.push(s);
+    return arr;
+  };
+  const ba = bigrams(a);
+  const bb = bigrams(b);
+  const map = new Map();
+  ba.forEach((g) => map.set(g, (map.get(g) || 0) + 1));
+  let inter = 0;
+  bb.forEach((g) => {
+    const c = map.get(g) || 0;
+    if (c > 0) {
+      inter++;
+      map.set(g, c - 1);
+    }
+  });
+  return (2 * inter) / (ba.length + bb.length);
+}
+
+export function findBestMatchingName(targetName, allNames) {
+  const candidates = (allNames || []).filter((n) => n && n !== targetName && n !== 'in_use');
+  if (candidates.length === 0) return targetName || '';
+
+  const normTarget = normalizeTitleForMatch(targetName);
+  const rawTarget = String(targetName || '').toLowerCase();
+  let bestName = candidates[0];
+  let bestScore = -1;
+
+  candidates.forEach((cand) => {
+    const normCand = normalizeTitleForMatch(cand);
+    const rawCand = cand.toLowerCase();
+    const s1 = charDiceSimilarity(normTarget, normCand);
+    const s2 = charDiceSimilarity(rawTarget, rawCand);
+    let prefixLen = 0;
+    const minL = Math.min(rawTarget.length, rawCand.length);
+    while (prefixLen < minL && rawTarget[prefixLen] === rawCand[prefixLen]) prefixLen++;
+    const prefixBonus = minL > 0 ? (prefixLen / minL) * 0.25 : 0;
+    const score = s1 * 0.6 + s2 * 0.3 + prefixBonus;
+    if (score > bestScore) {
+      bestScore = score;
+      bestName = cand;
+    }
+  });
+  return bestName;
+}
+
+export function computeLineDiff(oldText, newText) {
+  const a = String(oldText || '').split('\n');
+  const b = String(newText || '').split('\n');
+  if (a.length * b.length > 90000) {
+    return [
+      ...a.slice(0, 40).map((l) => ({ type: 'del', text: l })),
+      ...b.slice(0, 40).map((l) => ({ type: 'add', text: l })),
+    ];
+  }
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      if (a[i] === b[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+      else dp[i][j] = dp[i + 1][j] >= dp[i][j + 1] ? dp[i + 1][j] : dp[i][j + 1];
+    }
+  }
+  const lines = [];
+  let i = 0;
+  let j = 0;
+  while (i < m && j < n) {
+    if (a[i] === b[j]) {
+      lines.push({ type: 'ctx', text: a[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      lines.push({ type: 'del', text: a[i] });
+      i++;
+    } else {
+      lines.push({ type: 'add', text: b[j] });
+      j++;
+    }
+  }
+  while (i < m) lines.push({ type: 'del', text: a[i++] });
+  while (j < n) lines.push({ type: 'add', text: b[j++] });
+  return lines;
+}
+
+function cloneWithRegExp(val) {
+  if (val instanceof RegExp) return new RegExp(val.source, val.flags);
+  if (Array.isArray(val)) return val.map(cloneWithRegExp);
+  if (val && typeof val === 'object') {
+    const out = {};
+    Object.keys(val).forEach((k) => { out[k] = cloneWithRegExp(val[k]); });
+    return out;
+  }
+  return val;
+}
+
+export function cloneWorldbookEntry(entry) {
+  return cloneWithRegExp(entry);
+}
+
+export function cloneWorldbookEntries(entries) {
+  return Array.isArray(entries) ? entries.map(cloneWithRegExp) : [];
+}
+
+export function formatKeyItem(k) {
+  if (k instanceof RegExp) return `/${k.source}/${k.flags}`;
+  return String(k || '');
+}
+
+export function formatKeysInput(keys) {
+  if (!Array.isArray(keys)) return '';
+  return keys.map(formatKeyItem).filter(Boolean).join(', ');
+}
+
+export function parseKeysInput(str) {
+  return String(str || '')
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((token) => {
+      const m = token.match(/^\/(.+)\/([gimsuy]*)$/);
+      if (m) {
+        try { return new RegExp(m[1], m[2]); } catch (e) {}
+      }
+      return token;
+    });
+}
+
+export function keysSignature(keys) {
+  if (!Array.isArray(keys)) return '';
+  return keys.map(formatKeyItem).join('\x00');
+}
+
+export function downloadJsonFile(obj, filename) {
+  const json = JSON.stringify(obj, null, 2);
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 100);
 }

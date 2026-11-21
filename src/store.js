@@ -9,9 +9,43 @@ export function createDefaultStore() {
     schemaVersion: SCHEMA_VERSION,
     settings: {
       theme: 'dark',
+      orbStyle: 'indigo',
+      orbImage: '',
+      orbImageFit: 'cover',
+      groupTextColor: '',
+      entryTextColor: '',
+      collapseNativePresetSettings: false,
       showOrb: true,
       enableExtButton: false,
+      enableTopBarButton: false,
+      topBarPosition: 'after_extensions',
       enableDragSort: false,
+      showControlBar: false,
+      showToolsDrawer: false,
+      collapseGroupActions: true,
+      collapsedGroupItems: {
+        quickToggle: false,
+        add: true,
+        subgroup: true,
+        edit: true,
+        delete: true,
+      },
+      collapseEntryActions: true,
+      collapsedEntryItems: {
+        badge: true,
+        preview: false,
+        remove: true,
+      },
+      aiEditConfig: {
+        mode: 'proxy',
+        proxyPreset: '',
+        apiUrl: '',
+        apiKey: '',
+        source: 'openai',
+        model: '',
+        temperature: '',
+        maxTokens: '',
+      },
       orbSize: 50,
       orbOpacity: 0.96,
       orbPosition: null,
@@ -43,9 +77,14 @@ export const state = {
   loadingWorldbooks: false,
   extraLoadedBooks: {},
   panelOpen: false,
+  activeGroupMenuId: null,
+  groupSearch: {},
+  activeItemDrawerId: null,
   modal: null,
   previewKey: null,
+  previewCtx: null,
   snapshotDetailId: null,
+  selectPopup: null,
   confirmModal: null,
   isBusy: false,
   orbIdle: false,
@@ -64,6 +103,12 @@ function normalizeGroupNode(g) {
   };
 }
 
+export function ensureAtLeastOneEntry(settings) {
+  if (!settings.showOrb && !settings.enableExtButton && !settings.enableTopBarButton) {
+    settings.showOrb = true;
+  }
+}
+
 export function loadStore() {
   try {
     const globals = hasTH('getVariables') ? (callTH('getVariables', { type: 'global' }) || {}) : {};
@@ -73,9 +118,24 @@ export function loadStore() {
       return def;
     }
     const settings = Object.assign({}, def.settings, raw.settings || {});
-    if (!settings.showOrb && !settings.enableExtButton) {
-      settings.showOrb = true;
-    }
+    delete settings.enableDevMode;
+    delete settings.githubRepo;
+    settings.collapsedGroupItems = Object.assign(
+      {},
+      def.settings.collapsedGroupItems,
+      (raw.settings && raw.settings.collapsedGroupItems) || {},
+    );
+    settings.collapsedEntryItems = Object.assign(
+      {},
+      def.settings.collapsedEntryItems,
+      (raw.settings && raw.settings.collapsedEntryItems) || {},
+    );
+    settings.aiEditConfig = Object.assign(
+      {},
+      def.settings.aiEditConfig,
+      (raw.settings && raw.settings.aiEditConfig) || {},
+    );
+    ensureAtLeastOneEntry(settings);
     const schemes = Array.isArray(raw.schemes) && raw.schemes.length > 0
       ? raw.schemes.map((s) => ({
           id: (s && s.id) || genId(),
@@ -364,4 +424,106 @@ export function performDrop(op) {
     return true;
   }
   return false;
+}
+
+export function exportStoreData(opts) {
+  const payload = {
+    app: APP_NAME,
+    schemaVersion: SCHEMA_VERSION,
+    exportedAt: Date.now(),
+    scope: 'partial',
+  };
+  if (opts.includeSettings) {
+    payload.settings = JSON.parse(JSON.stringify(state.store.settings));
+  }
+  if (opts.schemeIds && opts.schemeIds.length > 0) {
+    const idSet = new Set(opts.schemeIds);
+    payload.schemes = ensureSchemesPool()
+      .filter((s) => idSet.has(s.id))
+      .map((s) => JSON.parse(JSON.stringify(s)));
+    const bindings = {};
+    Object.keys(state.store.presetBindings || {}).forEach((pName) => {
+      const kept = (state.store.presetBindings[pName] || []).filter((id) => idSet.has(id));
+      if (kept.length > 0) bindings[pName] = kept;
+    });
+    payload.presetBindings = bindings;
+  }
+  if (opts.includeSnapshots) {
+    payload.snapshots = JSON.parse(JSON.stringify(state.store.snapshots || []));
+  }
+  if (opts.includeAll) {
+    payload.scope = 'all';
+    payload.settings = JSON.parse(JSON.stringify(state.store.settings));
+    payload.schemes = JSON.parse(JSON.stringify(ensureSchemesPool()));
+    payload.presetBindings = JSON.parse(JSON.stringify(state.store.presetBindings || {}));
+    payload.snapshots = JSON.parse(JSON.stringify(state.store.snapshots || []));
+  }
+  return payload;
+}
+
+export function importStoreData(data, opts) {
+  if (!data || typeof data !== 'object' || data.app !== APP_NAME) {
+    throw new Error('无效的 TavernDeck 备份文件格式');
+  }
+  const mode = opts.mode === 'overwrite' ? 'overwrite' : 'merge';
+
+  if (opts.importSettings && data.settings && typeof data.settings === 'object') {
+    state.store.settings = Object.assign(createDefaultStore().settings, state.store.settings, data.settings);
+    ensureAtLeastOneEntry(state.store.settings);
+  }
+
+  if (opts.importSchemes && Array.isArray(data.schemes)) {
+    const incoming = data.schemes.map((s) => ({
+      id: (s && s.id) || genId(),
+      name: (s && s.name) || '导入方案',
+      groups: s && Array.isArray(s.groups) ? s.groups.map(normalizeGroupNode).filter(Boolean) : [],
+    }));
+    if (mode === 'overwrite') {
+      if (incoming.length > 0) {
+        state.store.schemes = incoming;
+        state.store.activeSchemeId = incoming[0].id;
+        state.store.activeSchemeByPreset = {};
+        if (data.presetBindings && typeof data.presetBindings === 'object') {
+          state.store.presetBindings = JSON.parse(JSON.stringify(data.presetBindings));
+        }
+      }
+    } else {
+      const pool = ensureSchemesPool();
+      const idMap = new Map();
+      const existingIds = new Set(pool.map((s) => s.id));
+      incoming.forEach((s) => {
+        let newId = s.id;
+        if (existingIds.has(newId)) newId = genId();
+        idMap.set(s.id, newId);
+        existingIds.add(newId);
+        pool.push({ id: newId, name: s.name, groups: s.groups });
+      });
+      if (data.presetBindings && typeof data.presetBindings === 'object') {
+        Object.keys(data.presetBindings).forEach((pName) => {
+          const cur = getBoundSchemeIds(pName);
+          (data.presetBindings[pName] || []).forEach((oldId) => {
+            const mapped = idMap.get(oldId) || oldId;
+            if (!cur.includes(mapped)) cur.push(mapped);
+          });
+          if (cur.length > 0) state.store.presetBindings[pName] = cur;
+        });
+      }
+    }
+  }
+
+  if (opts.importSnapshots && Array.isArray(data.snapshots)) {
+    if (mode === 'overwrite') {
+      state.store.snapshots = JSON.parse(JSON.stringify(data.snapshots));
+    } else {
+      const existingIds = new Set((state.store.snapshots || []).map((s) => s.id));
+      data.snapshots.forEach((snap) => {
+        const copy = JSON.parse(JSON.stringify(snap));
+        if (!copy.id || existingIds.has(copy.id)) copy.id = genId();
+        existingIds.add(copy.id);
+        state.store.snapshots.push(copy);
+      });
+    }
+  }
+
+  saveStore(state.store);
 }

@@ -4,6 +4,9 @@ import {
 } from './utils.js';
 import { state, getActiveScheme, findGroupNode } from './store.js';
 
+let mutationQueue = Promise.resolve();
+let pendingMutationOps = 0;
+
 function collectWorldbooksFromGroups(groups, set) {
   if (!Array.isArray(groups)) return;
   groups.forEach((g) => {
@@ -69,6 +72,21 @@ export function rebuildCatalogIndex() {
   state.catalog.byKey = byKey;
 }
 
+function syncPresetCatalogFromPrompts(prompts) {
+  state.catalog.preset = (prompts || []).map((p) => {
+    const ref = { type: 'preset', id: p.id };
+    return {
+      key: makeItemKey(ref),
+      ref,
+      type: 'preset',
+      name: p.name || p.id,
+      enabled: !!p.enabled,
+      raw: p,
+    };
+  });
+  rebuildCatalogIndex();
+}
+
 export function refreshSyncSources() {
   try {
     state.presetName = hasTH('getLoadedPresetName') ? (callTH('getLoadedPresetName') || '当前预设') : '当前预设';
@@ -109,7 +127,6 @@ export function refreshSyncSources() {
     state.catalog.preset = [];
   }
 
-  // 脚本扫描（优先使用 getScriptTrees，若无则回退读取预设脚本）
   const scriptGroups = [];
   if (hasTH('getScriptTrees')) {
     const scopes = state.hasCharacter ? ['global', 'preset', 'character'] : ['global', 'preset'];
@@ -129,7 +146,6 @@ export function refreshSyncSources() {
   }
   state.catalog.script = scriptGroups;
 
-  // 正则扫描
   const regexGroups = [];
   if (hasTH('getTavernRegexes')) {
     const regexOpts = [
@@ -297,7 +313,7 @@ async function mutateScriptsByScope(scope, idMap, fieldUpdater) {
         });
       }
       return preset;
-    }, { render: 'immediate' });
+    }, { render: 'debounced' });
   } else if (scope === 'character' && hasTH('updateCharacterWith')) {
     await callTH('updateCharacterWith', 'current', (ch) => {
       const trees = ch?.extensions?.tavern_helper?.scripts;
@@ -311,93 +327,130 @@ async function mutateScriptsByScope(scope, idMap, fieldUpdater) {
   }
 }
 
-export async function applyItemMutations(mutations) {
-  if (state.isBusy || !mutations || mutations.length === 0) return false;
-  state.isBusy = true;
-  try {
-    const presetMut = new Map();
-    const wbMut = new Map();
-    const scriptMut = new Map();
-    const regexMut = new Map();
+export function applyItemMutations(mutations) {
+  if (!mutations || mutations.length === 0) return Promise.resolve(false);
 
-    mutations.forEach((m) => {
-      const ref = m.ref;
-      const existing = state.catalog.byKey.get(makeItemKey(ref));
-      if (existing && existing.enabled === !!m.enabled) return;
-      if (ref.type === 'preset') {
-        presetMut.set(ref.id, !!m.enabled);
-      } else if (ref.type === 'worldbook') {
-        if (!wbMut.has(ref.book)) wbMut.set(ref.book, new Map());
-        wbMut.get(ref.book).set(ref.uid, !!m.enabled);
-      } else if (ref.type === 'script') {
-        if (!scriptMut.has(ref.scope)) scriptMut.set(ref.scope, new Map());
-        scriptMut.get(ref.scope).set(ref.id, !!m.enabled);
-      } else if (ref.type === 'regex') {
-        if (!regexMut.has(ref.scope)) regexMut.set(ref.scope, new Map());
-        regexMut.get(ref.scope).set(ref.id, !!m.enabled);
-      }
-    });
+  const presetMut = new Map();
+  const wbMut = new Map();
+  const scriptMut = new Map();
+  const regexMut = new Map();
+  const rollbacks = [];
 
-    if (presetMut.size > 0 && hasTH('updatePresetWith')) {
-      await callTH('updatePresetWith', 'in_use', (preset) => {
-        if (preset && Array.isArray(preset.prompts)) {
-          preset.prompts.forEach((p) => {
-            if (presetMut.has(p.id)) p.enabled = presetMut.get(p.id);
-          });
-        }
-        return preset;
-      }, { render: 'immediate' });
-    }
+  mutations.forEach((m) => {
+    const ref = m.ref;
+    const key = makeItemKey(ref);
+    const existing = state.catalog.byKey.get(key);
+    const nextEnabled = !!m.enabled;
+    if (existing && existing.enabled === nextEnabled) return;
 
-    for (const [bookName, uidMap] of wbMut.entries()) {
-      if (hasTH('updateWorldbookWith')) {
-        await callTH('updateWorldbookWith', bookName, (entries) =>
-          (entries || []).map((e) => {
-            if (uidMap.has(e.uid)) e.enabled = uidMap.get(e.uid);
-            return e;
-          }),
-        );
+    if (existing) {
+      rollbacks.push({ item: existing, prevEnabled: existing.enabled });
+      existing.enabled = nextEnabled;
+      if (existing.raw && typeof existing.raw === 'object') {
+        existing.raw.enabled = nextEnabled;
       }
     }
 
-    for (const [scope, idMap] of scriptMut.entries()) {
-      await mutateScriptsByScope(scope, idMap, (node, val) => {
-        node.enabled = val;
-      });
+    if (ref.type === 'preset') {
+      presetMut.set(ref.id, nextEnabled);
+    } else if (ref.type === 'worldbook') {
+      if (!wbMut.has(ref.book)) wbMut.set(ref.book, new Map());
+      wbMut.get(ref.book).set(ref.uid, nextEnabled);
+    } else if (ref.type === 'script') {
+      if (!scriptMut.has(ref.scope)) scriptMut.set(ref.scope, new Map());
+      scriptMut.get(ref.scope).set(ref.id, nextEnabled);
+    } else if (ref.type === 'regex') {
+      if (!regexMut.has(ref.scope)) regexMut.set(ref.scope, new Map());
+      regexMut.get(ref.scope).set(ref.id, nextEnabled);
     }
+  });
 
-    for (const [scope, idMap] of regexMut.entries()) {
-      if (hasTH('updateTavernRegexesWith')) {
-        const opt = scope === 'global'
-          ? { type: 'global' }
-          : (scope === 'preset' ? { type: 'preset', name: 'in_use' } : { type: 'character', name: 'current' });
-        await callTH('updateTavernRegexesWith', (regexes) => {
-          (regexes || []).forEach((r) => {
-            if (idMap.has(r.id)) r.enabled = idMap.get(r.id);
-          });
-          return regexes;
-        }, opt);
-      }
-    }
-
-    await refreshAllCatalogs();
-    return true;
-  } catch (e) {
-    console.error(`[${APP_NAME}] 批量应用开关失败:`, e);
-    notify('error', `操作失败: ${e && e.message ? e.message : e}`);
-    return false;
-  } finally {
-    state.isBusy = false;
+  if (presetMut.size === 0 && wbMut.size === 0 && scriptMut.size === 0 && regexMut.size === 0) {
+    return Promise.resolve(true);
   }
+
+  pendingMutationOps++;
+
+  const task = mutationQueue.then(async () => {
+    try {
+      let latestPreset = null;
+      if (presetMut.size > 0 && hasTH('updatePresetWith')) {
+        latestPreset = await callTH('updatePresetWith', 'in_use', (preset) => {
+          if (preset && Array.isArray(preset.prompts)) {
+            preset.prompts.forEach((p) => {
+              if (presetMut.has(p.id)) p.enabled = presetMut.get(p.id);
+            });
+          }
+          return preset;
+        }, { render: 'debounced' });
+      }
+
+      for (const [bookName, uidMap] of wbMut.entries()) {
+        if (hasTH('updateWorldbookWith')) {
+          await callTH('updateWorldbookWith', bookName, (entries) =>
+            (entries || []).map((e) => {
+              if (uidMap.has(e.uid)) e.enabled = uidMap.get(e.uid);
+              return e;
+            }),
+          );
+        }
+      }
+
+      for (const [scope, idMap] of scriptMut.entries()) {
+        await mutateScriptsByScope(scope, idMap, (node, val) => {
+          node.enabled = val;
+        });
+      }
+
+      for (const [scope, idMap] of regexMut.entries()) {
+        if (hasTH('updateTavernRegexesWith')) {
+          const opt = scope === 'global'
+            ? { type: 'global' }
+            : (scope === 'preset' ? { type: 'preset', name: 'in_use' } : { type: 'character', name: 'current' });
+          await callTH('updateTavernRegexesWith', (regexes) => {
+            (regexes || []).forEach((r) => {
+              if (idMap.has(r.id)) r.enabled = idMap.get(r.id);
+            });
+            return regexes;
+          }, opt);
+        }
+      }
+
+      pendingMutationOps--;
+      if (pendingMutationOps === 0) {
+        if (latestPreset && Array.isArray(latestPreset.prompts) && wbMut.size === 0 && scriptMut.size === 0 && regexMut.size === 0) {
+          syncPresetCatalogFromPrompts(latestPreset.prompts);
+        } else {
+          if (wbMut.size > 0) await refreshWorldbookCatalog(false);
+          if (presetMut.size > 0 || scriptMut.size > 0 || regexMut.size > 0) refreshSyncSources();
+        }
+      }
+      return true;
+    } catch (e) {
+      pendingMutationOps = Math.max(0, pendingMutationOps - 1);
+      rollbacks.forEach((rb) => {
+        rb.item.enabled = rb.prevEnabled;
+        if (rb.item.raw && typeof rb.item.raw === 'object') {
+          rb.item.raw.enabled = rb.prevEnabled;
+        }
+      });
+      console.error(`[${APP_NAME}] 批量应用开关失败:`, e);
+      notify('error', `操作失败: ${e && e.message ? e.message : e}`);
+      return false;
+    }
+  });
+
+  mutationQueue = task.catch(() => false);
+  return task;
 }
 
-export async function toggleEntryInGroup(groupId, itemKey) {
+export function toggleEntryInGroup(groupId, itemKey) {
   const found = findGroupNode(getActiveScheme().groups, groupId);
-  if (!found) return false;
+  if (!found) return Promise.resolve(false);
   const targetItem = state.catalog.byKey.get(itemKey);
   if (!targetItem) {
     notify('warning', '该条目当前未加载或已不存在');
-    return false;
+    return Promise.resolve(false);
   }
   const nextEnabled = !targetItem.enabled;
   const mutations = [];
@@ -412,15 +465,15 @@ export async function toggleEntryInGroup(groupId, itemKey) {
   return applyItemMutations(mutations);
 }
 
-export async function toggleMultiGroupAll(groupId) {
+export function toggleMultiGroupAll(groupId) {
   const found = findGroupNode(getActiveScheme().groups, groupId);
-  if (!found || found.group.mode !== 'multi') return false;
+  if (!found || found.group.mode !== 'multi') return Promise.resolve(false);
   const validItems = (found.group.items || [])
     .map((ref) => state.catalog.byKey.get(ref.key || makeItemKey(ref)))
     .filter(Boolean);
   if (validItems.length === 0) {
     notify('info', '该分组暂无可直接控制的条目');
-    return false;
+    return Promise.resolve(false);
   }
   const targetState = !validItems.every((it) => !!it.enabled);
   return applyItemMutations(validItems.map((it) => ({ ref: it.ref, enabled: targetState })));
@@ -445,7 +498,7 @@ export async function saveEditedEntry(itemKey, fields) {
         }
         return preset;
       };
-      await callTH('updatePresetWith', 'in_use', applyPresetEdit, { render: 'immediate' });
+      await callTH('updatePresetWith', 'in_use', applyPresetEdit, { render: 'debounced' });
       try {
         const loadedName = callTH('getLoadedPresetName');
         if (loadedName && loadedName !== 'in_use') {
