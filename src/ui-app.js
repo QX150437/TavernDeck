@@ -22,6 +22,7 @@ import {
   executePresetStitch, findBestMatchingOldPreset,
 } from './preset-merge.js';
 import { syncNativePresetCollapse, syncTopBarButton } from './native-ui.js';
+import { isInActiveChat } from './worldbook-manager.js';
 import {
   ICONS, ORB_STYLE_OPTIONS, editHistory, setUiContext, getOrbSize, renderGroupHtml, renderGroupItemsListHtml,
   getPickerSections, updatePickerList, updateSnapshotList, updatePresetMergeBody, renderConfirmModal,
@@ -496,6 +497,7 @@ export function renderMain() {
   const isFs = !!state.store.settings.fullscreen;
   const showCtrl = !!state.store.settings.showControlBar;
   const showTools = !!state.store.settings.showToolsDrawer && !showCtrl;
+  const inCharChat = (state.hasCharacter || (hasTH('getCurrentCharacterName') && !!callTH('getCurrentCharacterName'))) && isInActiveChat();
   const prevBody = panelMainEl.querySelector('.td-body');
   const prevScrollTop = prevBody ? prevBody.scrollTop : 0;
 
@@ -531,6 +533,7 @@ export function renderMain() {
         <button class='td-btn' data-action='open-wb-merge'>${ICONS.gitMerge} 世界书对比缝合</button>
         <button class='td-btn' data-action='open-snapshots'>${ICONS.camera} 预设快照${snapCount > 0 ? ` (${snapCount})` : ''}</button>
         <button class='td-btn' data-action='open-logs'>${ICONS.code} 运行日志</button>
+        ${inCharChat ? `<button class='td-btn full' data-action='open-mvu-viewer'>${ICONS.eye} MVU 变量查看</button>` : ''}
       </div>
     </div>
     <div class='td-control-drawer ${showCtrl ? 'is-open' : ''}' id='td-scheme-drawer'>

@@ -95,6 +95,7 @@ export function createDefaultStore() {
         remove: true,
       },
       aiEditConfig: {
+        proxyPreset: '',
         jailbreakPreset: '',
         model: '',
       },
@@ -191,6 +192,7 @@ export function loadStore() {
     );
     const oldAi = (raw.settings && raw.settings.aiEditConfig) || {};
     settings.aiEditConfig = {
+      proxyPreset: typeof oldAi.proxyPreset === 'string' ? oldAi.proxyPreset : '',
       jailbreakPreset: typeof oldAi.jailbreakPreset === 'string' ? oldAi.jailbreakPreset : '',
       model: typeof oldAi.model === 'string' ? oldAi.model : '',
     };

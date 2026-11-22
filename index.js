@@ -3,7 +3,7 @@ import { state, loadStore } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
 import { syncNativePresetCollapse } from './src/native-ui.js';
 import { initDevErrorCapture } from './src/dev-tools.js';
-import { updatePickerList, updateSnapshotList, syncPreviewStatusUi } from './src/ui-views.js';
+import { updatePickerList, updateSnapshotList, syncPreviewStatusUi, renderModal } from './src/ui-views.js';
 import {
   mountUI, renderOrb, renderMain, syncExtensionButton, syncTopBarUI, mountExtensionSettingsPanel,
 } from './src/ui-app.js';
@@ -31,6 +31,7 @@ async function syncAndRefresh() {
       if (state.previewKey) syncPreviewStatusUi();
       if (state.modal?.type === 'picker') updatePickerList();
       if (state.modal?.type === 'snapshots') updateSnapshotList();
+      if (state.modal?.type === 'mvuViewer') renderModal();
     }
   } catch (e) {
     logWarn('同步数据失败', e);
@@ -66,6 +67,25 @@ function bindTavernEvents() {
     et.CHARACTER_PAGE_LOADED,
     et.CHAT_CHANGED,
   ].filter(Boolean).forEach((evt) => es.on(evt, debouncedSync));
+
+  const debouncedMvuRefresh = (() => {
+    let t = null;
+    return () => {
+      if (!state.panelOpen || state.modal?.type !== 'mvuViewer') return;
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        if (state.panelOpen && state.modal?.type === 'mvuViewer') renderModal();
+      }, 150);
+    };
+  })();
+
+  [
+    et.MESSAGE_RECEIVED,
+    et.MESSAGE_SWIPED,
+    et.MESSAGE_UPDATED,
+    et.MESSAGE_DELETED,
+    'mag_variable_update_ended',
+  ].filter(Boolean).forEach((evt) => es.on(evt, debouncedMvuRefresh));
 }
 
 function waitForTavernHelperAndSync(retries = 25) {

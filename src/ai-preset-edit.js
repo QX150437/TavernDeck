@@ -1,11 +1,253 @@
-import { callTH, hasTH, logWarn, formatKeysInput } from './utils.js';
+import { callTH, hasTH, getST, logWarn, formatKeysInput } from './utils.js';
 
-function buildCurrentApiOverride(cfg) {
-  const model = String(cfg?.model || '').trim();
-  return model ? { model } : undefined;
+const SOURCE_SELECT_IDS = {
+  openai: 'model_openai_select',
+  claude: 'model_claude_select',
+  google: 'model_makersuite_select',
+  makersuite: 'model_makersuite_select',
+  vertexai: 'model_vertexai_select',
+  deepseek: 'model_deepseek_select',
+  openrouter: 'model_openrouter_select',
+  mistralai: 'model_mistralai_select',
+  groq: 'model_groq_select',
+  cohere: 'model_cohere_select',
+  perplexity: 'model_perplexity_select',
+  xai: 'model_xai_select',
+  aimlapi: 'model_aimlapi_select',
+  custom: 'model_custom_select',
+};
+
+export function normalizeApiTargetValue(raw) {
+  const s = String(raw || '').trim();
+  if (!s || s.toLowerCase() === 'none' || s === 'proxy:None' || s === 'proxy:none') return '';
+  if (s.startsWith('profile:') || s.startsWith('proxy:')) return s;
+  return `proxy:${s}`;
 }
 
-function extractJailbreakPrompts(jailbreakPresetName) {
+export function getAvailableApiTargets() {
+  const st = getST();
+  const profiles = [];
+  const seenProfileIds = new Set();
+
+  const rawProfiles = st?.extensionSettings?.connectionManager?.profiles;
+  if (Array.isArray(rawProfiles)) {
+    rawProfiles.forEach((p) => {
+      if (!p || !p.id) return;
+      const id = String(p.id);
+      seenProfileIds.add(id);
+      profiles.push({
+        value: `profile:${id}`,
+        id,
+        name: String(p.name || id),
+        api: String(p.api || ''),
+        model: String(p.model || ''),
+        proxy: String(p.proxy || ''),
+        apiUrl: String(p['api-url'] || p.apiUrl || ''),
+        mode: String(p.mode || 'cc'),
+      });
+    });
+  }
+
+  const cpSel = typeof document !== 'undefined' ? document.getElementById('connection_profiles') : null;
+  if (cpSel) {
+    Array.from(cpSel.options || []).forEach((opt) => {
+      const id = String(opt.value || '').trim();
+      if (!id || id.toLowerCase() === 'none' || id === '<None>' || seenProfileIds.has(id)) return;
+      seenProfileIds.add(id);
+      profiles.push({
+        value: `profile:${id}`,
+        id,
+        name: String(opt.textContent || id).trim(),
+        api: '',
+        model: '',
+        proxy: '',
+        apiUrl: '',
+        mode: 'cc',
+      });
+    });
+  }
+
+  const proxies = [];
+  const seenProxies = new Set();
+  const stProxies = Array.isArray(st?.chatCompletionSettings?.proxies) ? st.chatCompletionSettings.proxies : [];
+  const proxyObjMap = new Map(stProxies.filter((x) => x?.name).map((x) => [x.name, x]));
+  const addProxy = (name) => {
+    const n = String(name || '').trim();
+    if (!n || n.toLowerCase() === 'none' || seenProxies.has(n)) return;
+    seenProxies.add(n);
+    const obj = proxyObjMap.get(n);
+    proxies.push({
+      value: `proxy:${n}`,
+      name: n,
+      url: String(obj?.url || ''),
+      password: String(obj?.password || ''),
+    });
+  };
+
+  if (hasTH('getProxyPresetNames')) {
+    try { (callTH('getProxyPresetNames') || []).forEach(addProxy); } catch (e) {}
+  }
+  stProxies.forEach((x) => addProxy(x?.name));
+  if (typeof document !== 'undefined') {
+    const proxySel = document.getElementById('proxies_preset') || document.getElementById('openai_proxy_preset');
+    if (proxySel) Array.from(proxySel.options || []).forEach((opt) => addProxy(opt.value || opt.textContent));
+  }
+
+  return { profiles, proxies };
+}
+
+function collectDomModels(source) {
+  if (typeof document === 'undefined') return [];
+  const out = [];
+  const pushFromSelect = (el) => {
+    if (!el) return;
+    Array.from(el.options || []).forEach((opt) => {
+      const v = String(opt.value || '').trim();
+      if (v && !out.includes(v)) out.push(v);
+    });
+  };
+  const src = String(source || '').toLowerCase();
+  if (src && SOURCE_SELECT_IDS[src]) {
+    pushFromSelect(document.getElementById(SOURCE_SELECT_IDS[src]));
+  }
+  if (src) pushFromSelect(document.getElementById(`model_${src}_select`));
+  if (out.length === 0) {
+    document.querySelectorAll('#openai_settings select[id^="model_"], #chat_completion_settings select[id^="model_"]').forEach((el) => {
+      if (el.offsetParent !== null) pushFromSelect(el);
+    });
+  }
+  return out;
+}
+
+export async function fetchModelsForApiTarget(apiValue) {
+  const st = getST();
+  const normalized = normalizeApiTargetValue(apiValue);
+  const { profiles, proxies } = getAvailableApiTargets();
+  const models = [];
+  const addModels = (list) => {
+    (list || []).forEach((m) => {
+      const v = String(m || '').trim();
+      if (v && !models.includes(v)) models.push(v);
+    });
+  };
+
+  let fetchedRemote = false;
+  let lastErr = null;
+
+  if (normalized.startsWith('proxy:')) {
+    const name = normalized.slice(6);
+    const px = proxies.find((p) => p.name === name);
+    if (px?.url && hasTH('getModelList')) {
+      try {
+        addModels(await callTH('getModelList', { apiurl: px.url, key: px.password || '' }));
+        fetchedRemote = true;
+      } catch (e) { lastErr = e; }
+    }
+  } else if (normalized.startsWith('profile:')) {
+    const pid = normalized.slice(8);
+    const prof = profiles.find((p) => p.id === pid);
+    if (prof) {
+      if (prof.model) addModels([prof.model]);
+      const px = prof.proxy && prof.proxy.toLowerCase() !== 'none'
+        ? proxies.find((p) => p.name === prof.proxy)
+        : null;
+      if (px?.url && hasTH('getModelList')) {
+        try {
+          addModels(await callTH('getModelList', { apiurl: px.url, key: px.password || '' }));
+          fetchedRemote = true;
+        } catch (e) { lastErr = e; }
+      } else if (prof.apiUrl && hasTH('getModelList')) {
+        try {
+          addModels(await callTH('getModelList', { apiurl: prof.apiUrl, key: '' }));
+          fetchedRemote = true;
+        } catch (e) { lastErr = e; }
+      }
+      addModels(collectDomModels(prof.api));
+    }
+  } else {
+    const cc = st?.chatCompletionSettings;
+    const src = cc?.chat_completion_source || '';
+    if (cc?.reverse_proxy && hasTH('getModelList')) {
+      try {
+        addModels(await callTH('getModelList', { apiurl: cc.reverse_proxy, key: cc.proxy_password || '' }));
+        fetchedRemote = true;
+      } catch (e) { lastErr = e; }
+    } else if (src === 'custom' && cc?.custom_url && hasTH('getModelList')) {
+      try {
+        addModels(await callTH('getModelList', { apiurl: cc.custom_url, key: '' }));
+        fetchedRemote = true;
+      } catch (e) { lastErr = e; }
+    }
+    try {
+      const curM = st?.getChatCompletionModel?.();
+      if (curM) addModels([curM]);
+    } catch (e) {}
+    addModels(collectDomModels(src));
+  }
+
+  if (models.length === 0 && lastErr) throw lastErr;
+  return { models, fetchedRemote };
+}
+
+export function buildCurrentApiOverride(cfg) {
+  const apiVal = normalizeApiTargetValue(cfg?.proxyPreset);
+  const model = String(cfg?.model || '').trim();
+  const proxy_preset = apiVal.startsWith('proxy:') ? apiVal.slice(6) : '';
+  if (!proxy_preset && !model) return undefined;
+  const out = {};
+  if (proxy_preset) out.proxy_preset = proxy_preset;
+  if (model) out.model = model;
+  return out;
+}
+
+async function runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg }) {
+  const apiVal = normalizeApiTargetValue(apiCfg?.proxyPreset);
+  const overrideModel = String(apiCfg?.model || '').trim();
+
+  if (apiVal.startsWith('profile:')) {
+    const profileId = apiVal.slice(8);
+    const st = getST();
+    const svc = st?.ConnectionManagerRequestService;
+    if (!svc || typeof svc.sendRequest !== 'function') {
+      throw new Error('当前酒馆版本不支持 ConnectionManagerRequestService，无法直接调用连接配置');
+    }
+    const rawProfiles = st?.extensionSettings?.connectionManager?.profiles;
+    const targetProfile = Array.isArray(rawProfiles) ? rawProfiles.find((p) => p && String(p.id) === profileId) : null;
+    const messages = [
+      ...(jbPrompts || []),
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ];
+    const maxTokens = Number(st?.chatCompletionSettings?.openai_max_tokens) || 4096;
+    const prevModel = targetProfile ? targetProfile.model : undefined;
+    if (targetProfile && overrideModel) targetProfile.model = overrideModel;
+    try {
+      const res = await svc.sendRequest(profileId, messages, maxTokens, { stream: false, extractData: true });
+      return typeof res === 'string' ? res : (res?.content || res?.result || '');
+    } finally {
+      if (targetProfile && overrideModel) targetProfile.model = prevModel;
+    }
+  }
+
+  if (!hasTH('generateRaw')) {
+    throw new Error('当前酒馆助手版本不支持 generateRaw 接口');
+  }
+  const rawResult = await callTH('generateRaw', {
+    user_input: userPrompt,
+    should_stream: false,
+    should_silence: true,
+    max_chat_history: 0,
+    custom_api: buildCurrentApiOverride(apiCfg),
+    ordered_prompts: [
+      ...(jbPrompts || []),
+      { role: 'system', content: systemPrompt },
+      'user_input',
+    ],
+  });
+  return typeof rawResult === 'string' ? rawResult : (rawResult?.content || '');
+}
+
+export function extractJailbreakPrompts(jailbreakPresetName) {
   const name = String(jailbreakPresetName || '').trim();
   if (!name || !hasTH('getPreset')) return [];
   try {
@@ -60,9 +302,6 @@ export function extractJsonFromAiReply(rawText) {
 }
 
 export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
-  if (!hasTH('generateRaw')) {
-    throw new Error('当前酒馆助手版本不支持 generateRaw 接口');
-  }
   if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
     throw new Error('请至少选择一个需要由 AI 编辑的条目');
   }
@@ -97,20 +336,7 @@ export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
   ].join('\n\n');
 
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
-  const rawResult = await callTH('generateRaw', {
-    user_input: userPrompt,
-    should_stream: false,
-    should_silence: true,
-    max_chat_history: 0,
-    custom_api: buildCurrentApiOverride(apiCfg),
-    ordered_prompts: [
-      ...jbPrompts,
-      { role: 'system', content: systemPrompt },
-      'user_input',
-    ],
-  });
-
-  const replyText = typeof rawResult === 'string' ? rawResult : (rawResult?.content || '');
+  const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
   const list = extractJsonFromAiReply(replyText);
   if (!list || list.length === 0) {
     throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
@@ -145,9 +371,6 @@ export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
 }
 
 export async function runAiWorldbookEdit({ selectedItems, instruction, apiCfg }) {
-  if (!hasTH('generateRaw')) {
-    throw new Error('当前酒馆助手版本不支持 generateRaw 接口');
-  }
   if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
     throw new Error('请至少选择一个需要由 AI 编辑的世界书条目');
   }
@@ -181,20 +404,7 @@ export async function runAiWorldbookEdit({ selectedItems, instruction, apiCfg })
   ].join('\n\n');
 
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
-  const rawResult = await callTH('generateRaw', {
-    user_input: userPrompt,
-    should_stream: false,
-    should_silence: true,
-    max_chat_history: 0,
-    custom_api: buildCurrentApiOverride(apiCfg),
-    ordered_prompts: [
-      ...jbPrompts,
-      { role: 'system', content: systemPrompt },
-      'user_input',
-    ],
-  });
-
-  const replyText = typeof rawResult === 'string' ? rawResult : (rawResult?.content || '');
+  const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
   const list = extractJsonFromAiReply(replyText);
   if (!list || list.length === 0) {
     throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
@@ -225,4 +435,67 @@ export async function runAiWorldbookEdit({ selectedItems, instruction, apiCfg })
     throw new Error('无法将 AI 返回的世界书条目匹配回原条目，请重试');
   }
   return { rawReply: replyText, results };
+}
+
+export async function runAiMvuUpdate({
+  currentStatData,
+  messages,
+  truncatedSnippet,
+  ruleEntries,
+  instruction,
+  apiCfg,
+}) {
+  const systemPrompt = [
+    '你是一个专业的 SillyTavern (酒馆) MVU (MagVarUpdate) 变量状态更新助手。',
+    '请根据当前变量状态、变量规则、近期剧情正文以及用户的补充要求，输出需要执行的变量更新命令。',
+    '输出规范：',
+    '1. 仅输出包装在 <UpdateVariable>...</UpdateVariable> 标签内的更新命令，不要输出多余闲聊或剧情正文。',
+    '2. 可用命令格式（路径直接写 stat_data 下的字段路径，不要带 stat_data. 前缀）：',
+    '   - _.set(\'路径\', 新值); // 或 _.set(\'路径\', 旧值, 新值);',
+    '   - _.add(\'路径\', 增减数值);',
+    '   - _.insert(\'路径\', 新元素); // 或 _.insert(\'路径\', \'键或索引\', 值);',
+    '   - _.delete(\'路径\'); // 或 _.delete(\'路径\', \'键或索引\');',
+    '   - _.move(\'原路径\', \'新路径\');',
+    '3. 严格遵守原变量的数据类型与结构；若原变量是 [值, "说明"] 格式，请使用 _.set(\'路径\', 新值) 或 _.add(\'路径\', 增量) 以保留说明。',
+    '4. 若提供了被截断的更新片段，请承接该片段修复并补全剩余变更，避免重复已写完且无需重复累加的 _.add 操作。',
+  ].join('\n');
+
+  const blocks = [
+    `【当前变量状态 (stat_data)】\n${JSON.stringify(currentStatData || {}, null, 2)}`,
+  ];
+
+  if (Array.isArray(ruleEntries) && ruleEntries.length > 0) {
+    const rulesText = ruleEntries
+      .map((r) => `--- ${r.bookName} / ${r.name} ---\n${r.content}`)
+      .join('\n\n');
+    blocks.push(`【变量更新规则参考】\n${rulesText}`);
+  }
+
+  if (Array.isArray(messages) && messages.length > 0) {
+    const msgText = messages.map((msg) => {
+      const cleaned = String(msg.message || '').replace(/<UpdateVariable[\s\S]*$/i, '').trim();
+      return `[#${msg.message_id} ${msg.role}${msg.name ? ` (${msg.name})` : ''}]\n${cleaned || msg.message || ''}`;
+    }).join('\n\n');
+    blocks.push(`【近期剧情正文】\n${msgText}`);
+  }
+
+  if (String(truncatedSnippet || '').trim()) {
+    blocks.push(`【正文中的更新命令/截断片段（请检查并补全）】\n${truncatedSnippet.trim()}`);
+  }
+
+  if (String(instruction || '').trim()) {
+    blocks.push(`【用户补充要求】\n${instruction.trim()}`);
+  }
+
+  const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
+  const replyText = await runConfiguredAiRequest({
+    jbPrompts,
+    systemPrompt,
+    userPrompt: blocks.join('\n\n'),
+    apiCfg,
+  });
+  if (!String(replyText).trim()) {
+    throw new Error('AI 返回内容为空');
+  }
+  return { rawReply: replyText };
 }
