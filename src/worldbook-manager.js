@@ -220,6 +220,29 @@ export async function importWorldbookFromFile(file) {
   notify('success', `已导入世界书「${baseName}」`);
 }
 
+export function moveWorldbookEntriesBatchBeforeIndex(list, fromIndices, beforeIdx) {
+  if (!Array.isArray(list) || !Array.isArray(fromIndices) || fromIndices.length === 0) return false;
+  const idxSet = new Set(fromIndices.map(Number).filter((n) => !Number.isNaN(n) && n >= 0 && n < list.length));
+  if (idxSet.size === 0) return false;
+
+  const target = Math.max(0, Math.min(list.length, Number(beforeIdx)));
+  if (Number.isNaN(target)) return false;
+
+  const moving = [];
+  const before = [];
+  const after = [];
+  for (let i = 0; i < list.length; i++) {
+    if (idxSet.has(i)) moving.push(list[i]);
+    else if (i < target) before.push(list[i]);
+    else after.push(list[i]);
+  }
+  const next = [...before, ...moving, ...after];
+  if (next.every((item, i) => item === list[i])) return false;
+
+  list.splice(0, list.length, ...next);
+  return true;
+}
+
 export function disableAllRecursionInEntries(entries) {
   if (!Array.isArray(entries)) return 0;
   let changed = 0;

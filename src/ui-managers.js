@@ -19,6 +19,7 @@ import {
   createOrBindChatWorldbookSafe, createWorldbookSafe, renameWorldbookSafe,
   deleteWorldbookSafe, exportWorldbookFile, importWorldbookFromFile,
   buildDefaultWorldbookEntry, disableAllRecursionInEntries,
+  moveWorldbookEntriesBatchBeforeIndex,
 } from './worldbook-manager.js';
 import { getTopBarPositionOptions } from './native-ui.js';
 import { runAiPresetEdit, runAiWorldbookEdit } from './ai-preset-edit.js';
@@ -247,23 +248,26 @@ export function renderSelectPopupView() {
     return;
   }
 
-  if (sp.type === 'movePromptTarget' && state.modal?.type === 'presetDetail') {
-    const targetList = sp.mode === 'insertFromUnused'
-      ? (state.modal.data.prompts || [])
-      : (state.modal.data[sp.listName] || []);
+  if ((sp.type === 'movePromptTarget' && state.modal?.type === 'presetDetail')
+    || (sp.type === 'moveWbTarget' && state.modal?.type === 'worldbookDetail')) {
+    const isWb = sp.type === 'moveWbTarget';
+    const targetList = isWb
+      ? (state.modal.entries || [])
+      : (sp.mode === 'insertFromUnused' ? (state.modal.data.prompts || []) : (state.modal.data[sp.listName] || []));
     const fromSet = new Set(sp.fromIndices || []);
-    const isInsert = sp.mode === 'insertFromUnused';
+    const isInsert = !isWb && sp.mode === 'insertFromUnused';
     const title = isInsert
       ? `加入主列表（${fromSet.size} 项）· 选择插入位置`
       : (fromSet.size > 1 ? `批量移动 ${fromSet.size} 个条目` : `移动 #${(sp.fromIndices?.[0] ?? 0) + 1} 条目`);
 
-    const itemsHtml = targetList.map((p, idx) => {
+    const itemsHtml = targetList.map((item, idx) => {
       const isSelf = !isInsert && fromSet.has(idx);
+      const label = isWb ? (item.name || `条目 #${item.uid}`) : (item.name || item.id);
       return `
         <button type='button' class='td-select-option ${isSelf ? 'active' : ''}' data-action='select-popup-pick' data-value='${idx}'>
           <span class='td-select-option-left'>
             <span class='td-idx-badge'>#${idx + 1}</span>
-            <span class='td-select-option-name'>放在「${escapeHtml(p.name || p.id)}」之前</span>
+            <span class='td-select-option-name'>放在「${escapeHtml(label)}」之前</span>
           </span>
           ${isSelf ? "<span class='td-mode-tag single'>已选</span>" : ''}
         </button>`;
@@ -704,19 +708,27 @@ export function renderManagerModalView(m) {
 
   if (m.type === 'worldbookDetail') {
     const entries = m.entries || [], q = (m.query || '').trim().toLowerCase();
-    const indexed = entries.map((e, idx) => ({ e, idx })).filter(({ e }) => {
+    const batchMode = !!m.batchMode;
+    const selectedSet = m.selectedIdx instanceof Set ? m.selectedIdx : (m.selectedIdx = new Set());
+    const indexed = entries.map((e, idx) => ({ e, idx })).filter(({ e, idx }) => {
       if (!q) return true;
-      return (e.name || '').toLowerCase().includes(q) || (e.content || '').toLowerCase().includes(q) || formatKeysInput(e.strategy?.keys).toLowerCase().includes(q);
+      return `#${idx + 1}`.includes(q)
+        || (e.name || '').toLowerCase().includes(q)
+        || (e.content || '').toLowerCase().includes(q)
+        || formatKeysInput(e.strategy?.keys).toLowerCase().includes(q);
     });
 
     const rows = indexed.map(({ e, idx }) => {
       const stype = e.strategy?.type || 'selective';
       const stBadge = stype === 'constant' ? '蓝灯' : (stype === 'vectorized' ? '向量' : '绿灯');
       const keysText = formatKeysInput(e.strategy?.keys);
+      const checked = selectedSet.has(idx);
       return `
-        <div class='td-mgr-row'>
+        <div class='td-mgr-row ${batchMode && checked ? 'is-active' : ''}' data-idx='${idx}'>
           <div class='td-mgr-row-head'>
-            <div style='display:flex;align-items:center;gap:8px;min-width:0;flex:1;'>
+            <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
+              ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='wbd-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
+              <span class='td-idx-badge'>#${idx + 1}</span>
               <button type='button' class='td-switch sm ${e.enabled ? 'on' : ''}' data-action='wbd-toggle-entry' data-idx='${idx}'></button>
               <span class='td-mgr-row-title' title='${escapeHtml(e.name || `条目 #${e.uid}`)}'>${escapeHtml(e.name || `条目 #${e.uid}`)}</span>
             </div>
@@ -726,6 +738,7 @@ export function renderManagerModalView(m) {
           <div class='td-mgr-row-actions'>
             <button class='td-btn sm primary' data-action='wbd-edit-content' data-idx='${idx}'>${ICONS.eye} 编辑内容</button>
             <button class='td-btn sm' data-action='wbd-edit-entry' data-idx='${idx}'>${ICONS.edit} 完整属性</button>
+            <button class='td-btn sm' data-action='wbd-move-before' data-idx='${idx}'>移动到...</button>
             <button class='td-btn sm' data-action='wbd-dup-entry' data-idx='${idx}'>复制</button>
             <button class='td-btn sm danger' data-action='wbd-del-entry' data-idx='${idx}'>删除</button>
           </div>
@@ -740,11 +753,17 @@ export function renderManagerModalView(m) {
         </div>
         <div class='td-modal-body td-picker-body'>
           <div class='td-mgr-topbar'>
-            <input class='td-input' id='td-wbd-search' type='text' placeholder='搜索条目标题、关键词或正文...' value='${escapeHtml(m.query || '')}' />
+            <input class='td-input' id='td-wbd-search' type='text' placeholder='搜索序号、条目标题、关键词或正文...' value='${escapeHtml(m.query || '')}' />
             <button class='td-btn sm primary' data-action='wbd-add-entry'>${ICONS.plus} 新增</button>
-            <button class='td-icon-btn ${m.toolsOpen ? 'is-active' : ''}' data-action='wbd-toggle-tools' title='批量操作与 AI 编辑'>${ICONS.more}</button>
+            <button class='td-icon-btn ${m.toolsOpen || batchMode ? 'is-active' : ''}' data-action='wbd-toggle-tools' title='跳转、批量移动与 AI 编辑'>${ICONS.more}</button>
           </div>
-          <div class='td-mgr-subtools ${m.toolsOpen ? 'is-open' : ''}'>
+          <div class='td-mgr-subtools ${m.toolsOpen || batchMode ? 'is-open' : ''}'>
+            <div style='display:inline-flex;align-items:center;gap:4px;'>
+              <input class='td-input' id='td-wbd-jump-idx' type='number' min='1' max='${Math.max(1, entries.length)}' placeholder='序号' value='${escapeHtml(m.jumpVal || '')}' style='width:68px;height:27px;padding:0 6px;font-size:12px;text-align:center;' />
+              <button class='td-btn sm' data-action='wbd-jump-idx' title='跳转到指定序号'>跳转</button>
+            </div>
+            <button class='td-btn sm ${batchMode ? 'primary' : ''}' data-action='wbd-toggle-batch'>${batchMode ? `退出批量 (已选 ${selectedSet.size})` : '批量选择移动'}</button>
+            ${batchMode ? `<button class='td-btn sm warn' data-action='wbd-batch-move'>批量移动到...</button>` : ''}
             <button class='td-btn sm' data-action='wbd-batch-enable' data-val='1'>全开可见</button>
             <button class='td-btn sm' data-action='wbd-batch-enable' data-val='0'>全关可见</button>
             <button class='td-btn sm warn' data-action='wbd-disable-recursion'>一键禁止递归</button>
@@ -1053,10 +1072,24 @@ export function renderManagerPreviewView() {
 
 function applyMoveTargetPick(sp, rawIdx) {
   const m = state.modal;
-  if (!m || m.type !== 'presetDetail') return;
   const beforeIdx = Number(rawIdx);
-  if (Number.isNaN(beforeIdx)) return;
+  if (!m || Number.isNaN(beforeIdx)) return;
 
+  if (sp.type === 'moveWbTarget' && m.type === 'worldbookDetail') {
+    if (moveWorldbookEntriesBatchBeforeIndex(m.entries, sp.fromIndices, beforeIdx)) {
+      m.dirty = true;
+      if (m.selectedIdx instanceof Set) m.selectedIdx.clear();
+      notify('success', '已调整世界书条目顺序');
+    } else {
+      notify('info', '条目位置未发生变化');
+    }
+    state.selectPopup = null;
+    renderSelectPopupView();
+    ctx.renderModal();
+    return;
+  }
+
+  if (m.type !== 'presetDetail') return;
   if (sp.mode === 'insertFromUnused') {
     const cnt = insertFromUnusedAt(m.data, sp.fromIndices, beforeIdx);
     if (cnt > 0) {
@@ -1130,7 +1163,8 @@ export function handleManagerClick(e, actionEl, action) {
 
   if (action === 'open-select-popup') { state.selectPopup = { type: actionEl.getAttribute('data-select-type') }; renderSelectPopupView(); return true; }
   if (action === 'close-select-popup') { state.selectPopup = null; renderSelectPopupView(); return true; }
-  if (action === 'move-by-number' && state.selectPopup?.type === 'movePromptTarget') {
+  if (action === 'move-by-number'
+    && (state.selectPopup?.type === 'movePromptTarget' || state.selectPopup?.type === 'moveWbTarget')) {
     const val = Number(selectLayerEl?.querySelector('#td-move-idx-input')?.value);
     if (Number.isNaN(val) || val < 1) { notify('warning', '请输入有效序号（>= 1）'); return true; }
     applyMoveTargetPick(state.selectPopup, val - 1);
@@ -1138,7 +1172,7 @@ export function handleManagerClick(e, actionEl, action) {
   }
   if (action === 'select-popup-pick' && state.selectPopup) {
     const val = actionEl.getAttribute('data-value') || '', t = state.selectPopup.type;
-    if (t === 'movePromptTarget') { applyMoveTargetPick(state.selectPopup, val); return true; }
+    if (t === 'movePromptTarget' || t === 'moveWbTarget') { applyMoveTargetPick(state.selectPopup, val); return true; }
     if (t === 'theme') state.store.settings.theme = val || 'dark';
     else if (t === 'orbStyle') state.store.settings.orbStyle = val || 'indigo';
     else if (t === 'groupTextColor') state.store.settings.groupTextColor = val;
@@ -1603,12 +1637,62 @@ export function handleManagerClick(e, actionEl, action) {
   if (action === 'wbm-open-detail') {
     const name = actionEl.getAttribute('data-name');
     callTH('getWorldbook', name).then((entries) => {
-      state.modal = { type: 'worldbookDetail', bookName: name, entries: (entries || []).map(cloneWorldbookEntry), query: '', dirty: false, toolsOpen: false };
+      state.modal = { type: 'worldbookDetail', bookName: name, entries: (entries || []).map(cloneWorldbookEntry), query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() };
       ctx.renderModal();
     }).catch((err) => { logError(`读取世界书「${name}」失败`, err); notify('error', err.message || String(err)); });
     return true;
   }
   if (action === 'wbd-toggle-tools' && state.modal?.type === 'worldbookDetail') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
+  if (action === 'wbd-jump-idx' && state.modal?.type === 'worldbookDetail') {
+    const list = state.modal.entries || [];
+    const num = Number(modalLayerEl.querySelector('#td-wbd-jump-idx')?.value);
+    if (Number.isNaN(num) || num < 1 || num > list.length) {
+      notify('warning', `请输入 1 ~ ${list.length} 之间的有效序号`);
+      return true;
+    }
+    const targetIdx = Math.floor(num) - 1;
+    const scrollToRow = () => {
+      const box = modalLayerEl.querySelector('.td-picker-list');
+      const row = box?.querySelector(`.td-mgr-row[data-idx='${targetIdx}']`);
+      if (!box || !row) return;
+      const boxRect = box.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      box.scrollTo({ top: box.scrollTop + (rowRect.top - boxRect.top) - 8, behavior: 'smooth' });
+      row.style.transition = 'box-shadow 0.25s ease';
+      row.style.boxShadow = '0 0 0 2px var(--td-accent)';
+      setTimeout(() => { if (row.isConnected) row.style.boxShadow = ''; }, 1600);
+    };
+    if (!modalLayerEl.querySelector(`.td-mgr-row[data-idx='${targetIdx}']`) && (state.modal.query || '').trim()) {
+      state.modal.query = '';
+      ctx.renderModal();
+      requestAnimationFrame(scrollToRow);
+    } else {
+      scrollToRow();
+    }
+    return true;
+  }
+  if (action === 'wbd-toggle-batch' && state.modal?.type === 'worldbookDetail') {
+    state.modal.batchMode = !state.modal.batchMode; state.modal.selectedIdx = new Set(); ctx.renderModal(); return true;
+  }
+  if (action === 'wbd-batch-check' && state.modal?.type === 'worldbookDetail') {
+    const idx = Number(actionEl.getAttribute('data-idx'));
+    if (state.modal.selectedIdx.has(idx)) state.modal.selectedIdx.delete(idx);
+    else state.modal.selectedIdx.add(idx);
+    actionEl.closest('.td-mgr-row')?.classList.toggle('is-active', state.modal.selectedIdx.has(idx));
+    const batchBtn = modalLayerEl.querySelector("[data-action='wbd-toggle-batch']");
+    if (batchBtn) batchBtn.textContent = `退出批量 (已选 ${state.modal.selectedIdx.size})`;
+    return true;
+  }
+  if (action === 'wbd-batch-move' && state.modal?.type === 'worldbookDetail') {
+    const indices = Array.from(state.modal.selectedIdx || []);
+    if (indices.length === 0) { notify('warning', '请先勾选要移动的条目'); return true; }
+    state.selectPopup = { type: 'moveWbTarget', fromIndices: indices };
+    renderSelectPopupView(); return true;
+  }
+  if (action === 'wbd-move-before' && state.modal?.type === 'worldbookDetail') {
+    state.selectPopup = { type: 'moveWbTarget', fromIndices: [Number(actionEl.getAttribute('data-idx'))] };
+    renderSelectPopupView(); return true;
+  }
   if (action === 'wbd-back-list' && state.modal?.type === 'worldbookDetail') { state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
   if (action === 'wbd-toggle-entry' && state.modal?.type === 'worldbookDetail') {
     const idx = Number(actionEl.getAttribute('data-idx'));
@@ -1641,7 +1725,9 @@ export function handleManagerClick(e, actionEl, action) {
       const copy = cloneWorldbookEntry(src);
       copy.uid = state.modal.entries.reduce((mx, x) => Math.max(mx, Number(x.uid) || 0), 0) + 1;
       copy.name = `${copy.name || '条目'} (副本)`;
-      state.modal.entries.splice(idx + 1, 0, copy); state.modal.dirty = true; ctx.renderModal();
+      state.modal.entries.splice(idx + 1, 0, copy); state.modal.dirty = true;
+      if (state.modal.selectedIdx instanceof Set) state.modal.selectedIdx.clear();
+      ctx.renderModal();
     }
     return true;
   }
@@ -1649,7 +1735,11 @@ export function handleManagerClick(e, actionEl, action) {
     const idx = Number(actionEl.getAttribute('data-idx')), entry = state.modal.entries[idx]; if (!entry) return true;
     ctx.openConfirm({
       title: '删除世界书条目确认', message: `确定要删除条目「${entry.name || `#${entry.uid}`}」吗？`, confirmText: '确认删除',
-      onConfirm: () => { state.modal.entries.splice(idx, 1); state.modal.dirty = true; ctx.renderModal(); },
+      onConfirm: () => {
+        state.modal.entries.splice(idx, 1); state.modal.dirty = true;
+        if (state.modal.selectedIdx instanceof Set) state.modal.selectedIdx.clear();
+        ctx.renderModal();
+      },
     });
     return true;
   }
@@ -1734,6 +1824,7 @@ export function handleManagerInput(e) {
   if (id === 'td-pm-jump-idx' && state.modal?.type === 'presetDetail') { state.modal.jumpVal = e.target.value; return true; }
   if (id === 'td-wbm-search' && state.modal?.type === 'worldbookManager') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
   if (id === 'td-wbd-search' && state.modal?.type === 'worldbookDetail') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
+  if (id === 'td-wbd-jump-idx' && state.modal?.type === 'worldbookDetail') { state.modal.jumpVal = e.target.value; return true; }
   if (id === 'td-ai-instruction' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) { state.previewCtx.instruction = e.target.value; return true; }
   if (id === 'td-ai-search' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) { state.previewCtx.search = e.target.value; ctx.renderPreviewModal(); return true; }
   return false;

@@ -1461,6 +1461,7 @@ function handleRootKeydown(e) {
     if (e.target.id === 'td-sp-color-input') selectLayerEl.querySelector("[data-action='select-popup-apply-color']")?.click();
     else if (e.target.id === 'td-move-idx-input') selectLayerEl.querySelector("[data-action='move-by-number']")?.click();
     else if (e.target.id === 'td-pm-jump-idx') modalLayerEl.querySelector("[data-action='pm-jump-idx']")?.click();
+    else if (e.target.id === 'td-wbd-jump-idx') modalLayerEl.querySelector("[data-action='wbd-jump-idx']")?.click();
     else if (e.target.id === 'td-group-name-input') modalLayerEl.querySelector("[data-action='submit-group-form']")?.click();
     else if (e.target.id === 'td-scheme-name-input') modalLayerEl.querySelector("[data-action='submit-scheme-form']")?.click();
     else if (e.target.id === 'td-snap-rename-input') modalLayerEl.querySelector("[data-action='submit-snap-rename']")?.click();
