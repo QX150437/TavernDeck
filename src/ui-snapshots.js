@@ -300,7 +300,7 @@ export const snapshotsUiModule = {
             <div class='td-mgr-topbar'>
               <input class='td-input' id='td-snap-search-input' type='text' placeholder='搜索快照名称、备注或来源...' value='${escapeHtml(m.search || '')}' />
             </div>
-            <div class='td-filter-bar'>
+            <div class='td-filter-bar td-snap-filter-bar'>
               <button class='td-chip' data-action='set-snapshot-filter' data-filter='current'>${kind === 'worldbook' ? '所选世界书' : '当前预设'}</button>
               <button class='td-chip' data-action='set-snapshot-filter' data-filter='all'>全部 (${curKindSnaps.length})</button>
               <button class='td-chip' data-action='set-snapshot-filter' data-filter='manual'>仅手动 (${curKindSnaps.filter((s) => !s.auto).length})</button>

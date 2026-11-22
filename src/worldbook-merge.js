@@ -170,3 +170,40 @@ export async function executeWorldbookStitch(session, targetMode, customTargetNa
   notify('success', `已将缝合结果覆盖保存至「${session.newName}」(${finalEntries.length} 条)`);
   return session.newName;
 }
+
+export async function hydrateWbMergeDraft(draft) {
+  if (!draft) return null;
+  if (draft.v !== 2) return draft;
+  const session = await buildWorldbookDiffSession(draft.oldName, draft.newName);
+  session.filter = draft.filter || session.filter;
+  session.query = draft.query || '';
+  session.controlsOpen = !!draft.controlsOpen;
+  session.dirty = !!draft.dirty;
+  const overrides = draft.entryOverrides || {};
+  session.entries.forEach((it) => {
+    const ov = overrides[it.key];
+    if (!ov) return;
+    if (ov.expanded) it.expanded = true;
+    if (ov.stateOnly && it.newEntry) {
+      const copy = cloneWorldbookEntry(it.newEntry);
+      copy.enabled = !!ov.enabled;
+      it.customEntry = copy;
+      it.choice = 'custom';
+    } else if (ov.choice === 'custom' && ov.customEntry) {
+      it.customEntry = cloneWorldbookEntry(ov.customEntry);
+      it.choice = 'custom';
+    } else if (ov.choice) {
+      it.choice = ov.choice;
+    }
+  });
+  if (draft._pendingCustom) {
+    const pc = JSON.parse(JSON.stringify(draft._pendingCustom));
+    const entry = session.entries.find((x) => x.key === pc.entryKey);
+    if (entry && pc.draft) {
+      if (pc.draft.oldContent === undefined) pc.draft.oldContent = entry.oldEntry?.content || '';
+      if (pc.draft.newContent === undefined) pc.draft.newContent = entry.newEntry?.content || '';
+    }
+    session._pendingCustom = pc;
+  }
+  return session;
+}

@@ -130,6 +130,82 @@ export function loadMergeDrafts() {
   }
 }
 
+function isOnlyEnabledDiff(baseObj, customObj) {
+  if (!baseObj || !customObj) return false;
+  const copy = Object.assign({}, baseObj, { enabled: !!customObj.enabled });
+  return JSON.stringify(copy) === JSON.stringify(customObj);
+}
+
+export function compactMergeDraft(kind, session) {
+  if (!session || typeof session !== 'object') return null;
+  if (session.v === 2) return session;
+  const isPreset = kind === 'preset';
+  const entryOverrides = {};
+  (session.entries || []).forEach((it) => {
+    if (!it || !it.key) return;
+    const choice = it.choice || 'new';
+    const hasCustom = choice === 'custom' && (isPreset ? !!it.customPrompt : !!it.customEntry);
+    const expanded = !!it.expanded;
+    if (choice === 'new' && !hasCustom && !expanded) return;
+
+    const ov = { choice };
+    if (expanded) ov.expanded = true;
+    if (hasCustom) {
+      if (isPreset) {
+        const cp = it.customPrompt;
+        const np = it.newPrompt;
+        if (np && isOnlyEnabledDiff(np, cp)) {
+          ov.stateOnly = true;
+          ov.enabled = !!cp.enabled;
+        } else {
+          ov.customPrompt = cp;
+        }
+      } else {
+        const ce = it.customEntry;
+        const ne = it.newEntry;
+        if (ne && isOnlyEnabledDiff(serializeRegExpDeep(ne), serializeRegExpDeep(ce))) {
+          ov.stateOnly = true;
+          ov.enabled = !!ce.enabled;
+        } else {
+          ov.customEntry = ce;
+        }
+      }
+    }
+    entryOverrides[it.key] = ov;
+  });
+
+  let pendingCustom = null;
+  if (session._pendingCustom && session._pendingCustom.entryKey && session._pendingCustom.draft) {
+    const pc = session._pendingCustom;
+    const entry = (session.entries || []).find((x) => x.key === pc.entryKey);
+    const origOld = isPreset ? (entry?.oldPrompt?.content || '') : (entry?.oldEntry?.content || '');
+    const origNew = isPreset ? (entry?.newPrompt?.content || '') : (entry?.newEntry?.content || '');
+    const dCopy = JSON.parse(JSON.stringify(pc.draft));
+    if (dCopy.oldContent === origOld) delete dCopy.oldContent;
+    if (dCopy.newContent === origNew) delete dCopy.newContent;
+    pendingCustom = {
+      entryKey: pc.entryKey,
+      contentOnly: !!pc.contentOnly,
+      draft: dCopy,
+    };
+  }
+
+  return {
+    v: 2,
+    kind,
+    oldName: session.oldName,
+    newName: session.newName,
+    savedAt: Date.now(),
+    filter: session.filter || 'diff',
+    query: session.query || '',
+    controlsOpen: !!session.controlsOpen,
+    ...(isPreset ? { migrateSettings: !!session.migrateSettings } : {}),
+    dirty: !!session.dirty,
+    entryOverrides,
+    ...(pendingCustom ? { _pendingCustom: pendingCustom } : {}),
+  };
+}
+
 export function persistMergeDrafts() {
   try {
     if (typeof localStorage === 'undefined') return;
@@ -140,14 +216,15 @@ export function persistMergeDrafts() {
       localStorage.setItem(MERGE_DRAFTS_STORAGE_KEY, stringifyWithRegExp(drafts));
     }
   } catch (e) {
-    logWarn('保存本地缝合草稿失败', e);
+    logWarn('保存本地缝合草稿失败（可能超出浏览器存储配额）', e);
+    notify('warning', '本地存储空间不足，暂存草稿失败，请先清理部分快照或完成当前缝合');
   }
 }
 
 export function saveMergeDraft(kind, session) {
   if (!kind || !session) return;
   state.mergeDrafts = state.mergeDrafts || { preset: null, worldbook: null };
-  state.mergeDrafts[kind] = session;
+  state.mergeDrafts[kind] = compactMergeDraft(kind, session);
   persistMergeDrafts();
 }
 

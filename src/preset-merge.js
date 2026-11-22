@@ -195,3 +195,41 @@ export async function executePresetStitch(session, targetMode, customTargetName)
   notify('success', '已应用缝合结果到当前预设');
   return 'in_use';
 }
+
+export function hydratePresetMergeDraft(draft) {
+  if (!draft) return null;
+  if (draft.v !== 2) return draft;
+  const session = buildPresetDiffSession(draft.oldName, draft.newName);
+  session.filter = draft.filter || session.filter;
+  session.query = draft.query || '';
+  session.controlsOpen = !!draft.controlsOpen;
+  session.migrateSettings = !!draft.migrateSettings;
+  session.dirty = !!draft.dirty;
+  const overrides = draft.entryOverrides || {};
+  session.entries.forEach((it) => {
+    const ov = overrides[it.key];
+    if (!ov) return;
+    if (ov.expanded) it.expanded = true;
+    if (ov.stateOnly && it.newPrompt) {
+      const copy = JSON.parse(JSON.stringify(it.newPrompt));
+      copy.enabled = !!ov.enabled;
+      it.customPrompt = copy;
+      it.choice = 'custom';
+    } else if (ov.choice === 'custom' && ov.customPrompt) {
+      it.customPrompt = JSON.parse(JSON.stringify(ov.customPrompt));
+      it.choice = 'custom';
+    } else if (ov.choice) {
+      it.choice = ov.choice;
+    }
+  });
+  if (draft._pendingCustom) {
+    const pc = JSON.parse(JSON.stringify(draft._pendingCustom));
+    const entry = session.entries.find((x) => x.key === pc.entryKey);
+    if (entry && pc.draft) {
+      if (pc.draft.oldContent === undefined) pc.draft.oldContent = entry.oldPrompt?.content || '';
+      if (pc.draft.newContent === undefined) pc.draft.newContent = entry.newPrompt?.content || '';
+    }
+    session._pendingCustom = pc;
+  }
+  return session;
+}

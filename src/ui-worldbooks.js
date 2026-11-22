@@ -2,7 +2,7 @@ import {
   escapeHtml, notify, cloneWorldbookEntry, formatKeysInput, parseKeysInput,
   callTH, logError,
 } from './utils.js';
-import { state } from './store.js';
+import { state, serializeRegExpDeep } from './store.js';
 import { refreshWorldbookCatalog } from './catalog.js';
 import {
   WB_POSITION_OPTIONS, getWorldbookBindingsSnapshot, toggleGlobalWorldbook,
@@ -16,10 +16,22 @@ import {
   editHistory, readPreviewSnapshot, updatePreviewHistoryButtons, pushEditSnapshot,
 } from './ui-common.js';
 
+function serializeWbEntries(entries) {
+  return JSON.stringify(serializeRegExpDeep(entries || []));
+}
+
+function syncWbDetailDirty(m) {
+  if (!m || m.type !== 'worldbookDetail') return false;
+  if (typeof m.savedSnapshot === 'string') {
+    m.dirty = serializeWbEntries(m.entries) !== m.savedSnapshot;
+  }
+  return !!m.dirty;
+}
+
 export const worldbooksUiModule = {
   confirmDirty(onProceed) {
     const m = state.modal;
-    if (!m || !m.dirty || m.type !== 'worldbookDetail') return false;
+    if (!m || m.type !== 'worldbookDetail' || !syncWbDetailDirty(m)) return false;
     openConfirm({
       title: '未保存修改确认',
       message: `世界书「${m.bookName}」有未保存的修改，关闭后修改将会丢失，是否保存？`,
@@ -31,6 +43,7 @@ export const worldbooksUiModule = {
         onClick: () => {
           callTH('replaceWorldbook', m.bookName, m.entries, { render: 'debounced' })
             .then(() => {
+              m.savedSnapshot = serializeWbEntries(m.entries);
               m.dirty = false;
               notify('success', `已保存世界书「${m.bookName}」`);
               return refreshWorldbookCatalog(false);
@@ -157,6 +170,7 @@ export const worldbooksUiModule = {
           </div>`;
       }).join('');
 
+      const isDirty = syncWbDetailDirty(m);
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
@@ -183,7 +197,7 @@ export const worldbooksUiModule = {
             </div>
             <div class='td-picker-list td-scroll'>${rows || "<div class='td-group-empty'>暂无匹配的世界书条目</div>"}</div>
           </div>
-          <div class='td-modal-foot'><span data-role='wbd-dirty-label' style='margin-right:auto;font-size:11.5px;color:var(--td-text-muted);'>${m.dirty ? '有未保存修改' : '已同步'}</span><button class='td-btn' data-action='wbd-back-list'>返回</button><button class='td-btn primary' data-action='wbd-save-book'>${ICONS.save} 保存世界书</button></div>
+          <div class='td-modal-foot'><span data-role='wbd-dirty-label' style='margin-right:auto;font-size:11.5px;color:var(--td-text-muted);'>${isDirty ? '有未保存修改' : '已同步'}</span><button class='td-btn' data-action='wbd-back-list'>返回</button><button class='td-btn primary' data-action='wbd-save-book'>${ICONS.save} 保存世界书</button></div>
         </div>`;
       uiCtx.syncOverlayBounds();
       return true;
@@ -335,7 +349,8 @@ export const worldbooksUiModule = {
     if (action === 'wbm-open-detail') {
       const name = actionEl.getAttribute('data-name');
       callTH('getWorldbook', name).then((entries) => {
-        state.modal = { type: 'worldbookDetail', bookName: name, entries: (entries || []).map(cloneWorldbookEntry), query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() };
+        const clonedEntries = (entries || []).map(cloneWorldbookEntry);
+        state.modal = { type: 'worldbookDetail', bookName: name, entries: clonedEntries, savedSnapshot: serializeWbEntries(clonedEntries), query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() };
         uiCtx.renderModal();
       }).catch((err) => { logError(`读取世界书「${name}」失败`, err); notify('error', err.message || String(err)); });
       return true;
@@ -404,10 +419,10 @@ export const worldbooksUiModule = {
       const idx = Number(actionEl.getAttribute('data-idx'));
       if (state.modal.entries[idx]) {
         state.modal.entries[idx].enabled = !state.modal.entries[idx].enabled;
-        state.modal.dirty = true;
+        const isDirty = syncWbDetailDirty(state.modal);
         actionEl.classList.toggle('on', !!state.modal.entries[idx].enabled);
         const dirtyEl = modalLayerEl?.querySelector("[data-role='wbd-dirty-label']");
-        if (dirtyEl) dirtyEl.textContent = '有未保存修改';
+        if (dirtyEl) dirtyEl.textContent = isDirty ? '有未保存修改' : '已同步';
       }
       return true;
     }
@@ -510,6 +525,7 @@ export const worldbooksUiModule = {
     }
     if (action === 'wbd-save-book' && state.modal?.type === 'worldbookDetail') {
       callTH('replaceWorldbook', state.modal.bookName, state.modal.entries, { render: 'debounced' }).then(() => {
+        state.modal.savedSnapshot = serializeWbEntries(state.modal.entries);
         state.modal.dirty = false; notify('success', `已保存世界书「${state.modal.bookName}」`); return refreshWorldbookCatalog(false);
       }).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('保存世界书失败', err); notify('error', `保存世界书失败: ${err.message || err}`); });
       return true;

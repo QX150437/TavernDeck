@@ -5,9 +5,11 @@ import {
 import { state, saveMergeDraft, clearMergeDraft } from './store.js';
 import { refreshAllCatalogs, refreshWorldbookCatalog } from './catalog.js';
 import {
-  buildPresetDiffSession, executePresetStitch, findBestMatchingOldPreset,
+  buildPresetDiffSession, executePresetStitch, findBestMatchingOldPreset, hydratePresetMergeDraft,
 } from './preset-merge.js';
-import { buildWorldbookDiffSession, executeWorldbookStitch } from './worldbook-merge.js';
+import {
+  buildWorldbookDiffSession, executeWorldbookStitch, hydrateWbMergeDraft,
+} from './worldbook-merge.js';
 import {
   initPresetMergeCustomCtx, renderPresetMergeCustomModal,
   initWbMergeCustomCtx, renderWbMergeCustomModal,
@@ -214,7 +216,8 @@ export const mergePanelUiModule = {
         },
       },
       onConfirm: () => {
-        if (state.mergeDrafts && state.mergeDrafts[draftKey] === m.session) {
+        const curDraft = state.mergeDrafts && state.mergeDrafts[draftKey];
+        if (curDraft && (curDraft === m.session || (curDraft.oldName === m.session.oldName && curDraft.newName === m.session.newName))) {
           clearMergeDraft(draftKey);
         }
         onProceed();
@@ -393,27 +396,34 @@ export const mergePanelUiModule = {
 
     if (action === 'open-preset-merge') { state.modal = { type: 'presetMergeSelect', oldName: '', newName: '' }; uiCtx.renderModal(); return true; }
     if (action === 'resume-preset-merge' && state.mergeDrafts?.preset) {
-      const session = state.mergeDrafts.preset;
-      state.modal = { type: 'presetMerge', session };
-      uiCtx.renderModal();
-      if (session._pendingCustom) {
-        const pc = session._pendingCustom;
-        const entry = session.entries.find((x) => x.key === pc.entryKey);
-        if (entry) {
-          state.previewKey = null;
-          state.snapshotDetailId = null;
-          state.previewCtx = {
-            type: 'mergeCustom',
-            entry,
-            contentOnly: !!pc.contentOnly,
-            syncScroll: false,
-            edited: true,
-            draft: JSON.parse(JSON.stringify(pc.draft)),
-          };
-          uiCtx.renderPreviewModal();
+      const rawDraft = state.mergeDrafts.preset;
+      try {
+        const session = hydratePresetMergeDraft(rawDraft);
+        if (rawDraft.v !== 2) saveMergeDraft('preset', session);
+        state.modal = { type: 'presetMerge', session };
+        uiCtx.renderModal();
+        if (session._pendingCustom) {
+          const pc = session._pendingCustom;
+          const entry = session.entries.find((x) => x.key === pc.entryKey);
+          if (entry) {
+            state.previewKey = null;
+            state.snapshotDetailId = null;
+            state.previewCtx = {
+              type: 'mergeCustom',
+              entry,
+              contentOnly: !!pc.contentOnly,
+              syncScroll: false,
+              edited: true,
+              draft: JSON.parse(JSON.stringify(pc.draft)),
+            };
+            uiCtx.renderPreviewModal();
+          }
         }
+        notify('info', '已恢复上次未完成的预设缝合草稿');
+      } catch (err) {
+        logError('恢复预设缝合草稿失败', err);
+        notify('error', `恢复草稿失败（可能原预设已删除或改名）: ${err.message || err}`);
       }
-      notify('info', '已恢复上次未完成的预设缝合草稿');
       return true;
     }
     if (action === 'discard-preset-merge-draft') {
@@ -502,27 +512,33 @@ export const mergePanelUiModule = {
 
     if (action === 'open-wb-merge') { state.modal = { type: 'wbMergeSelect', oldName: '', newName: '' }; uiCtx.renderModal(); return true; }
     if (action === 'resume-wb-merge' && state.mergeDrafts?.worldbook) {
-      const session = state.mergeDrafts.worldbook;
-      state.modal = { type: 'wbMerge', session };
-      uiCtx.renderModal();
-      if (session._pendingCustom) {
-        const pc = session._pendingCustom;
-        const entry = session.entries.find((x) => x.key === pc.entryKey);
-        if (entry) {
-          state.previewKey = null;
-          state.snapshotDetailId = null;
-          state.previewCtx = {
-            type: 'wbMergeCustom',
-            entry,
-            contentOnly: !!pc.contentOnly,
-            syncScroll: false,
-            edited: true,
-            draft: JSON.parse(JSON.stringify(pc.draft)),
-          };
-          uiCtx.renderPreviewModal();
+      const rawDraft = state.mergeDrafts.worldbook;
+      hydrateWbMergeDraft(rawDraft).then((session) => {
+        if (rawDraft.v !== 2) saveMergeDraft('worldbook', session);
+        state.modal = { type: 'wbMerge', session };
+        uiCtx.renderModal();
+        if (session._pendingCustom) {
+          const pc = session._pendingCustom;
+          const entry = session.entries.find((x) => x.key === pc.entryKey);
+          if (entry) {
+            state.previewKey = null;
+            state.snapshotDetailId = null;
+            state.previewCtx = {
+              type: 'wbMergeCustom',
+              entry,
+              contentOnly: !!pc.contentOnly,
+              syncScroll: false,
+              edited: true,
+              draft: JSON.parse(JSON.stringify(pc.draft)),
+            };
+            uiCtx.renderPreviewModal();
+          }
         }
-      }
-      notify('info', '已恢复上次未完成的世界书缝合草稿');
+        notify('info', '已恢复上次未完成的世界书缝合草稿');
+      }).catch((err) => {
+        logError('恢复世界书缝合草稿失败', err);
+        notify('error', `恢复草稿失败（可能原世界书已删除或改名）: ${err.message || err}`);
+      });
       return true;
     }
     if (action === 'discard-wb-merge-draft') {

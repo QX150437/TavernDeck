@@ -12,10 +12,18 @@ import {
   editHistory, readPreviewSnapshot, updatePreviewHistoryButtons, pushEditSnapshot,
 } from './ui-common.js';
 
+function syncPresetDetailDirty(m) {
+  if (!m || m.type !== 'presetDetail') return false;
+  if (typeof m.savedSnapshot === 'string') {
+    m.dirty = JSON.stringify(m.data) !== m.savedSnapshot;
+  }
+  return !!m.dirty;
+}
+
 export const presetsUiModule = {
   confirmDirty(onProceed) {
     const m = state.modal;
-    if (!m || !m.dirty || m.type !== 'presetDetail') return false;
+    if (!m || m.type !== 'presetDetail' || !syncPresetDetailDirty(m)) return false;
     const targetName = m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName;
     openConfirm({
       title: '未保存修改确认',
@@ -28,6 +36,7 @@ export const presetsUiModule = {
         onClick: () => {
           savePresetDetail(m.presetName, m.data, true)
             .then(() => {
+              m.savedSnapshot = JSON.stringify(m.data);
               m.dirty = false;
               notify('success', `已保存预设「${m.presetName}」`);
               return refreshAllCatalogs();
@@ -167,6 +176,7 @@ export const presetsUiModule = {
           <div class='td-picker-list td-scroll'>${rows || "<div class='td-group-empty'>暂无匹配条目</div>"}</div>`;
       }
 
+      const isDirty = syncPresetDetailDirty(m);
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
@@ -181,7 +191,7 @@ export const presetsUiModule = {
             </div>
             ${bodyHtml}
           </div>
-          <div class='td-modal-foot'><span data-role='pm-dirty-label' style='margin-right:auto;font-size:11.5px;color:var(--td-text-muted);'>${m.dirty ? '有未保存修改' : '已同步'}</span><button class='td-btn' data-action='pm-back-list'>返回</button><button class='td-btn primary' data-action='pm-save-detail'>${ICONS.save} 保存预设</button></div>
+          <div class='td-modal-foot'><span data-role='pm-dirty-label' style='margin-right:auto;font-size:11.5px;color:var(--td-text-muted);'>${isDirty ? '有未保存修改' : '已同步'}</span><button class='td-btn' data-action='pm-back-list'>返回</button><button class='td-btn primary' data-action='pm-save-detail'>${ICONS.save} 保存预设</button></div>
         </div>`;
       uiCtx.syncOverlayBounds();
       return true;
@@ -286,7 +296,11 @@ export const presetsUiModule = {
     }
     if (action === 'pm-open-detail') {
       const name = actionEl.getAttribute('data-name');
-      try { state.modal = { type: 'presetDetail', presetName: name, data: getPresetDetail(name), tab: 'prompts', query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() }; uiCtx.renderModal(); }
+      try {
+        const detailData = getPresetDetail(name);
+        state.modal = { type: 'presetDetail', presetName: name, data: detailData, savedSnapshot: JSON.stringify(detailData), tab: 'prompts', query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() };
+        uiCtx.renderModal();
+      }
       catch (err) { logError('读取预设详情失败', err); notify('error', err.message || String(err)); }
       return true;
     }
@@ -359,10 +373,10 @@ export const presetsUiModule = {
       const list = state.modal.data[actionEl.getAttribute('data-list')], idx = Number(actionEl.getAttribute('data-idx'));
       if (list && list[idx]) {
         list[idx].enabled = !list[idx].enabled;
-        state.modal.dirty = true;
+        const isDirty = syncPresetDetailDirty(state.modal);
         actionEl.classList.toggle('on', !!list[idx].enabled);
         const dirtyEl = modalLayerEl?.querySelector("[data-role='pm-dirty-label']");
-        if (dirtyEl) dirtyEl.textContent = '有未保存修改';
+        if (dirtyEl) dirtyEl.textContent = isDirty ? '有未保存修改' : '已同步';
       }
       return true;
     }
@@ -452,6 +466,7 @@ export const presetsUiModule = {
     }
     if (action === 'pm-save-detail' && state.modal?.type === 'presetDetail') {
       savePresetDetail(state.modal.presetName, state.modal.data, true).then(() => {
+        state.modal.savedSnapshot = JSON.stringify(state.modal.data);
         state.modal.dirty = false; notify('success', `已保存预设「${state.modal.presetName}」`); return refreshAllCatalogs();
       }).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('保存预设详情失败', err); notify('error', `保存失败: ${err.message || err}`); });
       return true;
@@ -486,9 +501,9 @@ export const presetsUiModule = {
       if (ftype === 'bool') state.modal.data.settings[key] = !!target.checked;
       else if (ftype === 'number') state.modal.data.settings[key] = Number(target.value);
       else state.modal.data.settings[key] = target.value;
-      state.modal.dirty = true;
+      const isDirty = syncPresetDetailDirty(state.modal);
       const dirtyEl = uiCtx.getModalLayer()?.querySelector("[data-role='pm-dirty-label']");
-      if (dirtyEl) dirtyEl.textContent = '有未保存修改';
+      if (dirtyEl) dirtyEl.textContent = isDirty ? '有未保存修改' : '已同步';
       return true;
     }
 
