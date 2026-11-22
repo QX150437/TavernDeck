@@ -23,7 +23,7 @@ import {
 } from './preset-merge.js';
 import { syncNativePresetCollapse, syncTopBarButton } from './native-ui.js';
 import {
-  ICONS, editHistory, setUiContext, getOrbSize, renderGroupHtml, renderGroupItemsListHtml,
+  ICONS, ORB_STYLE_OPTIONS, editHistory, setUiContext, getOrbSize, renderGroupHtml, renderGroupItemsListHtml,
   getPickerSections, updatePickerList, updateSnapshotList, updatePresetMergeBody, renderConfirmModal,
   openConfirm, renderModal, readPreviewSnapshot, applyPreviewSnapshot,
   updatePreviewHistoryButtons, pushEditSnapshot, scheduleEditSnapshot,
@@ -310,7 +310,26 @@ export function applyThemeAttributes() {
   if (!rootEl) return;
   const s = state.store.settings;
   rootEl.setAttribute('data-theme', s.theme || 'dark');
-  rootEl.setAttribute('data-orb-style', s.orbStyle || 'indigo');
+  const orbVal = s.orbStyle || 'indigo';
+  const isPresetOrb = ORB_STYLE_OPTIONS.some((o) => o.id === orbVal);
+  if (isPresetOrb) {
+    rootEl.setAttribute('data-orb-style', orbVal);
+    rootEl.style.removeProperty('--td-orb-bg');
+    rootEl.style.removeProperty('--td-orb-shadow');
+    rootEl.style.removeProperty('--td-orb-color');
+  } else {
+    rootEl.setAttribute('data-orb-style', 'custom');
+    rootEl.style.setProperty('--td-orb-bg', orbVal);
+    rootEl.style.setProperty('--td-orb-shadow', '0 10px 28px rgba(0, 0, 0, 0.36), 0 0 0 1px rgba(255, 255, 255, 0.25) inset');
+    let iconColor = '#ffffff';
+    const hex = orbVal.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (hex) {
+      const h = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
+      const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+      if (0.299 * r + 0.587 * g + 0.114 * b > 186) iconColor = '#0f172a';
+    }
+    rootEl.style.setProperty('--td-orb-color', iconColor);
+  }
   if (s.groupTextColor) rootEl.style.setProperty('--td-group-color', s.groupTextColor);
   else rootEl.style.removeProperty('--td-group-color');
   if (s.entryTextColor) rootEl.style.setProperty('--td-entry-color', s.entryTextColor);
@@ -1441,6 +1460,7 @@ function handleRootKeydown(e) {
   if (e.key === 'Enter' && !e.isComposing && e.target) {
     if (e.target.id === 'td-sp-color-input') selectLayerEl.querySelector("[data-action='select-popup-apply-color']")?.click();
     else if (e.target.id === 'td-move-idx-input') selectLayerEl.querySelector("[data-action='move-by-number']")?.click();
+    else if (e.target.id === 'td-pm-jump-idx') modalLayerEl.querySelector("[data-action='pm-jump-idx']")?.click();
     else if (e.target.id === 'td-group-name-input') modalLayerEl.querySelector("[data-action='submit-group-form']")?.click();
     else if (e.target.id === 'td-scheme-name-input') modalLayerEl.querySelector("[data-action='submit-scheme-form']")?.click();
     else if (e.target.id === 'td-snap-rename-input') modalLayerEl.querySelector("[data-action='submit-snap-rename']")?.click();

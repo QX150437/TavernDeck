@@ -736,7 +736,10 @@ export function renderModal() {
   if (m.type === 'settings') {
     const s = state.store.settings;
     const themeObj = THEME_OPTIONS.find((t) => t.id === (s.theme || 'dark')) || THEME_OPTIONS[0];
-    const orbStyleObj = ORB_STYLE_OPTIONS.find((o) => o.id === (s.orbStyle || 'indigo')) || ORB_STYLE_OPTIONS[0];
+    const orbStyleVal = s.orbStyle || 'indigo';
+    const orbStylePreset = ORB_STYLE_OPTIONS.find((o) => o.id === orbStyleVal);
+    const orbSwatch = orbStylePreset ? orbStylePreset.swatch : orbStyleVal;
+    const orbStyleLabel = orbStylePreset ? orbStylePreset.name : `自定义 (${orbStyleVal})`;
     const topPosOpts = getTopBarPositionOptions();
     const topPosName = (topPosOpts.find((o) => o.id === (s.topBarPosition || 'after_extensions')) || topPosOpts[0]).name;
     const gColor = s.groupTextColor || '';
@@ -763,7 +766,7 @@ export function renderModal() {
           <div class='td-field'>
             <label class='td-label'>外观与文字颜色</label>
             <div class='td-setting-row'><div style='display:flex;align-items:center;gap:10px;'><span class='td-swatch' style='background:${themeObj.swatch};'></span><div><div class='td-setting-title'>界面主题</div><div class='td-setting-desc'>当前：${escapeHtml(themeObj.name)}</div></div></div><button type='button' class='td-btn sm' data-action='open-select-popup' data-select-type='theme'>选择</button></div>
-            <div class='td-setting-row'><div style='display:flex;align-items:center;gap:10px;'><span class='td-swatch' style='background:${orbStyleObj.swatch};'></span><div><div class='td-setting-title'>悬浮球颜色样式</div><div class='td-setting-desc'>当前：${escapeHtml(orbStyleObj.name)}</div></div></div><button type='button' class='td-btn sm' data-action='open-select-popup' data-select-type='orbStyle'>选择</button></div>
+            <div class='td-setting-row'><div style='display:flex;align-items:center;gap:10px;'><span class='td-swatch' style='background:${escapeHtml(orbSwatch)};'></span><div><div class='td-setting-title'>悬浮球颜色样式</div><div class='td-setting-desc'>当前：${escapeHtml(orbStyleLabel)}</div></div></div><button type='button' class='td-btn sm' data-action='open-select-popup' data-select-type='orbStyle'>选择</button></div>
             <div class='td-setting-row'><div style='display:flex;align-items:center;gap:10px;'><span class='td-swatch' style='background:${escapeHtml(gColor || 'var(--td-text)')};'></span><div><div class='td-setting-title'>分组文字颜色</div><div class='td-setting-desc'>当前：${escapeHtml(gColor || '跟随主题默认')}</div></div></div><button type='button' class='td-btn sm' data-action='open-select-popup' data-select-type='groupTextColor'>选择</button></div>
             <div class='td-setting-row'><div style='display:flex;align-items:center;gap:10px;'><span class='td-swatch' style='background:${escapeHtml(eColor || 'var(--td-text)')};'></span><div><div class='td-setting-title'>条目文字颜色</div><div class='td-setting-desc'>当前：${escapeHtml(eColor || '跟随主题默认')}</div></div></div><button type='button' class='td-btn sm' data-action='open-select-popup' data-select-type='entryTextColor'>选择</button></div>
           </div>
@@ -788,7 +791,7 @@ export function renderModal() {
             <div class='td-setting-row'>
               <div>
                 <div class='td-setting-title'>折叠酒馆原生预设设定区域</div>
-                <div class='td-setting-desc'>将酒馆右侧预设下拉框与提示词列表之间的参数区域折叠（可随时点横条展开）</div>
+                <div class='td-setting-desc'>将酒馆预设下拉框下方的原生设定区域折叠，保留预设条目（可随时点横条原样展开）</div>
               </div>
               <button type='button' class='td-switch ${collapseNative ? 'on' : ''}' data-action='toggle-native-preset-collapse'></button>
             </div>

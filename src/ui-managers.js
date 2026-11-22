@@ -182,12 +182,9 @@ export function renderSelectPopupView() {
     return;
   }
 
-  if (sp.type === 'theme' || sp.type === 'orbStyle') {
-    const isTheme = sp.type === 'theme';
-    const list = isTheme ? THEME_OPTIONS : ORB_STYLE_OPTIONS;
-    const curVal = isTheme ? (state.store.settings.theme || 'dark') : (state.store.settings.orbStyle || 'indigo');
-    const title = isTheme ? '选择界面主题' : '选择悬浮球颜色样式';
-    const itemsHtml = list.map((o) => `
+  if (sp.type === 'theme') {
+    const curVal = state.store.settings.theme || 'dark';
+    const itemsHtml = THEME_OPTIONS.map((o) => `
       <button type='button' class='td-select-option ${o.id === curVal ? 'active' : ''}' data-action='select-popup-pick' data-value='${escapeHtml(o.id)}'>
         <span class='td-select-option-left'><span class='td-swatch' style='background:${escapeHtml(o.swatch)};'></span><span class='td-select-option-name'>${escapeHtml(o.name)}</span></span>
         ${o.id === curVal ? "<span class='td-mode-tag multi'>当前</span>" : ''}
@@ -195,8 +192,38 @@ export function renderSelectPopupView() {
 
     layer.innerHTML = `
       <div class='td-modal td-modal-sm'>
-        <div class='td-modal-head'><div class='td-modal-title'>${title}</div><button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button></div>
+        <div class='td-modal-head'><div class='td-modal-title'>选择界面主题</div><button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button></div>
         <div class='td-modal-body'><div class='td-select-list'>${itemsHtml}</div></div>
+      </div>`;
+    ctx.syncOverlayBounds();
+    return;
+  }
+
+  if (sp.type === 'orbStyle') {
+    const curVal = state.store.settings.orbStyle || 'indigo';
+    const isPreset = ORB_STYLE_OPTIONS.some((o) => o.id === curVal);
+    const customVal = isPreset ? '' : curVal;
+    const nativeVal = /^#[0-9a-fA-F]{6}$/.test(customVal) ? customVal : '#6366f1';
+    const itemsHtml = ORB_STYLE_OPTIONS.map((o) => `
+      <button type='button' class='td-select-option ${o.id === curVal ? 'active' : ''}' data-action='select-popup-pick' data-value='${escapeHtml(o.id)}'>
+        <span class='td-select-option-left'><span class='td-swatch' style='background:${escapeHtml(o.swatch)};'></span><span class='td-select-option-name'>${escapeHtml(o.name)}</span></span>
+        ${o.id === curVal ? "<span class='td-mode-tag multi'>当前</span>" : ''}
+      </button>`).join('');
+
+    layer.innerHTML = `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'><div class='td-modal-title'>选择悬浮球颜色样式</div><button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button></div>
+        <div class='td-modal-body'>
+          <div class='td-field' style='padding:10px;border-radius:11px;background:var(--td-surface);border:1px solid var(--td-border-strong);'>
+            <label class='td-label'>自定义颜色（支持粘贴 #RRGGBB / rgb(...) / 颜色名）</label>
+            <div style='display:flex;align-items:center;gap:6px;'>
+              <input type='color' class='td-color-native' id='td-sp-color-native' value='${escapeHtml(nativeVal)}' />
+              <input type='text' class='td-input' id='td-sp-color-input' placeholder='粘贴颜色值，留空恢复默认' value='${escapeHtml(customVal)}' style='flex:1;font-family:ui-monospace,monospace;font-size:13.5px;' />
+              <button type='button' class='td-btn primary' data-action='select-popup-apply-color'>应用</button>
+            </div>
+          </div>
+          <div class='td-select-list td-scroll' style='max-height:310px;overflow-y:auto;'>${itemsHtml}</div>
+        </div>
       </div>`;
     ctx.syncOverlayBounds();
     return;
@@ -539,16 +566,19 @@ export function renderManagerModalView(m) {
       }).join('');
       bodyHtml = `<div class='td-picker-list td-scroll'><div class='td-form-grid'>${fieldsHtml}</div></div>`;
     } else {
-      const indexed = list.map((p, idx) => ({ p, idx })).filter(({ p }) => {
+      const indexed = list.map((p, idx) => ({ p, idx })).filter(({ p, idx }) => {
         if (!q) return true;
-        return (p.name || '').toLowerCase().includes(q) || (p.id || '').toLowerCase().includes(q) || (p.content || '').toLowerCase().includes(q);
+        return `#${idx + 1}`.includes(q)
+          || (p.name || '').toLowerCase().includes(q)
+          || (p.id || '').toLowerCase().includes(q)
+          || (p.content || '').toLowerCase().includes(q);
       });
       const rows = indexed.map(({ p, idx }) => {
         const isSys = PRESET_SYSTEM_IDS.has(p.id);
         const posLabel = p.position?.type === 'in_chat' ? `@D${p.position.depth ?? 0}` : '相对';
         const checked = selectedSet.has(idx);
         return `
-          <div class='td-mgr-row ${batchMode && checked ? 'is-active' : ''}'>
+          <div class='td-mgr-row ${batchMode && checked ? 'is-active' : ''}' data-idx='${idx}'>
             <div class='td-mgr-row-head'>
               <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
                 ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='pm-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
@@ -569,11 +599,15 @@ export function renderManagerModalView(m) {
       }).join('');
       bodyHtml = `
         <div class='td-mgr-topbar'>
-          <input class='td-input' id='td-pm-detail-search' type='text' placeholder='搜索条目名称、ID 或正文...' value='${escapeHtml(m.query || '')}' />
+          <input class='td-input' id='td-pm-detail-search' type='text' placeholder='搜索序号、名称、ID 或正文...' value='${escapeHtml(m.query || '')}' />
           <button class='td-btn sm primary' data-action='pm-add-prompt' data-list='${listName}'>${ICONS.plus} 新增</button>
-          <button class='td-icon-btn ${m.toolsOpen || batchMode ? 'is-active' : ''}' data-action='pm-detail-toggle-tools' title='批量移动与 AI 编辑'>${ICONS.more}</button>
+          <button class='td-icon-btn ${m.toolsOpen || batchMode ? 'is-active' : ''}' data-action='pm-detail-toggle-tools' title='跳转、批量移动与 AI 编辑'>${ICONS.more}</button>
         </div>
         <div class='td-mgr-subtools ${m.toolsOpen || batchMode ? 'is-open' : ''}'>
+          <div style='display:inline-flex;align-items:center;gap:4px;'>
+            <input class='td-input' id='td-pm-jump-idx' type='number' min='1' max='${Math.max(1, list.length)}' placeholder='序号' value='${escapeHtml(m.jumpVal || '')}' style='width:68px;height:27px;padding:0 6px;font-size:12px;text-align:center;' />
+            <button class='td-btn sm' data-action='pm-jump-idx' title='跳转到指定序号'>跳转</button>
+          </div>
           <button class='td-btn sm ${batchMode ? 'primary' : ''}' data-action='pm-toggle-batch'>${batchMode ? `退出批量 (已选 ${selectedSet.size})` : '批量选择移动'}</button>
           ${batchMode ? `<button class='td-btn sm warn' data-action='pm-batch-move'>批量移动到...</button>` : ''}
           ${batchMode && tab === 'unused' ? `<button class='td-btn sm primary' data-action='pm-batch-join'>批量加入主列表</button>` : ''}
@@ -1119,6 +1153,7 @@ export function handleManagerClick(e, actionEl, action) {
     const inp = selectLayerEl?.querySelector('#td-sp-color-input'), parsed = normalizeColorInput(inp ? inp.value : '');
     if (!parsed.ok) { notify('warning', '颜色格式无效，支持 #RRGGBB、rgb(...) 或标准颜色名'); return true; }
     if (state.selectPopup.type === 'groupTextColor') state.store.settings.groupTextColor = parsed.value;
+    else if (state.selectPopup.type === 'orbStyle') state.store.settings.orbStyle = parsed.value || 'indigo';
     else state.store.settings.entryTextColor = parsed.value;
     saveStore(state.store); ctx.applyThemeAttributes();
     state.selectPopup = null; renderSelectPopupView();
@@ -1233,6 +1268,35 @@ export function handleManagerClick(e, actionEl, action) {
   if (action === 'pm-back-list' && state.modal?.type === 'presetDetail') { state.modal = { type: 'presetManager', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
   if (action === 'pm-detail-tab' && state.modal?.type === 'presetDetail') { state.modal.tab = actionEl.getAttribute('data-tab') || 'prompts'; state.modal.selectedIdx = new Set(); ctx.renderModal(); return true; }
   if (action === 'pm-detail-toggle-tools' && state.modal?.type === 'presetDetail') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
+  if (action === 'pm-jump-idx' && state.modal?.type === 'presetDetail') {
+    const listName = state.modal.tab === 'unused' ? 'prompts_unused' : 'prompts';
+    const list = state.modal.data[listName] || [];
+    const num = Number(modalLayerEl.querySelector('#td-pm-jump-idx')?.value);
+    if (Number.isNaN(num) || num < 1 || num > list.length) {
+      notify('warning', `请输入 1 ~ ${list.length} 之间的有效序号`);
+      return true;
+    }
+    const targetIdx = Math.floor(num) - 1;
+    const scrollToRow = () => {
+      const box = modalLayerEl.querySelector('.td-picker-list');
+      const row = box?.querySelector(`.td-mgr-row[data-idx='${targetIdx}']`);
+      if (!box || !row) return;
+      const boxRect = box.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      box.scrollTo({ top: box.scrollTop + (rowRect.top - boxRect.top) - 8, behavior: 'smooth' });
+      row.style.transition = 'box-shadow 0.25s ease';
+      row.style.boxShadow = '0 0 0 2px var(--td-accent)';
+      setTimeout(() => { if (row.isConnected) row.style.boxShadow = ''; }, 1600);
+    };
+    if (!modalLayerEl.querySelector(`.td-mgr-row[data-idx='${targetIdx}']`) && (state.modal.query || '').trim()) {
+      state.modal.query = '';
+      ctx.renderModal();
+      requestAnimationFrame(scrollToRow);
+    } else {
+      scrollToRow();
+    }
+    return true;
+  }
   if (action === 'pm-toggle-batch' && state.modal?.type === 'presetDetail') {
     state.modal.batchMode = !state.modal.batchMode; state.modal.selectedIdx = new Set(); ctx.renderModal(); return true;
   }
@@ -1667,6 +1731,7 @@ export function handleManagerInput(e) {
   if (id === 'td-wb-merge-search' && state.modal?.type === 'wbMerge') { state.modal.session.query = e.target.value; updateWbMergeBody(); return true; }
   if (id === 'td-pm-search' && state.modal?.type === 'presetManager') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
   if (id === 'td-pm-detail-search' && state.modal?.type === 'presetDetail') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
+  if (id === 'td-pm-jump-idx' && state.modal?.type === 'presetDetail') { state.modal.jumpVal = e.target.value; return true; }
   if (id === 'td-wbm-search' && state.modal?.type === 'worldbookManager') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
   if (id === 'td-wbd-search' && state.modal?.type === 'worldbookDetail') { state.modal.query = e.target.value; ctx.renderModal(); return true; }
   if (id === 'td-ai-instruction' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) { state.previewCtx.instruction = e.target.value; return true; }

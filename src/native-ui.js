@@ -19,11 +19,16 @@ const KNOWN_TOP_LABELS = {
 
 function restoreElement(el) {
   if (!el) return;
+  const wasFolded = el.classList.contains(FOLD_CLASS);
   el.classList.remove(FOLD_CLASS);
   if (el.dataset.tdPrevDisplay !== undefined) {
-    el.style.display = el.dataset.tdPrevDisplay;
+    const prevVal = el.dataset.tdPrevDisplay;
+    const prevPri = el.dataset.tdPrevPriority || '';
+    if (prevVal) el.style.setProperty('display', prevVal, prevPri);
+    else el.style.removeProperty('display');
     delete el.dataset.tdPrevDisplay;
-  } else {
+    delete el.dataset.tdPrevPriority;
+  } else if (wasFolded) {
     el.style.removeProperty('display');
   }
 }
@@ -35,15 +40,19 @@ export function syncNativePresetCollapse() {
     const presetSel = document.getElementById('settings_preset_openai');
     const existingBar = document.getElementById(BAR_ID);
 
-    if (!shouldFold || !pm || !presetSel) {
+    if (!shouldFold || !presetSel) {
       document.querySelectorAll(`.${FOLD_CLASS}`).forEach(restoreElement);
       if (existingBar) existingBar.remove();
       return;
     }
 
     let container = presetSel.parentElement;
-    while (container && !container.contains(pm)) {
-      container = container.parentElement;
+    if (pm) {
+      while (container && !container.contains(pm)) {
+        container = container.parentElement;
+      }
+    } else {
+      container = presetSel.closest('#openai_settings') || container;
     }
     if (!container) return;
 
@@ -51,16 +60,45 @@ export function syncNativePresetCollapse() {
     while (presetChild && presetChild.parentElement !== container) {
       presetChild = presetChild.parentElement;
     }
-    let pmChild = pm;
-    while (pmChild && pmChild.parentElement !== container) {
-      pmChild = pmChild.parentElement;
-    }
-    if (!presetChild || !pmChild || presetChild === pmChild) return;
+    if (!presetChild) return;
+
+    const targetEls = [];
+    const pushIfFoldable = (el) => {
+      if (!el || el === existingBar || el.tagName === 'SCRIPT' || el.tagName === 'STYLE') return;
+      if (pm && (el === pm || el.contains(pm))) {
+        if (el !== pm) {
+          Array.from(el.children).forEach(pushIfFoldable);
+        }
+        return;
+      }
+      targetEls.push(el);
+    };
 
     const children = Array.from(container.children);
     const startIdx = children.indexOf(presetChild);
-    const endIdx = children.indexOf(pmChild);
-    if (startIdx < 0 || endIdx <= startIdx + 1) return;
+    if (startIdx < 0) return;
+    for (let i = startIdx + 1; i < children.length; i++) {
+      pushIfFoldable(children[i]);
+    }
+
+    const openaiRoot = document.getElementById('openai_settings');
+    if (openaiRoot && openaiRoot !== container && openaiRoot.contains(container)) {
+      let cur = container;
+      while (cur && cur.parentElement !== openaiRoot) cur = cur.parentElement;
+      if (cur) {
+        const rootChildren = Array.from(openaiRoot.children);
+        const curIdx = rootChildren.indexOf(cur);
+        for (let i = curIdx + 1; i < rootChildren.length; i++) {
+          pushIfFoldable(rootChildren[i]);
+        }
+      }
+    }
+
+    if (targetEls.length === 0) {
+      document.querySelectorAll(`.${FOLD_CLASS}`).forEach(restoreElement);
+      if (existingBar) existingBar.remove();
+      return;
+    }
 
     let bar = existingBar;
     if (!bar) {
@@ -68,23 +106,17 @@ export function syncNativePresetCollapse() {
       bar.id = BAR_ID;
       bar.dataset.tdTempExpanded = '0';
     }
-    if (bar.parentElement !== container || bar.nextElementSibling !== pmChild) {
-      container.insertBefore(bar, pmChild);
+    if (bar.parentElement !== container || presetChild.nextElementSibling !== bar) {
+      container.insertBefore(bar, presetChild.nextElementSibling);
     }
 
     const tempExpanded = bar.dataset.tdTempExpanded === '1';
-    const targetEls = [];
-    for (let i = startIdx + 1; i < endIdx; i++) {
-      const el = children[i];
-      if (!el || el === bar || el.tagName === 'SCRIPT' || el.tagName === 'STYLE') continue;
-      targetEls.push(el);
-    }
-
     targetEls.forEach((el) => {
       if (tempExpanded) {
         restoreElement(el);
       } else if (!el.classList.contains(FOLD_CLASS)) {
-        el.dataset.tdPrevDisplay = el.style.display || '';
+        el.dataset.tdPrevDisplay = el.style.getPropertyValue('display');
+        el.dataset.tdPrevPriority = el.style.getPropertyPriority('display');
         el.classList.add(FOLD_CLASS);
         el.style.setProperty('display', 'none', 'important');
       }
@@ -92,7 +124,7 @@ export function syncNativePresetCollapse() {
 
     bar.innerHTML = tempExpanded
       ? "<i class='fa-solid fa-chevron-up'></i><span>收起原生预设设定区域</span>"
-      : `<i class='fa-solid fa-chevron-down'></i><span>原生预设设定区域已折叠（点击临时展开 ${targetEls.length} 项）</span>`;
+      : `<i class='fa-solid fa-chevron-down'></i><span>原生预设设定区域已折叠（点击原样展开 ${targetEls.length} 项）</span>`;
 
     if (!bar.dataset.tdBound) {
       bar.dataset.tdBound = '1';
