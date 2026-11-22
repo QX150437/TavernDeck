@@ -67,20 +67,49 @@ export function callTH(name, ...args) {
   return th[name](...args);
 }
 
+const TOAST_ICONS = {
+  success: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='20 6 9 17 4 12'/></svg>",
+  warning: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z'/><line x1='12' y1='9' x2='12' y2='13'/><line x1='12' y1='17' x2='12.01' y2='17'/></svg>",
+  error: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.3' stroke-linecap='round'><circle cx='12' cy='12' r='9'/><path d='M15 9l-6 6M9 9l6 6'/></svg>",
+  info: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round'><circle cx='12' cy='12' r='9'/><line x1='12' y1='16' x2='12' y2='12'/><line x1='12' y1='8' x2='12.01' y2='8'/></svg>",
+};
+
 export function notify(type, message) {
-  if (type === 'error') logError(message);
-  else if (type === 'warning') logWarn(message);
+  const kind = TOAST_ICONS[type] ? type : 'info';
+  if (kind === 'error') logError(message);
+  else if (kind === 'warning') logWarn(message);
   else logInfo(message);
 
+  const root = typeof document !== 'undefined' ? document.getElementById(ROOT_ID) : null;
+  if (root) {
+    let stack = root.querySelector('.td-toast-stack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.className = 'td-toast-stack';
+      root.appendChild(stack);
+    }
+    const toast = document.createElement('div');
+    toast.className = `td-toast is-${kind}`;
+    toast.innerHTML = `<span class='td-toast-icon'>${TOAST_ICONS[kind]}</span><div class='td-toast-msg'>${escapeHtml(message)}</div><button type='button' class='td-toast-close' aria-label='关闭'>×</button>`;
+    const dismiss = () => {
+      if (toast.dataset.tdClosing) return;
+      toast.dataset.tdClosing = '1';
+      toast.classList.add('is-leaving');
+      setTimeout(() => toast.remove(), 180);
+    };
+    const ms = kind === 'error' ? 4600 : (kind === 'warning' ? 3600 : 2600);
+    let timer = setTimeout(dismiss, ms);
+    toast.addEventListener('pointerenter', () => { clearTimeout(timer); });
+    toast.addEventListener('pointerleave', () => { timer = setTimeout(dismiss, 1400); });
+    toast.addEventListener('click', dismiss);
+    stack.appendChild(toast);
+    while (stack.children.length > 4) stack.firstElementChild.remove();
+    return;
+  }
+
   try {
-    if (typeof toastr !== 'undefined' && typeof toastr[type] === 'function') {
-      toastr[type](message, APP_NAME);
-      return;
-    }
-    if (window.toastr && typeof window.toastr[type] === 'function') {
-      window.toastr[type](message, APP_NAME);
-      return;
-    }
+    const t = typeof toastr !== 'undefined' ? toastr : window.toastr;
+    if (t && typeof t[kind] === 'function') t[kind](message, APP_NAME);
   } catch (e) {
     logWarn('toastr 提示调用失败', e);
   }
