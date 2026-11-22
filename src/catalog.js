@@ -2,7 +2,7 @@ import {
   SCOPE_LABELS,
   getST, hasTH, callTH, notify, makeItemKey, logInfo, logWarn, logError,
 } from './utils.js';
-import { state, getActiveScheme, findGroupNode } from './store.js';
+import { state, saveStore, getActiveScheme, findGroupPath } from './store.js';
 
 let mutationQueue = Promise.resolve();
 let pendingMutationOps = 0;
@@ -475,39 +475,124 @@ export function applyItemMutations(mutations) {
   return task;
 }
 
+function collectSubtreeDisableMutations(node, mutationMap) {
+  if (!node) return false;
+  let storeChanged = false;
+  const validItems = (node.items || [])
+    .map((ref) => state.catalog.byKey.get(ref.key || makeItemKey(ref)))
+    .filter(Boolean);
+
+  if (node.mode === 'multi' && node.meta?.memoryToggle) {
+    const activeKeys = validItems.filter((it) => !!it.enabled).map((it) => it.key);
+    if (activeKeys.length > 0) {
+      node.meta = node.meta || {};
+      node.meta.lastActiveKeys = activeKeys;
+      storeChanged = true;
+    }
+  }
+
+  validItems.forEach((it) => {
+    if (!mutationMap.has(it.key)) {
+      mutationMap.set(it.key, { ref: it.ref, enabled: false });
+    }
+  });
+
+  if (Array.isArray(node.children)) {
+    node.children.forEach((child) => {
+      if (collectSubtreeDisableMutations(child, mutationMap)) storeChanged = true;
+    });
+  }
+  return storeChanged;
+}
+
+function collectExclusiveSiblingDisableMutations(path, mutationMap) {
+  if (!Array.isArray(path) || path.length < 2) return false;
+  let storeChanged = false;
+  for (let i = path.length - 2; i >= 0; i--) {
+    const parent = path[i];
+    const activeChild = path[i + 1];
+    if (!parent?.meta?.exclusiveChildren) continue;
+    (parent.children || []).forEach((sibling) => {
+      if (sibling && sibling.id !== activeChild.id) {
+        if (collectSubtreeDisableMutations(sibling, mutationMap)) storeChanged = true;
+      }
+    });
+  }
+  return storeChanged;
+}
+
 export function toggleEntryInGroup(groupId, itemKey) {
-  const found = findGroupNode(getActiveScheme().groups, groupId);
-  if (!found) return Promise.resolve(false);
+  const path = findGroupPath(getActiveScheme().groups, groupId);
+  if (!path) return Promise.resolve(false);
+  const group = path[path.length - 1];
   const targetItem = state.catalog.byKey.get(itemKey);
   if (!targetItem) {
     notify('warning', '该条目当前未加载或已不存在');
     return Promise.resolve(false);
   }
   const nextEnabled = !targetItem.enabled;
-  const mutations = [];
-  if (found.group.mode === 'single') {
-    (found.group.items || []).forEach((ref) => {
+  const mutationMap = new Map();
+  if (nextEnabled && collectExclusiveSiblingDisableMutations(path, mutationMap)) {
+    saveStore(state.store);
+  }
+  if (group.mode === 'single') {
+    (group.items || []).forEach((ref) => {
       const k = ref.key || makeItemKey(ref);
-      mutations.push({ ref, enabled: k === itemKey ? nextEnabled : false });
+      mutationMap.set(k, { ref, enabled: k === itemKey ? nextEnabled : false });
     });
   } else {
-    mutations.push({ ref: targetItem.ref, enabled: nextEnabled });
+    mutationMap.set(itemKey, { ref: targetItem.ref, enabled: nextEnabled });
   }
-  return applyItemMutations(mutations);
+  return applyItemMutations(Array.from(mutationMap.values()));
 }
 
 export function toggleMultiGroupAll(groupId) {
-  const found = findGroupNode(getActiveScheme().groups, groupId);
-  if (!found || found.group.mode !== 'multi') return Promise.resolve(false);
-  const validItems = (found.group.items || [])
+  const path = findGroupPath(getActiveScheme().groups, groupId);
+  if (!path) return Promise.resolve(false);
+  const group = path[path.length - 1];
+  if (group.mode !== 'multi') return Promise.resolve(false);
+  const validItems = (group.items || [])
     .map((ref) => state.catalog.byKey.get(ref.key || makeItemKey(ref)))
     .filter(Boolean);
   if (validItems.length === 0) {
     notify('info', '该分组暂无可直接控制的条目');
     return Promise.resolve(false);
   }
-  const targetState = !validItems.every((it) => !!it.enabled);
-  return applyItemMutations(validItems.map((it) => ({ ref: it.ref, enabled: targetState })));
+
+  const isMemory = !!group.meta?.memoryToggle;
+  const activeItems = validItems.filter((it) => !!it.enabled);
+  const targetState = isMemory ? activeItems.length === 0 : !validItems.every((it) => !!it.enabled);
+
+  const mutationMap = new Map();
+  let storeChanged = false;
+
+  if (targetState) {
+    if (collectExclusiveSiblingDisableMutations(path, mutationMap)) {
+      storeChanged = true;
+    }
+    const savedSet = isMemory && Array.isArray(group.meta?.lastActiveKeys)
+      ? new Set(group.meta.lastActiveKeys)
+      : null;
+    const hasValidSaved = !!savedSet && validItems.some((it) => savedSet.has(it.key));
+    validItems.forEach((it) => {
+      mutationMap.set(it.key, {
+        ref: it.ref,
+        enabled: hasValidSaved ? savedSet.has(it.key) : true,
+      });
+    });
+  } else {
+    if (isMemory && activeItems.length > 0) {
+      group.meta = group.meta || {};
+      group.meta.lastActiveKeys = activeItems.map((it) => it.key);
+      storeChanged = true;
+    }
+    validItems.forEach((it) => {
+      mutationMap.set(it.key, { ref: it.ref, enabled: false });
+    });
+  }
+
+  if (storeChanged) saveStore(state.store);
+  return applyItemMutations(Array.from(mutationMap.values()));
 }
 
 export async function saveEditedEntry(itemKey, fields) {

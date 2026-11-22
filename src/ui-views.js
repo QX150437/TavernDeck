@@ -212,7 +212,10 @@ export function renderGroupHtml(group, depth) {
   });
 
   const isMulti = group.mode === 'multi';
+  const isMemory = isMulti && !!group.meta?.memoryToggle;
+  const isExclusive = !!group.meta?.exclusiveChildren;
   const isAllActive = validCount > 0 && activeCount === validCount;
+  const isSwitchOn = isMemory ? (validCount > 0 && activeCount > 0) : isAllActive;
   const menuOpen = state.activeGroupMenuId === group.id;
   const isCollapsed = !!group.collapsed && !gQuery;
 
@@ -221,8 +224,11 @@ export function renderGroupHtml(group, depth) {
     ? `<div class='td-group-children' data-parent-group-id='${escapeHtml(group.id)}'>${children.map((cg) => renderGroupHtml(cg, depth + 1)).join('')}</div>`
     : '';
 
+  const switchTitle = isMemory
+    ? (isSwitchOn ? '记忆开关：点击记住当前并关闭' : '记忆开关：点击恢复上次启用状态')
+    : (isAllActive ? '一键全关' : '一键全开');
   const quickSwitch = isMulti
-    ? `<button class='td-switch ${isAllActive ? 'on' : ''}' data-action='toggle-multi-group' data-group-id='${escapeHtml(group.id)}' title='${isAllActive ? '一键全关' : '一键全开'}'></button>`
+    ? `<button class='td-switch ${isSwitchOn ? 'on' : ''}' data-action='toggle-multi-group' data-group-id='${escapeHtml(group.id)}' title='${switchTitle}'></button>`
     : '';
 
   const groupInlineActions = [
@@ -239,7 +245,7 @@ export function renderGroupHtml(group, depth) {
     : '';
 
   const foldedMenuBtns = [
-    foldQuick && isMulti ? `<button class='td-group-menu-btn' data-action='toggle-multi-group' data-group-id='${escapeHtml(group.id)}'>${isAllActive ? '一键全关' : '一键全开'}</button>` : '',
+    foldQuick && isMulti ? `<button class='td-group-menu-btn' data-action='toggle-multi-group' data-group-id='${escapeHtml(group.id)}'>${isSwitchOn ? (isMemory ? '记忆关闭' : '一键全关') : (isMemory ? '记忆恢复' : '一键全开')}</button>` : '',
     foldAdd ? `<button class='td-group-menu-btn' data-action='open-picker' data-group-id='${escapeHtml(group.id)}'>${ICONS.plus} 添加条目</button>` : '',
     foldSub ? `<button class='td-group-menu-btn' data-action='new-subgroup' data-group-id='${escapeHtml(group.id)}'>${ICONS.folderPlus} 子分组</button>` : '',
     foldEdit ? `<button class='td-group-menu-btn' data-action='edit-group' data-group-id='${escapeHtml(group.id)}'>${ICONS.edit} 编辑</button>` : '',
@@ -265,7 +271,8 @@ export function renderGroupHtml(group, depth) {
             ${groupGripHtml}
             <span class='td-chevron'>${ICONS.chevron}</span>
             <span class='td-group-name' title='${escapeHtml(group.name)}'>${escapeHtml(group.name)}</span>
-            <span class='td-mode-tag ${isMulti ? 'multi' : 'single'}'>${isMulti ? '多选' : '单选'}</span>
+            <span class='td-mode-tag ${isMulti ? 'multi' : 'single'}'>${isMulti ? (isMemory ? '多选·记忆' : '多选') : '单选'}</span>
+            ${isExclusive ? "<span class='td-mode-tag single'>子组互斥</span>" : ''}
             <span class='td-count-tag'>${activeCount}/${items.length}</span>
           </div>
           <div class='td-group-actions' data-stop-collapse='1'>${groupInlineActions}</div>
@@ -725,6 +732,17 @@ export function renderModal() {
         <div class='td-modal-body'>
           <div class='td-field'><label class='td-label'>分组名称</label><input class='td-input' id='td-group-name-input' type='text' placeholder='例如：破限预设、文风切换、功能开关...' value='${escapeHtml(m.name || '')}' /></div>
           <div class='td-field'><label class='td-label'>分组模式</label><div class='td-seg-grid'><button type='button' class='td-seg-card ${m.mode === 'multi' ? 'active' : ''}' data-action='set-modal-mode' data-mode='multi'><div class='td-seg-title'>多选分组</div><div class='td-seg-desc'>条目自由开关，支持一键全开 / 全关</div></button><button type='button' class='td-seg-card single-card ${m.mode === 'single' ? 'active' : ''}' data-action='set-modal-mode' data-mode='single'><div class='td-seg-title'>单选分组</div><div class='td-seg-desc'>组内条目互斥，开启一项自动关闭其余</div></button></div></div>
+          <div class='td-field'>
+            <label class='td-label'>扩展联动选项</label>
+            <div class='td-setting-row' data-role='group-memory-opt-row' style='display:${m.mode === 'multi' ? 'flex' : 'none'};'>
+              <div><div class='td-setting-title'>记忆总开关</div><div class='td-setting-desc'>关闭本组时记住已开启的条目，再次开启时按记忆恢复</div></div>
+              <button type='button' class='td-switch ${m.memoryToggle ? 'on' : ''}' data-action='toggle-modal-group-opt' data-opt='memoryToggle'></button>
+            </div>
+            <div class='td-setting-row'>
+              <div><div class='td-setting-title'>子分组互斥（套件单选）</div><div class='td-setting-desc'>激活任一子分组或子组内条目时，自动关闭同级其他子分组</div></div>
+              <button type='button' class='td-switch ${m.exclusiveChildren ? 'on' : ''}' data-action='toggle-modal-group-opt' data-opt='exclusiveChildren'></button>
+            </div>
+          </div>
         </div>
         <div class='td-modal-foot'><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='submit-group-form'>${isEdit ? '保存修改' : '创建分组'}</button></div>
       </div>`;

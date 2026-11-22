@@ -293,6 +293,20 @@ export function findGroupNode(groups, targetId, parent = null) {
   return null;
 }
 
+export function findGroupPath(groups, targetId, trail = []) {
+  if (!Array.isArray(groups)) return null;
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const nextTrail = [...trail, g];
+    if (g.id === targetId) return nextTrail;
+    if (Array.isArray(g.children) && g.children.length > 0) {
+      const found = findGroupPath(g.children, targetId, nextTrail);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 export function isGroupDescendant(group, possibleChildId) {
   if (!group || !Array.isArray(group.children)) return false;
   for (let i = 0; i < group.children.length; i++) {
@@ -358,6 +372,9 @@ export function createOrUpdateGroup(data) {
     if (found) {
       found.group.name = data.name;
       found.group.mode = data.mode;
+      found.group.meta = found.group.meta || {};
+      found.group.meta.memoryToggle = data.mode === 'multi' && !!data.memoryToggle;
+      found.group.meta.exclusiveChildren = !!data.exclusiveChildren;
     }
   } else {
     const newGroup = {
@@ -367,7 +384,10 @@ export function createOrUpdateGroup(data) {
       collapsed: false,
       items: [],
       children: [],
-      meta: {},
+      meta: {
+        memoryToggle: data.mode === 'multi' && !!data.memoryToggle,
+        exclusiveChildren: !!data.exclusiveChildren,
+      },
     };
     if (data.parentId) {
       const pFound = findGroupNode(scheme.groups, data.parentId);

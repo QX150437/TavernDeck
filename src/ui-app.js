@@ -417,7 +417,10 @@ export function syncEntryStatesUI() {
       if (countEl) countEl.textContent = `${activeCount}/${items.length}`;
       if (g.mode === 'multi') {
         const groupSw = headEl.querySelector("[data-action='toggle-multi-group']");
-        if (groupSw) groupSw.classList.toggle('on', validCount > 0 && activeCount === validCount);
+        const isSwitchOn = g.meta?.memoryToggle
+          ? (validCount > 0 && activeCount > 0)
+          : (validCount > 0 && activeCount === validCount);
+        if (groupSw) groupSw.classList.toggle('on', isSwitchOn);
       }
     }
   });
@@ -1114,16 +1117,26 @@ function handleRootClick(e) {
     state.modal = null; renderModal(); renderMain(); return;
   }
 
-  if (action === 'new-group') { state.modal = { type: 'groupForm', groupId: null, parentId: null, name: '', mode: 'multi' }; renderModal(); return; }
+  if (action === 'new-group') { state.modal = { type: 'groupForm', groupId: null, parentId: null, name: '', mode: 'multi', memoryToggle: false, exclusiveChildren: false }; renderModal(); return; }
   if (action === 'new-subgroup') {
     e.stopPropagation(); state.activeGroupMenuId = null;
     const found = findGroupNode(getActiveScheme().groups, groupId); if (!found) return;
-    state.modal = { type: 'groupForm', groupId: null, parentId: found.group.id, parentName: found.group.name, name: '', mode: 'multi' }; renderModal(); return;
+    state.modal = { type: 'groupForm', groupId: null, parentId: found.group.id, parentName: found.group.name, name: '', mode: 'multi', memoryToggle: false, exclusiveChildren: false }; renderModal(); return;
   }
   if (action === 'edit-group') {
     e.stopPropagation(); state.activeGroupMenuId = null;
     const found = findGroupNode(getActiveScheme().groups, groupId); if (!found) return;
-    state.modal = { type: 'groupForm', groupId: found.group.id, parentId: null, name: found.group.name, mode: found.group.mode }; renderModal(); return;
+    state.modal = {
+      type: 'groupForm',
+      groupId: found.group.id,
+      parentId: null,
+      name: found.group.name,
+      mode: found.group.mode,
+      memoryToggle: !!found.group.meta?.memoryToggle,
+      exclusiveChildren: !!found.group.meta?.exclusiveChildren,
+    };
+    renderModal();
+    return;
   }
   if (action === 'delete-group') {
     e.stopPropagation(); state.activeGroupMenuId = null;
@@ -1195,13 +1208,30 @@ function handleRootClick(e) {
     const nextMode = actionEl.getAttribute('data-mode') === 'single' ? 'single' : 'multi';
     state.modal.mode = nextMode;
     modalLayerEl.querySelectorAll("[data-action='set-modal-mode']").forEach((card) => card.classList.toggle('active', card.getAttribute('data-mode') === nextMode));
+    const memRow = modalLayerEl.querySelector("[data-role='group-memory-opt-row']");
+    if (memRow) memRow.style.display = nextMode === 'multi' ? 'flex' : 'none';
+    return;
+  }
+  if (action === 'toggle-modal-group-opt' && state.modal?.type === 'groupForm') {
+    const opt = actionEl.getAttribute('data-opt');
+    if (opt === 'memoryToggle' || opt === 'exclusiveChildren') {
+      state.modal[opt] = !state.modal[opt];
+      actionEl.classList.toggle('on', !!state.modal[opt]);
+    }
     return;
   }
   if (action === 'submit-group-form' && state.modal?.type === 'groupForm') {
     const inp = modalLayerEl.querySelector('#td-group-name-input');
     const name = (inp ? inp.value : state.modal.name || '').trim();
     if (!name) { notify('warning', '请输入分组名称'); if (inp) inp.focus(); return; }
-    createOrUpdateGroup({ id: state.modal.groupId, parentId: state.modal.parentId, name, mode: state.modal.mode });
+    createOrUpdateGroup({
+      id: state.modal.groupId,
+      parentId: state.modal.parentId,
+      name,
+      mode: state.modal.mode,
+      memoryToggle: !!state.modal.memoryToggle,
+      exclusiveChildren: !!state.modal.exclusiveChildren,
+    });
     state.modal = null; renderModal(); renderMain(); return;
   }
 
