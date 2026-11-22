@@ -1,10 +1,16 @@
 import {
   escapeHtml, notify, normalizeColorInput, findBestMatchingName,
   computeLineDiff, cloneWorldbookEntry, formatKeysInput, parseKeysInput,
-  hasTH, callTH, getST, copyToClipboard, downloadTextFile, logWarn, logError,
+  hasTH, callTH, getST, copyToClipboard, downloadTextFile, downloadJsonFile, logWarn, logError,
 } from './utils.js';
-import { state, saveStore, saveMergeDraft, clearMergeDraft } from './store.js';
+import {
+  state, saveStore, saveMergeDraft, clearMergeDraft, clearAllMergeDrafts,
+  exportStoreData, deleteSnapshotPayload,
+  getStorageDiagnostics, cleanOrphanSnapshotPayloads, repairMissingSnapshotPayloads,
+  clearMvuStarredChat, clearAllMvuStarred, cleanAutoBackupSnapshots, slimAllUnpinnedFullSnapshots,
+} from './store.js';
 import { refreshAllCatalogs, refreshWorldbookCatalog } from './catalog.js';
+import { slimFullSnapshot } from './snapshot.js';
 import { saveInUseToPreset } from './preset-merge.js';
 import { buildWorldbookDiffSession, executeWorldbookStitch } from './worldbook-merge.js';
 import {
@@ -30,7 +36,7 @@ import { getDevLogs, clearDevLogs, formatLogsReport } from './dev-tools.js';
 import {
   ICONS, THEME_OPTIONS, ORB_STYLE_OPTIONS, TEXT_COLOR_PRESETS,
   TOAST_THEME_OPTIONS, NATIVE_TOAST_THEME_OPTIONS, NATIVE_TOAST_POS_OPTIONS,
-  editHistory, readPreviewSnapshot, pushEditSnapshot, updatePreviewHistoryButtons,
+  editHistory, readPreviewSnapshot, pushEditSnapshot, updatePreviewHistoryButtons, formatByteSize,
 } from './ui-views.js';
 import { initWbMergeCustomCtx, renderWbMergeCustomModal } from './merge-ui.js';
 
@@ -1064,6 +1070,164 @@ export function renderManagerModalView(m) {
     return true;
   }
 
+  if (m.type === 'storageManager') {
+    const devLogCount = getDevLogs('ALL').length;
+    const d = getStorageDiagnostics(devLogCount);
+    const ls = d.localStorage;
+    const gv = d.globalVar;
+    const mem = d.memory;
+    const qc = d.quickCounts;
+    const originPct = Math.min(100, Math.round((ls.originTotalBytes / ls.quotaEstimateBytes) * 100));
+    const tdLsPct = Math.min(100, Math.round((ls.tdTotalBytes / ls.quotaEstimateBytes) * 100));
+
+    const payloadRowsHtml = ls.payloadItems.length === 0
+      ? "<div class='td-group-empty'>暂无完整快照载荷数据</div>"
+      : ls.payloadItems.map((it) => `
+          <div class='td-storage-row'>
+            <div style='min-width:0;flex:1;'>
+              <div style='display:flex;align-items:center;gap:5px;flex-wrap:wrap;'>
+                <span style='font-weight:700;font-size:12.5px;word-break:break-word;'>${escapeHtml(it.name)}</span>
+                ${it.orphan ? "<span class='td-mode-tag del'>孤儿</span>" : `<span class='td-src-badge'>${it.kind === 'worldbook' ? '世界书' : '预设'}</span>`}
+                ${it.auto ? "<span class='td-mode-tag single'>自动</span>" : ''}
+                ${it.pinned ? "<span class='td-mode-tag ok'>置顶</span>" : ''}
+              </div>
+              <div style='font-size:11px;color:var(--td-text-muted);margin-top:2px;'>${escapeHtml(it.targetName)} · 占用 ${formatByteSize(it.bytes)}</div>
+            </div>
+            <div style='display:flex;gap:4px;flex-shrink:0;'>
+              ${!it.orphan ? `<button type='button' class='td-btn sm warn' data-action='storage-slim-one' data-snap-id='${escapeHtml(it.id)}'>瘦身</button>` : ''}
+              <button type='button' class='td-btn sm danger' data-action='storage-del-snap' data-snap-id='${escapeHtml(it.id)}' data-orphan='${it.orphan ? '1' : '0'}'>删除</button>
+            </div>
+          </div>`).join('');
+
+    const mvuRowsHtml = gv.mvuItems.length === 0
+      ? "<div style='font-size:11.5px;color:var(--td-text-dim);padding:4px 2px;'>暂无 MVU 加精记录</div>"
+      : gv.mvuItems.map((it) => `
+          <div class='td-storage-row'>
+            <span style='flex:1;min-width:0;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' title='${escapeHtml(it.chatKey)}'>${escapeHtml(it.chatKey)} (${it.count} 项 · ${formatByteSize(it.bytes)})</span>
+            <button type='button' class='td-btn sm danger' data-action='storage-clear-mvu-chat' data-chat-key='${escapeHtml(it.chatKey)}'>清除</button>
+          </div>`).join('');
+
+    modalLayerEl.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>${ICONS.database} 存储空间管理</div>
+          <div style='display:flex;gap:4px;'>
+            <button class='td-icon-btn' data-action='storage-refresh' title='刷新统计'>${ICONS.refresh}</button>
+            <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
+          </div>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-storage-card'>
+            <div class='td-storage-card-head'>
+              <span>脚本持久化总占用：<strong>${formatByteSize(d.grandTotalBytes)}</strong></span>
+              <button type='button' class='td-btn sm primary' data-action='storage-export-backup'>${ICONS.download} 清理前备份</button>
+            </div>
+            <div class='td-storage-desc'>
+              浏览器本地存储总计：${formatByteSize(ls.originTotalBytes)} / ~5MB（本插件占 ${formatByteSize(ls.tdTotalBytes)}，${tdLsPct}%；酒馆与其他扩展占 ${formatByteSize(ls.otherBytes)}）
+            </div>
+            <div class='td-storage-bar' title='源站 localStorage 占用比例 ${originPct}%'>
+              <div class='td-storage-bar-fill is-td' style='width:${tdLsPct}%;'></div>
+              <div class='td-storage-bar-fill is-other' style='width:${Math.max(0, originPct - tdLsPct)}%;'></div>
+            </div>
+            <div style='display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;'>
+              ${qc.orphanCount > 0 ? `<button type='button' class='td-btn sm warn' data-action='storage-clean-orphans'>清理孤儿载荷 (${qc.orphanCount})</button>` : ''}
+              ${qc.missingPayloadCount > 0 ? `<button type='button' class='td-btn sm warn' data-action='storage-repair-missing'>修复缺失载荷索引 (${qc.missingPayloadCount})</button>` : ''}
+              ${qc.autoUnpinnedCount > 0 ? `<button type='button' class='td-btn sm warn' data-action='storage-clean-auto'>清理自动备份 (${qc.autoUnpinnedCount})</button>` : ''}
+              ${qc.fullUnpinnedCount > 0 ? `<button type='button' class='td-btn sm' data-action='storage-slim-all'>全部未置顶快照瘦身 (${qc.fullUnpinnedCount})</button>` : ''}
+            </div>
+          </div>
+
+          <div class='td-storage-card'>
+            <div class='td-storage-card-head'>
+              <span>1. 酒馆全局变量 (${escapeHtml(gv.key)})</span>
+              <span class='td-mode-tag multi'>${formatByteSize(gv.totalBytes)}</span>
+            </div>
+            <div class='td-storage-desc'>保存于酒馆后端全局配置中，会随配置导出同步。</div>
+            <div class='td-storage-sublist'>
+              <div class='td-storage-row'>
+                <span style='flex:1;font-size:12.5px;'>方案与分组配置 (${gv.schemeCount} 个方案)</span>
+                <span class='td-src-badge'>${formatByteSize(gv.schemesBytes)}</span>
+              </div>
+              <div class='td-storage-row'>
+                <span style='flex:1;font-size:12.5px;'>外观与界面设置${gv.hasOrbImage ? `（含悬浮球图标 ${formatByteSize(gv.orbImageBytes)}）` : ''}</span>
+                <span class='td-src-badge'>${formatByteSize(gv.settingsBytes)}</span>
+                ${gv.hasOrbImage ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-orb-img'>清除图标</button>` : ''}
+              </div>
+              <div class='td-storage-row'>
+                <span style='flex:1;font-size:12.5px;'>快照轻量索引元数据 (${gv.snapshotCount} 条)</span>
+                <span class='td-src-badge'>${formatByteSize(gv.snapshotsMetaBytes)}</span>
+              </div>
+              <details class='td-attr-diff-box' ${m.mvuOpen ? 'open' : ''}>
+                <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='mvuOpen'>
+                  <span>MVU 加精记录 (${gv.mvuItems.length} 个聊天 · ${formatByteSize(gv.mvuBytes)})</span>
+                  ${gv.mvuItems.length > 0 ? `<button type='button' class='td-btn sm danger' onclick='event.stopPropagation()' data-action='storage-clear-mvu-all'>清空全部</button>` : ''}
+                </summary>
+                <div class='td-storage-sublist' style='padding:6px;border-top:1px solid var(--td-border);'>${mvuRowsHtml}</div>
+              </details>
+            </div>
+          </div>
+
+          <div class='td-storage-card'>
+            <div class='td-storage-card-head'>
+              <span>2. 浏览器本地存储 (localStorage)</span>
+              <span class='td-mode-tag single'>${formatByteSize(ls.tdTotalBytes)}</span>
+            </div>
+            <div class='td-storage-desc'>仅存当前浏览器本地，不拖慢酒馆全局变量读写。</div>
+            <div class='td-storage-sublist'>
+              <details class='td-attr-diff-box' ${m.payloadsOpen !== false ? 'open' : ''}>
+                <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='payloadsOpen'>
+                  <span>完整快照载荷 (${ls.payloadItems.length} 项 · ${formatByteSize(ls.payloadsTotalBytes)})</span>
+                </summary>
+                <div class='td-storage-sublist' style='padding:6px;max-height:220px;overflow-y:auto;border-top:1px solid var(--td-border);'>${payloadRowsHtml}</div>
+              </details>
+
+              <div class='td-storage-row'>
+                <div style='flex:1;min-width:0;'>
+                  <div style='font-size:12.5px;font-weight:700;'>对比缝合草稿 (${formatByteSize(ls.draftsTotalBytes)})</div>
+                  <div style='font-size:11px;color:var(--td-text-muted);'>
+                    ${ls.presetDraft ? `预设: ${escapeHtml(ls.presetDraft.title)} (${formatByteSize(ls.presetDraft.bytes)})` : '无预设草稿'}
+                    ·
+                    ${ls.wbDraft ? `世界书: ${escapeHtml(ls.wbDraft.title)} (${formatByteSize(ls.wbDraft.bytes)})` : '无世界书草稿'}
+                  </div>
+                </div>
+                <div style='display:flex;gap:4px;flex-shrink:0;'>
+                  ${ls.presetDraft ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-draft' data-kind='preset'>清预设</button>` : ''}
+                  ${ls.wbDraft ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-draft' data-kind='worldbook'>清世界书</button>` : ''}
+                  ${ls.draftsTotalBytes > 0 ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-all-drafts'>全清</button>` : ''}
+                </div>
+              </div>
+
+              <div class='td-storage-row'>
+                <span style='flex:1;font-size:12px;color:var(--td-text-muted);'>同源其他数据（酒馆与其他插件 ${ls.otherKeyCount} 项）</span>
+                <span class='td-src-badge'>${formatByteSize(ls.otherBytes)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class='td-storage-card'>
+            <div class='td-storage-card-head'>
+              <span>3. 运行时内存缓存 (Memory)</span>
+              <span class='td-mode-tag ok'>临时</span>
+            </div>
+            <div class='td-storage-sublist'>
+              <div class='td-storage-row'>
+                <span style='flex:1;font-size:12.5px;'>运行日志缓冲区 (${mem.devLogCount} / 200 条)</span>
+                <button type='button' class='td-btn sm' data-action='open-logs'>查看</button>
+                <button type='button' class='td-btn sm danger' data-action='storage-clear-logs'>清空</button>
+              </div>
+              <div class='td-storage-row'>
+                <span style='flex:1;font-size:12.5px;'>AI 拉取的模型列表缓存 (${mem.aiCacheEndpoints} 个接口 · ${formatByteSize(mem.aiCacheBytes)})</span>
+                <button type='button' class='td-btn sm danger' data-action='storage-clear-ai-cache' ${mem.aiCacheEndpoints === 0 ? 'disabled' : ''}>清空</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class='td-modal-foot'><button class='td-btn primary' data-action='close-modal'>关闭</button></div>
+      </div>`;
+    ctx.syncOverlayBounds();
+    return true;
+  }
+
   if (m.type === 'logs') {
     const levelFilter = m.filter || 'ALL';
     const allLogs = getDevLogs('ALL');
@@ -1360,6 +1524,7 @@ export function renderManagerModalView(m) {
               <button class='td-chip ${filter === 'char' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='char'>当前角色 (${(snap.charPrimary ? 1 : 0) + snap.charAdditional.length})</button>
               <button class='td-chip ${filter === 'chat' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='chat'>当前聊天 (${snap.chatBook ? 1 : 0})</button>
             </div>
+            <button class='td-btn sm' data-action='wbm-open-snapshots'>${ICONS.camera} 世界书快照</button>
             <button class='td-btn sm' data-action='wbm-create-chat'>${ICONS.link} 新建/绑定聊天世界书</button>
             <button class='td-btn sm' data-action='wbm-trigger-import'>${ICONS.upload} 导入 (.json)</button>
             <input type='file' id='td-wbm-import-file' accept='.json,application/json' style='display:none;' />
@@ -1415,7 +1580,7 @@ export function renderManagerModalView(m) {
       <div class='td-modal td-modal-tall'>
         <div class='td-modal-head'>
           <div class='td-modal-title'>世界书条目 · ${escapeHtml(m.bookName)} (${entries.length})</div>
-          <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='wbd-back-list'>返回</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='wbd-open-snapshots'>${ICONS.camera} 快照</button><button class='td-btn sm' data-action='wbd-back-list'>返回</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         </div>
         <div class='td-modal-body td-picker-body'>
           <div class='td-mgr-topbar'>
@@ -2498,6 +2663,156 @@ export function handleManagerClick(e, actionEl, action) {
     }).catch((err) => { logError('写回 AI MVU 更新失败', err); notify('error', err.message || String(err)); });
     return true;
   }
+  if (action === 'open-storage-manager') {
+    state.modal = { type: 'storageManager', payloadsOpen: true, mvuOpen: false };
+    ctx.renderModal();
+    return true;
+  }
+  if (action === 'storage-refresh' && state.modal?.type === 'storageManager') { ctx.renderModal(); return true; }
+  if (action === 'storage-toggle-sec' && state.modal?.type === 'storageManager') {
+    const sec = actionEl.getAttribute('data-sec');
+    if (sec === 'payloadsOpen') state.modal.payloadsOpen = state.modal.payloadsOpen === false;
+    else if (sec === 'mvuOpen') state.modal.mvuOpen = !state.modal.mvuOpen;
+    return true;
+  }
+  if (action === 'storage-export-backup') {
+    downloadJsonFile(exportStoreData({ includeAll: true }), `TavernDeck-全量备份-${new Date().toISOString().slice(0, 10)}.json`);
+    notify('success', '已导出全量配置与快照备份');
+    return true;
+  }
+  if (action === 'storage-clear-orb-img') {
+    ctx.openConfirm({
+      title: '清除悬浮球图标确认',
+      message: '确定要清除已上传的自定义悬浮球图标并恢复默认图标吗？',
+      confirmText: '确认清除',
+      onConfirm: () => {
+        state.store.settings.orbImage = '';
+        saveStore(state.store);
+        ctx.renderOrb();
+        ctx.renderModal();
+        notify('info', '已清除自定义悬浮球图标');
+      },
+    });
+    return true;
+  }
+  if (action === 'storage-clear-mvu-chat') {
+    const chatKey = actionEl.getAttribute('data-chat-key');
+    if (chatKey && clearMvuStarredChat(chatKey)) {
+      ctx.renderModal();
+      notify('info', '已清除该聊天的 MVU 加精记录');
+    }
+    return true;
+  }
+  if (action === 'storage-clear-mvu-all') {
+    ctx.openConfirm({
+      title: '清空 MVU 加精记录确认',
+      message: '确定要清空所有角色与聊天的 MVU 变量加精记录吗？',
+      confirmText: '确认清空',
+      onConfirm: () => {
+        const cnt = clearAllMvuStarred();
+        ctx.renderModal();
+        notify('info', `已清空 ${cnt} 个聊天的 MVU 加精记录`);
+      },
+    });
+    return true;
+  }
+  if (action === 'storage-clean-orphans') {
+    const cnt = cleanOrphanSnapshotPayloads();
+    ctx.renderModal();
+    notify('success', cnt > 0 ? `已清理 ${cnt} 条孤儿快照载荷` : '没有需要清理的孤儿载荷');
+    return true;
+  }
+  if (action === 'storage-repair-missing') {
+    const cnt = repairMissingSnapshotPayloads();
+    ctx.renderModal();
+    notify('success', cnt > 0 ? `已修复 ${cnt} 条缺失载荷的快照索引` : '无需修复');
+    return true;
+  }
+  if (action === 'storage-clean-auto') {
+    ctx.openConfirm({
+      title: '清理自动备份确认',
+      message: '确定要删除所有未置顶的自动备份快照吗？（手动创建的快照和已置顶快照不受影响）',
+      confirmText: '确认清理',
+      onConfirm: () => {
+        const cnt = cleanAutoBackupSnapshots();
+        ctx.renderMain();
+        ctx.renderModal();
+        notify('success', `已清理 ${cnt} 条自动备份快照`);
+      },
+    });
+    return true;
+  }
+  if (action === 'storage-slim-all') {
+    ctx.openConfirm({
+      title: '批量快照瘦身确认',
+      message: '确定要将所有未置顶的完整快照转为轻量开关快照吗？将释放本地浏览器存储空间，保留条目开关状态但不再保留正文与参数备份。',
+      confirmText: '确认全部瘦身',
+      confirmClass: 'warn',
+      onConfirm: () => {
+        const cnt = slimAllUnpinnedFullSnapshots();
+        ctx.renderModal();
+        notify('success', `已瘦身 ${cnt} 条完整快照`);
+      },
+    });
+    return true;
+  }
+  if (action === 'storage-slim-one') {
+    const sid = actionEl.getAttribute('data-snap-id');
+    if (sid && slimFullSnapshot(sid)) {
+      ctx.renderModal();
+      notify('success', '已将该快照瘦身为开关快照');
+    }
+    return true;
+  }
+  if (action === 'storage-del-snap') {
+    const sid = actionEl.getAttribute('data-snap-id');
+    const isOrphan = actionEl.getAttribute('data-orphan') === '1';
+    if (!sid) return true;
+    ctx.openConfirm({
+      title: '删除快照存储确认',
+      message: isOrphan ? '确定要删除这条未关联的孤儿载荷吗？' : '确定要永久删除该快照及其完整数据吗？',
+      confirmText: '确认删除',
+      onConfirm: () => {
+        deleteSnapshotPayload(sid);
+        if (!isOrphan) {
+          state.store.snapshots = (state.store.snapshots || []).filter((s) => s.id !== sid);
+          if (state.lastUndoSnapshotId === sid) state.lastUndoSnapshotId = null;
+          saveStore(state.store);
+          ctx.renderMain();
+        }
+        ctx.renderModal();
+        notify('info', '已删除快照数据');
+      },
+    });
+    return true;
+  }
+  if (action === 'storage-clear-draft') {
+    const kind = actionEl.getAttribute('data-kind');
+    if (kind === 'preset' || kind === 'worldbook') {
+      clearMergeDraft(kind);
+      ctx.renderModal();
+      notify('info', `已清除${kind === 'preset' ? '预设' : '世界书'}缝合草稿`);
+    }
+    return true;
+  }
+  if (action === 'storage-clear-all-drafts') {
+    clearAllMergeDrafts();
+    ctx.renderModal();
+    notify('info', '已清除全部对比缝合草稿');
+    return true;
+  }
+  if (action === 'storage-clear-logs') {
+    clearDevLogs();
+    ctx.renderModal();
+    notify('info', '运行日志已清空');
+    return true;
+  }
+  if (action === 'storage-clear-ai-cache') {
+    state._aiModelsCache = {};
+    ctx.renderModal();
+    notify('info', '已清空 AI 模型列表内存缓存');
+    return true;
+  }
   if (action === 'open-logs') { state.modal = { type: 'logs', filter: 'ALL' }; ctx.renderModal(); return true; }
   if (action === 'logs-set-filter' && state.modal?.type === 'logs') { state.modal.filter = actionEl.getAttribute('data-filter') || 'ALL'; ctx.renderModal(); return true; }
   if (action === 'logs-refresh' && state.modal?.type === 'logs') { ctx.renderModal(); return true; }
@@ -3059,6 +3374,28 @@ export function handleManagerClick(e, actionEl, action) {
     }
   }
 
+  if (action === 'wbm-open-snapshots' || action === 'wbd-open-snapshots') {
+    const targetBook = action === 'wbd-open-snapshots' && state.modal?.type === 'worldbookDetail'
+      ? state.modal.bookName
+      : '';
+    const openSnaps = () => {
+      state.modal = {
+        type: 'snapshots',
+        kind: 'worldbook',
+        targetBook,
+        createMode: 'state',
+        filter: targetBook ? 'current' : 'all',
+        search: '',
+        draftName: '',
+        draftNote: '',
+        createOpen: false,
+      };
+      ctx.renderModal();
+    };
+    if (action === 'wbd-open-snapshots') confirmDiscardDirtyModal(openSnaps);
+    else openSnaps();
+    return true;
+  }
   if (action === 'open-worldbook-manager') { state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
   if (action === 'wbm-toggle-tools' && state.modal?.type === 'worldbookManager') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
   if (action === 'wbm-set-filter' && state.modal?.type === 'worldbookManager') { state.modal.filter = actionEl.getAttribute('data-filter') || 'all'; ctx.renderModal(); return true; }

@@ -1,4 +1,5 @@
 import { callTH, hasTH, notify, findBestMatchingName, computeLineDiff, logWarn } from './utils.js';
+import { createAutoBackupSnapshot } from './snapshot.js';
 
 export { computeLineDiff };
 export const findBestMatchingOldPreset = findBestMatchingName;
@@ -181,6 +182,7 @@ export async function executePresetStitch(session, targetMode, customTargetName)
   }
 
   const saveTarget = session.newName;
+  await createAutoBackupSnapshot('preset', saveTarget || 'in_use', '缝合覆盖前');
   if (saveTarget && saveTarget !== 'in_use') {
     await callTH('replacePreset', saveTarget, base, { render: 'debounced' });
     if (callTH('getLoadedPresetName') === saveTarget) {

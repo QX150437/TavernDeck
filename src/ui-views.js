@@ -1,9 +1,10 @@
 import {
   APP_NAME, APP_CN, APP_VERSION, STORAGE_KEY, SCHEMA_VERSION, TYPE_LABELS,
-  escapeHtml, formatTime, makeItemKey,
+  escapeHtml, formatTime, makeItemKey, hasTH, callTH,
 } from './utils.js';
 import {
   state, ensureSchemesPool, getBoundSchemeIds, getActiveScheme, findGroupNode,
+  getSnapshotPayload, getSnapshotPayloadSizeBytes,
 } from './store.js';
 import { computeSnapshotDiff } from './snapshot.js';
 import { computeLineDiff, findBestMatchingOldPreset } from './preset-merge.js';
@@ -44,6 +45,7 @@ export const ICONS = {
   grip: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round'><path d='M21 13l-8 8M21 18l-3 3'/></svg>",
   gripDots: "<svg viewBox='0 0 24 24' fill='currentColor'><circle cx='9' cy='6' r='1.7'/><circle cx='15' cy='6' r='1.7'/><circle cx='9' cy='12' r='1.7'/><circle cx='15' cy='12' r='1.7'/><circle cx='9' cy='18' r='1.7'/><circle cx='15' cy='18' r='1.7'/></svg>",
   save: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z'/><polyline points='17 21 17 13 7 13 7 21'/><polyline points='7 3 7 8 15 8'/></svg>",
+  database: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><ellipse cx='12' cy='5' rx='9' ry='3'/><path d='M21 12c0 1.66-4 3-9 3s-9-1.34-9-3'/><path d='M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5'/></svg>",
 };
 
 const SOURCE_LABELS = { preset: '预设条目', worldbook: '世界书', script: '酒馆脚本', regex: '正则条目' };
@@ -434,50 +436,104 @@ export function updatePickerList() {
   if (selectedChipEl) selectedChipEl.textContent = `已勾选 (${selectedMap.size})`;
 }
 
+export function formatByteSize(bytes) {
+  if (!bytes || bytes <= 0) return '0B';
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)}MB`;
+}
+
 export function updateSnapshotList() {
   const modalLayerEl = uiCtx.getModalLayer();
   if (!modalLayerEl || !state.modal || state.modal.type !== 'snapshots') return;
   const listEl = modalLayerEl.querySelector("[data-role='snapshot-list']");
   if (!listEl) return;
-  const filter = state.modal.filter || 'current';
-  const snaps = (state.store.snapshots || [])
-    .filter((s) => (filter === 'current' ? s.presetName === state.presetName : true))
-    .slice()
-    .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
 
-  modalLayerEl.querySelectorAll("[data-action='set-snapshot-filter']").forEach((chip) => chip.classList.toggle('active', chip.getAttribute('data-filter') === filter));
+  const m = state.modal;
+  const kind = m.kind === 'worldbook' ? 'worldbook' : 'preset';
+  const filter = m.filter || 'current';
+  const q = (m.search || '').trim().toLowerCase();
+  const targetFilterName = kind === 'worldbook' ? (m.targetBook || '') : (state.presetName || '');
+
+  const allByKind = (state.store.snapshots || []).filter((s) => (s.kind || 'preset') === kind);
+  const snaps = allByKind
+    .filter((s) => {
+      const tName = s.targetName || s.presetName || '';
+      if (filter === 'current' && targetFilterName && tName !== targetFilterName) return false;
+      if (filter === 'manual' && s.auto) return false;
+      if (filter === 'auto' && !s.auto) return false;
+      if (!q) return true;
+      return (s.name || '').toLowerCase().includes(q)
+        || (s.note || '').toLowerCase().includes(q)
+        || tName.toLowerCase().includes(q);
+    })
+    .slice()
+    .sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+    });
+
+  modalLayerEl.querySelectorAll("[data-action='set-snapshot-filter']").forEach((chip) => {
+    chip.classList.toggle('active', chip.getAttribute('data-filter') === filter);
+  });
 
   if (snaps.length === 0) {
-    listEl.innerHTML = `<div class='td-group-empty'>${filter === 'current' ? '当前预设暂无快照，点击上方按钮即可创建' : '暂无任何快照'}</div>`;
+    listEl.innerHTML = `<div class='td-group-empty'>${filter === 'current' ? `当前${kind === 'worldbook' ? '世界书' : '预设'}暂无快照，点击上方按钮即可创建` : '暂无匹配的快照'}</div>`;
     return;
   }
 
+  const compareBaseId = m.compareBaseId || null;
+
   listEl.innerHTML = snaps.map((s) => {
     const isFull = s.mode === 'full';
+    const hasPayload = isFull && !!getSnapshotPayload(s.id);
+    const rawSize = isFull ? getSnapshotPayloadSizeBytes(s) : 0;
+    const sizeText = rawSize > 0 ? formatByteSize(rawSize) : '';
     const diffs = computeSnapshotDiff(s);
-    const extLen = (s.externalStates || []).length;
-    const diffTag = diffs.length === 0 ? "<span class='td-mode-tag ok'>与当前一致</span>" : `<span class='td-mode-tag single'>差异 ${diffs.length} 项</span>`;
+    const tName = s.targetName || s.presetName || '未知';
+    const sameTarget = !targetFilterName || tName === targetFilterName;
+    const diffTag = !sameTarget
+      ? "<span class='td-src-badge'>跨目标</span>"
+      : (diffs.length === 0
+        ? "<span class='td-mode-tag ok'>开关一致</span>"
+        : `<span class='td-mode-tag single'>开关差异 ${diffs.length}</span>`);
+    const isExpanded = m.expandedCardId === s.id;
+    const isCompareBase = compareBaseId === s.id;
+    const canCompare = compareBaseId && !isCompareBase;
+
     return `
-      <div class='td-snap-card'>
+      <div class='td-snap-card ${s.pinned ? 'is-pinned' : ''} ${isCompareBase ? 'is-compare-base' : ''}'>
         <div class='td-snap-head'>
           <div style='min-width:0;flex:1;'>
-            <div class='td-snap-title'>${escapeHtml(s.name)}</div>
+            <div class='td-snap-title'>${s.pinned ? '★ ' : ''}${escapeHtml(s.name)}</div>
+            ${s.note ? `<div class='td-snap-note'>${escapeHtml(s.note)}</div>` : ''}
             <div class='td-snap-meta'>
-              <span class='td-mode-tag ${isFull ? 'single' : 'multi'}'>${isFull ? '完整快照' : '开关快照'}</span>
+              ${s.auto ? "<span class='td-mode-tag single'>自动备份</span>" : ''}
+              <span class='td-mode-tag ${isFull ? 'single' : 'multi'}'>${isFull ? (hasPayload ? '完整快照' : '完整(载荷缺失)') : '开关快照'}${sizeText ? ` · ${sizeText}` : ''}</span>
               ${diffTag}
-              <span>预设: ${escapeHtml(s.presetName || '未知')}</span>
-              <span>启用 ${s.stats ? s.stats.enabledCount : 0}/${s.stats ? s.stats.totalCount : 0}${extLen > 0 ? ` + 外部${extLen}` : ''}</span>
+              <span>${kind === 'worldbook' ? '世界书' : '预设'}: ${escapeHtml(tName)}</span>
+              <span>启用 ${s.stats ? s.stats.enabledCount : 0}/${s.stats ? s.stats.totalCount : 0}</span>
               <span>${escapeHtml(formatTime(s.updatedAt || s.createdAt))}</span>
             </div>
           </div>
         </div>
         <div class='td-snap-actions'>
-          <button class='td-btn primary' data-action='apply-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.check} 恢复快照</button>
-          <button class='td-btn' data-action='view-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.eye} 差异</button>
-          <button class='td-btn' data-action='overwrite-snapshot' data-snap-id='${escapeHtml(s.id)}'>更新</button>
-          <button class='td-icon-btn' data-action='rename-snapshot' data-snap-id='${escapeHtml(s.id)}' title='重命名'>${ICONS.edit}</button>
-          <button class='td-icon-btn danger' data-action='delete-snapshot' data-snap-id='${escapeHtml(s.id)}' title='删除快照'>${ICONS.trash}</button>
+          <button class='td-btn sm primary' data-action='apply-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.check} 恢复</button>
+          <button class='td-btn sm' data-action='view-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.eye} 差异/局部</button>
+          ${canCompare
+            ? `<button class='td-btn sm warn' data-action='compare-snapshot-with' data-snap-id='${escapeHtml(s.id)}'>与它对比</button>`
+            : `<button class='td-btn sm ${isCompareBase ? 'warn' : ''}' data-action='compare-snapshot-pick' data-snap-id='${escapeHtml(s.id)}'>${isCompareBase ? '待选对比...' : '对比'}</button>`}
+          <button class='td-icon-btn ${isExpanded ? 'is-active' : ''}' data-action='toggle-snap-card-menu' data-snap-id='${escapeHtml(s.id)}' title='更多操作'>${ICONS.more}</button>
         </div>
+        ${isExpanded ? `
+          <div class='td-snap-extra-actions'>
+            <button class='td-btn sm' data-action='pin-snapshot' data-snap-id='${escapeHtml(s.id)}'>${s.pinned ? '取消置顶' : '置顶'}</button>
+            <button class='td-btn sm' data-action='overwrite-snapshot' data-snap-id='${escapeHtml(s.id)}'>更新覆盖</button>
+            <button class='td-btn sm' data-action='rename-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.edit} 名称/备注</button>
+            <button class='td-btn sm' data-action='export-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.download} 导出</button>
+            ${isFull ? `<button class='td-btn sm warn' data-action='slim-snapshot' data-snap-id='${escapeHtml(s.id)}' title='去除正文与参数载荷，转为轻量开关快照以节省空间'>瘦身</button>` : ''}
+            <button class='td-btn sm danger' data-action='delete-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.trash} 删除</button>
+          </div>` : ''}
       </div>`;
   }).join('');
 }
@@ -577,11 +633,14 @@ export function renderConfirmModal() {
   const extraHtml = c.extraButton
     ? `<button class='td-btn ${escapeHtml(c.extraButton.className || 'warn')}' data-action='confirm-extra'>${escapeHtml(c.extraButton.text)}</button>`
     : '';
+  const extrasHtml = Array.isArray(c.extraButtons)
+    ? c.extraButtons.map((btn, idx) => `<button class='td-btn ${escapeHtml(btn.className || 'warn')}' data-action='confirm-extra-idx' data-idx='${idx}'>${escapeHtml(btn.text)}</button>`).join('')
+    : '';
   confirmLayerEl.innerHTML = `
     <div class='td-modal td-modal-sm'>
       <div class='td-modal-head'><div class='td-modal-title'>${escapeHtml(c.title || '确认操作')}</div><button class='td-icon-btn' data-action='confirm-cancel'>${ICONS.close}</button></div>
-      <div class='td-modal-body'><div style='font-size:14px;color:var(--td-text);line-height:1.6;'>${escapeHtml(c.message || '确定要执行此操作吗？')}</div></div>
-      <div class='td-modal-foot'><button class='td-btn' data-action='confirm-cancel'>取消</button>${extraHtml}<button class='td-btn ${escapeHtml(c.confirmClass || 'danger')}' data-action='confirm-ok'>${escapeHtml(c.confirmText || '确认')}</button></div>
+      <div class='td-modal-body'><div style='font-size:14px;color:var(--td-text);line-height:1.6;white-space:pre-line;'>${escapeHtml(c.message || '确定要执行此操作吗？')}</div></div>
+      <div class='td-modal-foot'><button class='td-btn' data-action='confirm-cancel'>取消</button>${extraHtml}${extrasHtml}<button class='td-btn ${escapeHtml(c.confirmClass || 'danger')}' data-action='confirm-ok'>${escapeHtml(c.confirmText || '确认')}</button></div>
     </div>`;
   uiCtx.syncOverlayBounds();
 }
@@ -708,19 +767,97 @@ export function renderModal() {
   }
 
   if (m.type === 'snapshots') {
+    const kind = m.kind === 'worldbook' ? 'worldbook' : 'preset';
     const mode = m.createMode || 'state';
+    const allSnaps = state.store.snapshots || [];
+    const presetSnaps = allSnaps.filter((s) => (s.kind || 'preset') === 'preset');
+    const wbSnaps = allSnaps.filter((s) => s.kind === 'worldbook');
+
+    const allBooks = hasTH('getWorldbookNames') ? (callTH('getWorldbookNames') || []) : [];
+    if (kind === 'worldbook' && (!m.targetBook || !allBooks.includes(m.targetBook))) {
+      m.targetBook = (state.catalog.worldbook?.groups?.[0]?.bookName) || allBooks[0] || '';
+    }
+    const targetName = kind === 'worldbook' ? (m.targetBook || '') : (state.presetName || '');
+    const curKindSnaps = kind === 'worldbook' ? wbSnaps : presetSnaps;
+    const latestForTarget = curKindSnaps
+      .filter((s) => (s.targetName || s.presetName) === targetName)
+      .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))[0];
+    const latestDiffs = latestForTarget ? computeSnapshotDiff(latestForTarget) : null;
+
+    const undoSnap = state.lastUndoSnapshotId ? allSnaps.find((s) => s.id === state.lastUndoSnapshotId) : null;
+    const undoBannerHtml = undoSnap ? `
+      <div class='td-undo-banner'>
+        <span style='flex:1;min-width:150px;'>已留存恢复前备份：${escapeHtml(undoSnap.name)}</span>
+        <button type='button' class='td-btn sm warn' data-action='undo-last-restore'>${ICONS.undo} 一键撤回上次恢复</button>
+      </div>` : '';
+
+    const compareBase = m.compareBaseId ? allSnaps.find((s) => s.id === m.compareBaseId) : null;
+    const compareBannerHtml = compareBase ? `
+      <div class='td-compare-banner'>
+        <span style='flex:1;min-width:150px;'>已选对比基准「${escapeHtml(compareBase.name)}」，请点击另一条快照上的「与它对比」</span>
+        <button type='button' class='td-btn sm' data-action='cancel-snap-compare'>取消对比</button>
+      </div>` : '';
+
+    const statusHint = latestForTarget
+      ? (latestDiffs.length === 0
+        ? `当前「${targetName}」与最近快照「${latestForTarget.name}」开关一致`
+        : `当前「${targetName}」与最近快照相比有 ${latestDiffs.length} 项开关变动`)
+      : '';
+
+    const wbOptsHtml = allBooks.length > 0
+      ? allBooks.map((b) => `<option value='${escapeHtml(b)}' ${b === m.targetBook ? 'selected' : ''}>${escapeHtml(b)}</option>`).join('')
+      : `<option value=''>（暂无世界书）</option>`;
+
+    const createOpen = !!m.createOpen;
+
     modalLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'><div class='td-modal-title'>预设快照管理</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
-        <div class='td-modal-body'>
-          <div class='td-field' style='padding:11px;border-radius:13px;background:var(--td-surface);border:1px solid var(--td-border-strong);'>
-            <label class='td-label'>保存当前状态为新快照（当前预设：${escapeHtml(state.presetName)}）</label>
-            <input class='td-input' id='td-snap-name-input' type='text' placeholder='输入快照名称（留空自动生成）' value='${escapeHtml(m.draftName || '')}' />
-            <div class='td-seg-grid'><button type='button' class='td-seg-card ${mode === 'state' ? 'active' : ''}' data-action='set-snap-mode' data-mode='state'><div class='td-seg-title'>开关状态快照</div><div class='td-seg-desc'>轻量，记录预设及关联条目的开关，可跨版本应用</div></button><button type='button' class='td-seg-card single-card ${mode === 'full' ? 'active' : ''}' data-action='set-snap-mode' data-mode='full'><div class='td-seg-title'>完整预设快照</div><div class='td-seg-desc'>同时完整备份提示词正文与生成参数</div></button></div>
-            <button class='td-btn primary' data-action='create-snapshot' style='width:100%;margin-top:2px;'>${ICONS.camera} 保存为新快照</button>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>${ICONS.camera} 快照中心</div>
+          <div style='display:flex;gap:4px;align-items:center;'>
+            <button type='button' class='td-btn sm ${createOpen ? 'primary' : ''}' data-action='toggle-snap-create-box'>${createOpen ? '收起新建' : `${ICONS.plus} 新建快照`}</button>
+            <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
           </div>
-          <div class='td-filter-bar'><button class='td-chip' data-action='set-snapshot-filter' data-filter='current'>当前预设快照</button><button class='td-chip' data-action='set-snapshot-filter' data-filter='all'>全部快照 (${(state.store.snapshots || []).length})</button></div>
-          <div data-role='snapshot-list' style='display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;'></div>
+        </div>
+        <div class='td-modal-body td-picker-body'>
+          <div class='td-source-tabs' style='grid-template-columns:1fr 1fr;'>
+            <button type='button' class='td-source-tab ${kind === 'preset' ? 'active' : ''}' data-action='set-snap-kind' data-kind='preset'>预设快照 (${presetSnaps.length})</button>
+            <button type='button' class='td-source-tab ${kind === 'worldbook' ? 'active' : ''}' data-action='set-snap-kind' data-kind='worldbook'>世界书快照 (${wbSnaps.length})</button>
+          </div>
+          ${undoBannerHtml}
+          ${compareBannerHtml}
+          ${createOpen ? `
+            <div class='td-field' style='padding:10px;border-radius:13px;background:var(--td-surface);border:1px solid var(--td-border-strong);flex-shrink:0;'>
+              ${kind === 'worldbook'
+                ? `<div style='display:flex;align-items:center;gap:6px;'><span class='td-bar-label' style='width:auto;'>目标世界书</span><select class='td-select' id='td-snap-wb-select'>${wbOptsHtml}</select></div>`
+                : `<label class='td-label'>当前预设：${escapeHtml(state.presetName || '未知')}</label>`}
+              <div style='display:grid;grid-template-columns:1.1fr 1fr;gap:6px;'>
+                <input class='td-input' id='td-snap-name-input' type='text' placeholder='快照名称（留空自动生成）' value='${escapeHtml(m.draftName || '')}' style='height:34px;font-size:13.5px;' />
+                <input class='td-input' id='td-snap-note-input' type='text' placeholder='备注说明（可选）' value='${escapeHtml(m.draftNote || '')}' style='height:34px;font-size:13.5px;' />
+              </div>
+              <div class='td-seg-grid'>
+                <button type='button' class='td-seg-card ${mode === 'state' ? 'active' : ''}' data-action='set-snap-mode' data-mode='state' style='padding:7px 10px;'>
+                  <div class='td-seg-title' style='font-size:12.5px;'>开关状态快照</div>
+                  <div class='td-seg-desc'>极轻量，记录条目启用状态</div>
+                </button>
+                <button type='button' class='td-seg-card single-card ${mode === 'full' ? 'active' : ''}' data-action='set-snap-mode' data-mode='full' style='padding:7px 10px;'>
+                  <div class='td-seg-title' style='font-size:12.5px;'>${kind === 'worldbook' ? '完整世界书快照' : '完整预设快照'}</div>
+                  <div class='td-seg-desc'>${kind === 'worldbook' ? '含全部条目正文、关键词与策略' : '含全部提示词正文与生成参数'}</div>
+                </button>
+              </div>
+              <button class='td-btn primary' data-action='create-snapshot' style='width:100%;'>${ICONS.camera} 保存为新${kind === 'worldbook' ? '世界书' : '预设'}快照</button>
+            </div>` : ''}
+          ${statusHint ? `<div style='font-size:11.5px;color:var(--td-text-muted);padding:0 2px;flex-shrink:0;'>${escapeHtml(statusHint)}</div>` : ''}
+          <div class='td-mgr-topbar'>
+            <input class='td-input' id='td-snap-search-input' type='text' placeholder='搜索快照名称、备注或来源...' value='${escapeHtml(m.search || '')}' />
+          </div>
+          <div class='td-filter-bar'>
+            <button class='td-chip' data-action='set-snapshot-filter' data-filter='current'>${kind === 'worldbook' ? '所选世界书' : '当前预设'}</button>
+            <button class='td-chip' data-action='set-snapshot-filter' data-filter='all'>全部 (${curKindSnaps.length})</button>
+            <button class='td-chip' data-action='set-snapshot-filter' data-filter='manual'>仅手动 (${curKindSnaps.filter((s) => !s.auto).length})</button>
+            <button class='td-chip' data-action='set-snapshot-filter' data-filter='auto'>自动备份 (${curKindSnaps.filter((s) => s.auto).length})</button>
+          </div>
+          <div data-role='snapshot-list' class='td-picker-list td-scroll'></div>
         </div>
         <div class='td-modal-foot'><button class='td-btn primary' data-action='close-modal'>完成</button></div>
       </div>`;
@@ -728,7 +865,15 @@ export function renderModal() {
   }
 
   if (m.type === 'snapshotRename') {
-    modalLayerEl.innerHTML = `<div class='td-modal td-modal-sm'><div class='td-modal-head'><div class='td-modal-title'>重命名快照</div><button class='td-icon-btn' data-action='back-to-snapshots'>${ICONS.close}</button></div><div class='td-modal-body'><div class='td-field'><label class='td-label'>快照名称</label><input class='td-input' id='td-snap-rename-input' type='text' value='${escapeHtml(m.name || '')}' /></div></div><div class='td-modal-foot'><button class='td-btn' data-action='back-to-snapshots'>取消</button><button class='td-btn primary' data-action='submit-snap-rename'>保存</button></div></div>`;
+    modalLayerEl.innerHTML = `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'><div class='td-modal-title'>编辑快照信息</div><button class='td-icon-btn' data-action='back-to-snapshots'>${ICONS.close}</button></div>
+        <div class='td-modal-body'>
+          <div class='td-field'><label class='td-label'>快照名称</label><input class='td-input' id='td-snap-rename-input' type='text' value='${escapeHtml(m.name || '')}' /></div>
+          <div class='td-field'><label class='td-label'>备注说明</label><input class='td-input' id='td-snap-rename-note-input' type='text' placeholder='输入版本特点或修改摘要（可选）' value='${escapeHtml(m.note || '')}' /></div>
+        </div>
+        <div class='td-modal-foot'><button class='td-btn' data-action='back-to-snapshots'>取消</button><button class='td-btn primary' data-action='submit-snap-rename'>保存</button></div>
+      </div>`;
     uiCtx.syncOverlayBounds(); return;
   }
 
@@ -1124,13 +1269,123 @@ export function renderPreviewModal() {
     return;
   }
 
-  if (state.snapshotDetailId) {
+  if (state.snapshotDetailId && state.snapshotDetailCtx) {
+    const dctx = state.snapshotDetailCtx;
     const snap = (state.store.snapshots || []).find((s) => s.id === state.snapshotDetailId);
-    if (!snap) { state.snapshotDetailId = null; previewLayerEl.classList.remove('is-open'); previewLayerEl.innerHTML = ''; return; }
-    const diffs = computeSnapshotDiff(snap);
-    const diffHtml = diffs.length === 0 ? "<div class='td-group-empty'>该快照的开关状态与当前环境完全一致</div>" : diffs.map((d) => `<div class='td-diff-row'><span style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;'>${escapeHtml(d.name)}</span><span class='td-mode-tag ${d.to ? 'ok' : 'single'}'>${d.from ? '开' : '关'} → ${d.to ? '开' : '关'}</span></div>`).join('');
+    const diff = dctx.diff;
+    if (!snap || !diff) {
+      state.snapshotDetailId = null;
+      state.snapshotDetailCtx = null;
+      previewLayerEl.classList.remove('is-open');
+      previewLayerEl.innerHTML = '';
+      return;
+    }
+
+    const baseSnap = dctx.compareBaseId ? (state.store.snapshots || []).find((s) => s.id === dctx.compareBaseId) : null;
+    const isCompare = !!baseSnap;
+    const sel = dctx.selectedDiffIds instanceof Set ? dctx.selectedDiffIds : (dctx.selectedDiffIds = new Set());
+    const expSet = dctx.expandedContentIds instanceof Set ? dctx.expandedContentIds : (dctx.expandedContentIds = new Set());
+    const tName = snap.targetName || snap.presetName || '未知';
+    const isFull = snap.mode === 'full' && diff.hasFullPayload;
+
+    const renderSection = (title, itemsHtml, count) => count > 0
+      ? `<div class='td-diff-sec'><div class='td-diff-sec-head'>${escapeHtml(title)} (${count})</div>${itemsHtml}</div>`
+      : '';
+
+    const switchRowsHtml = diff.switchDiffs.map((d) => {
+      const checked = sel.has(d.diffId);
+      return `
+        <label class='td-diff-check-row'>
+          ${!isCompare && d.restorable ? `<input type='checkbox' class='td-checkbox' data-action='toggle-snap-diff-check' data-diff-id='${escapeHtml(d.diffId)}' ${checked ? 'checked' : ''} />` : ''}
+          <span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>${escapeHtml(d.name)}</span>
+          <span class='td-mode-tag ${d.to ? 'ok' : 'single'}'>${d.from ? '开' : '关'} → ${d.to ? '开' : '关'}</span>
+        </label>`;
+    }).join('');
+
+    const contentRowsHtml = diff.contentDiffs.map((d) => {
+      const checked = sel.has(d.diffId);
+      const isExp = expSet.has(d.diffId);
+      const linesHtml = isExp && d.lineDiffs.length > 0
+        ? `<div class='td-diff-box td-scroll' style='margin-top:6px;'>${d.lineDiffs.map((l) => `<div class='td-diff-line ${l.type}'>${l.type === 'add' ? '+ ' : (l.type === 'del' ? '- ' : '  ')}${escapeHtml(l.text)}</div>`).join('')}</div>`
+        : '';
+      return `
+        <div class='td-diff-check-card'>
+          <div class='td-diff-check-row' style='border:none;padding:0;background:transparent;'>
+            ${!isCompare && d.restorable ? `<input type='checkbox' class='td-checkbox' data-action='toggle-snap-diff-check' data-diff-id='${escapeHtml(d.diffId)}' ${checked ? 'checked' : ''} />` : ''}
+            <span style='flex:1;min-width:0;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>${escapeHtml(d.name)}</span>
+            ${d.contentChanged ? `<button type='button' class='td-chip' data-action='toggle-snap-diff-expand' data-diff-id='${escapeHtml(d.diffId)}'>${isExp ? '收起文本对比' : '查看文本对比'}</button>` : ''}
+          </div>
+          ${d.metaChanges.length > 0 ? `<div style='font-size:11.5px;color:var(--td-single);margin-top:4px;'>${escapeHtml(d.metaChanges.join(' · '))}</div>` : ''}
+          ${linesHtml}
+        </div>`;
+    }).join('');
+
+    const settingRowsHtml = diff.settingDiffs.map((d) => {
+      const checked = sel.has(d.diffId);
+      return `
+        <label class='td-diff-check-row'>
+          ${!isCompare && d.restorable ? `<input type='checkbox' class='td-checkbox' data-action='toggle-snap-diff-check' data-diff-id='${escapeHtml(d.diffId)}' ${checked ? 'checked' : ''} />` : ''}
+          <span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>${escapeHtml(d.label)}</span>
+          <span class='td-mode-tag multi' style='max-width:52%;overflow:hidden;text-overflow:ellipsis;'>${escapeHtml(String(d.from))} → ${escapeHtml(String(d.to))}</span>
+        </label>`;
+    }).join('');
+
+    const structRowsHtml = diff.structDiffs.map((d) => {
+      const checked = sel.has(d.diffId);
+      const isSnapOnly = d.change === 'in_snap_only';
+      const label = isSnapOnly
+        ? (isCompare ? '仅目标快照有' : '快照独有(可补回)')
+        : (isCompare ? '仅基准快照有' : '当前新增(快照无)');
+      return `
+        <label class='td-diff-check-row'>
+          ${!isCompare && d.restorable ? `<input type='checkbox' class='td-checkbox' data-action='toggle-snap-diff-check' data-diff-id='${escapeHtml(d.diffId)}' ${checked ? 'checked' : ''} />` : ''}
+          <span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>${escapeHtml(d.name)}</span>
+          <span class='td-mode-tag ${isSnapOnly ? 'ok' : 'del'}'>${label}</span>
+        </label>`;
+    }).join('');
+
+    const bodyDiffsHtml = diff.missingBook
+      ? `<div class='td-attr-warn-banner'>目标世界书「${escapeHtml(tName)}」当前已不存在，无法对比差异。${isFull ? '你可以直接点击底部按钮「重建/另存为新世界书」。' : ''}</div>`
+      : (diff.totalCount === 0
+        ? `<div class='td-group-empty'>${isCompare ? '两份快照内容完全一致' : '该快照与当前状态完全一致'}</div>`
+        : [
+            renderSection('条目开关差异', switchRowsHtml, diff.switchDiffs.length),
+            renderSection('生成参数差异', settingRowsHtml, diff.settingDiffs.length),
+            renderSection('正文与属性差异', contentRowsHtml, diff.contentDiffs.length),
+            renderSection('条目结构增删', structRowsHtml, diff.structDiffs.length),
+          ].join(''));
+
     previewLayerEl.classList.add('is-open');
-    previewLayerEl.innerHTML = `<div class='td-modal td-modal-tall'><div class='td-modal-head'><div class='td-modal-title'>快照差异对比 · ${escapeHtml(snap.name)}</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div><div class='td-modal-body'><div class='td-preview-meta'><span class='td-meta-tag'>模式: ${snap.mode === 'full' ? '完整预设快照' : '开关状态快照'}</span><span class='td-meta-tag'>来源预设: ${escapeHtml(snap.presetName)}</span><span class='td-meta-tag'>时间: ${escapeHtml(formatTime(snap.updatedAt || snap.createdAt))}</span><span class='td-meta-tag'>差异: ${diffs.length} 项</span></div><div style='display:flex;flex-direction:column;gap:5px;'>${diffHtml}</div></div><div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>关闭</button><button class='td-btn primary' data-action='apply-snapshot-from-detail' data-snap-id='${escapeHtml(snap.id)}'>${ICONS.check} 恢复此快照</button></div></div>`;
+    previewLayerEl.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>${isCompare ? `快照对比 · ${escapeHtml(baseSnap.name)} ⇄ ${escapeHtml(snap.name)}` : `快照差异与局部恢复 · ${escapeHtml(snap.name)}`}</div>
+          <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-preview-meta'>
+            <span class='td-meta-tag'>类型: ${snap.kind === 'worldbook' ? '世界书' : '预设'}</span>
+            <span class='td-meta-tag'>模式: ${snap.mode === 'full' ? (diff.hasFullPayload ? '完整快照' : '完整(载荷缺失)') : '开关状态快照'}</span>
+            <span class='td-meta-tag'>来源: ${escapeHtml(tName)}</span>
+            <span class='td-meta-tag'>差异: ${diff.totalCount} 项</span>
+          </div>
+          ${!isCompare && diff.totalCount > 0 && !diff.missingBook ? `
+            <div class='td-filter-bar'>
+              <button type='button' class='td-chip' data-action='snap-diff-select' data-mode='all'>全选可恢复</button>
+              <button type='button' class='td-chip' data-action='snap-diff-select' data-mode='switch'>仅选开关</button>
+              ${diff.settingDiffs.length > 0 ? `<button type='button' class='td-chip' data-action='snap-diff-select' data-mode='setting'>仅选参数</button>` : ''}
+              ${diff.contentDiffs.length > 0 ? `<button type='button' class='td-chip' data-action='snap-diff-select' data-mode='content'>仅选正文</button>` : ''}
+              <button type='button' class='td-chip' data-action='snap-diff-select' data-mode='none'>全不选</button>
+            </div>` : ''}
+          <div style='display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;'>${bodyDiffsHtml}</div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' data-action='close-preview'>关闭</button>
+          ${!isCompare && isFull ? `<button class='td-btn' data-action='save-snap-as-new' data-snap-id='${escapeHtml(snap.id)}'>另存为新${snap.kind === 'worldbook' ? '世界书' : '预设'}</button>` : ''}
+          ${!isCompare && diff.totalCount > 0 && !diff.missingBook ? `<button class='td-btn warn' data-action='apply-selective-snapshot' data-snap-id='${escapeHtml(snap.id)}' data-role='snap-selective-btn' ${sel.size === 0 ? 'disabled' : ''}>恢复所选差异 (${sel.size})</button>` : ''}
+          ${!isCompare && !diff.missingBook ? `<button class='td-btn primary' data-action='apply-snapshot-from-detail' data-snap-id='${escapeHtml(snap.id)}'>${ICONS.check} 恢复此快照</button>` : ''}
+        </div>
+      </div>`;
     uiCtx.syncOverlayBounds(); return;
   }
 

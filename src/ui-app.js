@@ -9,14 +9,16 @@ import {
   getActiveScheme, setActiveSchemeId, findGroupNode, createOrUpdateScheme,
   deleteActiveScheme, createOrUpdateGroup, clearGroupContents, deleteGroup,
   removeEntryFromGroup, setGroupItems, performDrop,
-  exportStoreData, importStoreData,
+  exportStoreData, importStoreData, getSnapshotPayload, deleteSnapshotPayload,
 } from './store.js';
 import {
   refreshWorldbookCatalog, refreshAllCatalogs,
   toggleEntryInGroup, toggleMultiGroupAll, saveEditedEntry,
 } from './catalog.js';
 import {
-  captureCurrentSnapshotData, computeSnapshotDiff, applySnapshot,
+  captureCurrentSnapshotData, captureWorldbookSnapshotData, slimFullSnapshot,
+  computeSnapshotDiff, computeDetailedSnapshotDiff, applySnapshot,
+  applySelectiveSnapshot, saveSnapshotAsNewTarget, exportSingleSnapshotAsStandardJson,
 } from './snapshot.js';
 import {
   hasUnsavedPresetChanges, saveInUseToPreset, buildPresetDiffSession,
@@ -533,9 +535,10 @@ export function renderMain() {
         <button class='td-btn' data-action='open-worldbook-manager'>${ICONS.layers} 世界书管理</button>
         <button class='td-btn' data-action='open-preset-merge'>${ICONS.gitMerge} 预设对比缝合</button>
         <button class='td-btn' data-action='open-wb-merge'>${ICONS.gitMerge} 世界书对比缝合</button>
-        <button class='td-btn' data-action='open-snapshots'>${ICONS.camera} 预设快照${snapCount > 0 ? ` (${snapCount})` : ''}</button>
+        <button class='td-btn' data-action='open-snapshots'>${ICONS.camera} 快照中心${snapCount > 0 ? ` (${snapCount})` : ''}</button>
         <button class='td-btn' data-action='open-logs'>${ICONS.code} 运行日志</button>
-        ${inCharChat ? `<button class='td-btn full' data-action='open-mvu-viewer'>${ICONS.eye} MVU 变量查看</button>` : ''}
+        ${inCharChat ? `<button class='td-btn' data-action='open-mvu-viewer'>${ICONS.eye} MVU 变量查看</button>` : ''}
+        <button class='td-btn ${inCharChat ? '' : 'full'}' data-action='open-storage-manager'>${ICONS.database} 存储空间</button>
       </div>
     </div>
     <div class='td-control-drawer ${showCtrl ? 'is-open' : ''}' id='td-scheme-drawer'>
@@ -634,6 +637,7 @@ export function setPanelOpen(open, force = false) {
     state.previewKey = null;
     state.previewCtx = null;
     state.snapshotDetailId = null;
+    state.snapshotDetailCtx = null;
     state.selectPopup = null;
     state.confirmModal = null;
     state.activeItemDrawerId = null;
@@ -690,31 +694,110 @@ function performSwitchPreset(nextPreset) {
   }
 }
 
+function promptSaveSnapshotAsNew(snap) {
+  if (!snap) return;
+  const isWb = snap.kind === 'worldbook';
+  const defaultName = `${snap.targetName || snap.presetName || '快照'}-还原版`;
+  const newName = window.prompt(`将完整快照另存为新${isWb ? '世界书' : '预设'}名称：`, defaultName);
+  if (!newName || !newName.trim()) return;
+  saveSnapshotAsNewTarget(snap, newName.trim())
+    .then(() => {
+      renderMain();
+      if (state.modal?.type === 'snapshots') renderModal();
+    })
+    .catch((err) => {
+      logError('快照另存为失败', err);
+      notify('error', err.message || String(err));
+    });
+}
+
 function promptApplySnapshot(snapId) {
   const snap = (state.store.snapshots || []).find((s) => s.id === snapId);
   if (!snap) return;
-  const diffs = computeSnapshotDiff(snap);
-  const diffTip = `与当前状态共有 ${diffs.length} 项开关差异。`;
+  const payload = snap.mode === 'full' ? getSnapshotPayload(snap.id) : null;
+  const hasFull = snap.mode === 'full' && !!payload;
   const finishApply = (full) => {
     state.snapshotDetailId = null;
+    state.snapshotDetailCtx = null;
     renderPreviewModal();
     applySnapshot(snap, full).then((ok) => {
-      if (ok) { renderMain(); if (state.modal?.type === 'snapshots') updateSnapshotList(); }
+      if (ok) {
+        renderMain();
+        if (state.modal?.type === 'snapshots') renderModal();
+      }
     });
   };
-  if (snap.mode === 'full' && snap.fullPresetData) {
+
+  if (snap.kind === 'worldbook') {
+    const bookName = snap.targetName;
+    const allBooks = hasTH('getWorldbookNames') ? (callTH('getWorldbookNames') || []) : [];
+    const exists = allBooks.includes(bookName);
+    if (!exists) {
+      if (hasFull) {
+        openConfirm({
+          title: `原世界书已不存在 · ${bookName}`,
+          message: `世界书「${bookName}」当前未找到。你可以直接重建该世界书，或另存为新名称：`,
+          confirmText: `重建「${bookName}」`,
+          confirmClass: 'primary',
+          extraButton: { text: '另存为新世界书', className: 'warn', onClick: () => promptSaveSnapshotAsNew(snap) },
+          onConfirm: () => finishApply(true),
+        });
+      } else {
+        notify('warning', `世界书「${bookName}」已不存在，且该快照仅含开关状态，无法重建`);
+      }
+      return;
+    }
+
+    const diffs = computeSnapshotDiff(snap);
+    const diffTip = `与当前「${bookName}」共有 ${diffs.length} 项开关差异。（恢复前会自动备份当前状态）`;
+    if (hasFull) {
+      openConfirm({
+        title: `恢复完整世界书快照 · ${snap.name}`,
+        message: `${diffTip}\n请选择恢复方式：`,
+        confirmText: '完整覆盖世界书',
+        confirmClass: 'danger',
+        extraButtons: [
+          { text: '仅恢复开关状态', className: 'primary', onClick: () => finishApply(false) },
+          { text: '另存为新世界书', className: 'warn', onClick: () => promptSaveSnapshotAsNew(snap) },
+        ],
+        onConfirm: () => finishApply(true),
+      });
+    } else {
+      openConfirm({
+        title: `恢复世界书开关快照 · ${snap.name}`,
+        message: `确定要将快照开关状态恢复到世界书「${bookName}」吗？\n${diffTip}`,
+        confirmText: '确认恢复',
+        confirmClass: 'primary',
+        onConfirm: () => finishApply(false),
+      });
+    }
+    return;
+  }
+
+  const diffs = computeSnapshotDiff(snap);
+  const srcName = snap.targetName || snap.presetName || '未知';
+  const isCross = srcName && state.presetName && srcName !== state.presetName;
+  const crossWarn = isCross
+    ? `\n⚠️ 跨预设提示：此快照来自「${srcName}」，当前正在使用的是「${state.presetName}」。`
+    : '';
+  const diffTip = `与当前状态共有 ${diffs.length} 项开关差异。（恢复前会自动生成撤回备份）`;
+
+  if (hasFull) {
     openConfirm({
-      title: `恢复完整快照 · ${snap.name}`,
-      message: `此快照为完整预设快照（来自「${snap.presetName}」）。${diffTip} 请选择恢复方式：`,
-      confirmText: '完整还原预设',
+      title: `恢复完整预设快照 · ${snap.name}`,
+      message: `此快照为完整预设快照（来自「${srcName}」）。${diffTip}${crossWarn}\n请选择恢复方式：`,
+      confirmText: isCross ? '仍还原到当前预设' : '完整还原预设',
       confirmClass: 'danger',
-      extraButton: { text: '仅恢复开关状态', className: 'primary', onClick: () => finishApply(false) },
+      extraButtons: [
+        { text: '仅恢复开关状态', className: 'primary', onClick: () => finishApply(false) },
+        { text: '另存为新预设', className: 'warn', onClick: () => promptSaveSnapshotAsNew(snap) },
+      ],
       onConfirm: () => finishApply(true),
     });
   } else {
     openConfirm({
       title: `恢复开关快照 · ${snap.name}`,
-      message: `确定要将快照「${snap.name}」的开关状态应用到当前预设「${state.presetName}」吗？${diffTip}`,
+      message: `确定要将快照「${snap.name}」的开关状态应用到当前预设「${state.presetName}」吗？\n${diffTip}${crossWarn}`,
       confirmText: '确认恢复',
       confirmClass: 'primary',
       onConfirm: () => finishApply(false),
@@ -746,7 +829,7 @@ function handleRootClick(e) {
     });
     return;
   }
-  if (e.target === previewLayerEl) { discardPendingCustomMergeDraft(); state.previewKey = null; state.previewCtx = null; state.snapshotDetailId = null; renderPreviewModal(); return; }
+  if (e.target === previewLayerEl) { discardPendingCustomMergeDraft(); state.previewKey = null; state.previewCtx = null; state.snapshotDetailId = null; state.snapshotDetailCtx = null; renderPreviewModal(); return; }
 
   const actionEl = e.target.closest('[data-action]');
   if (!actionEl) return;
@@ -764,6 +847,14 @@ function handleRootClick(e) {
   }
   if (action === 'confirm-extra') {
     const fn = state.confirmModal?.extraButton?.onClick;
+    state.confirmModal = null;
+    renderConfirmModal();
+    if (typeof fn === 'function') fn();
+    return;
+  }
+  if (action === 'confirm-extra-idx') {
+    const idx = Number(actionEl.getAttribute('data-idx'));
+    const fn = state.confirmModal?.extraButtons?.[idx]?.onClick;
     state.confirmModal = null;
     renderConfirmModal();
     if (typeof fn === 'function') fn();
@@ -868,7 +959,23 @@ function handleRootClick(e) {
     return;
   }
   if (action === 'open-settings') { state.modal = { type: 'settings' }; renderModal(); return; }
-  if (action === 'open-snapshots') { state.modal = { type: 'snapshots', createMode: 'state', filter: 'current', draftName: '' }; renderModal(); return; }
+  if (action === 'open-snapshots') {
+    state.modal = {
+      type: 'snapshots',
+      kind: 'preset',
+      targetBook: '',
+      createMode: 'state',
+      filter: 'current',
+      search: '',
+      draftName: '',
+      draftNote: '',
+      createOpen: false,
+      expandedCardId: null,
+      compareBaseId: null,
+    };
+    renderModal();
+    return;
+  }
 
   if (action === 'open-preset-merge') { state.modal = { type: 'presetMergeSelect', oldName: '', newName: '' }; renderModal(); return; }
   if (action === 'resume-preset-merge' && state.mergeDrafts?.preset) {
@@ -1025,49 +1132,288 @@ function handleRootClick(e) {
     return;
   }
 
+  if (action === 'toggle-snap-create-box' && state.modal?.type === 'snapshots') {
+    state.modal.createOpen = state.modal.createOpen === false;
+    renderModal();
+    return;
+  }
+  if (action === 'set-snap-kind' && state.modal?.type === 'snapshots') {
+    const nextKind = actionEl.getAttribute('data-kind') === 'worldbook' ? 'worldbook' : 'preset';
+    state.modal.kind = nextKind;
+    state.modal.compareBaseId = null;
+    state.modal.expandedCardId = null;
+    renderModal();
+    return;
+  }
   if (action === 'set-snap-mode' && state.modal?.type === 'snapshots') {
     const nextMode = actionEl.getAttribute('data-mode') === 'full' ? 'full' : 'state';
     state.modal.createMode = nextMode;
     modalLayerEl.querySelectorAll("[data-action='set-snap-mode']").forEach((card) => card.classList.toggle('active', card.getAttribute('data-mode') === nextMode));
     return;
   }
-  if (action === 'set-snapshot-filter' && state.modal?.type === 'snapshots') { state.modal.filter = actionEl.getAttribute('data-filter') === 'all' ? 'all' : 'current'; updateSnapshotList(); return; }
+  if (action === 'set-snapshot-filter' && state.modal?.type === 'snapshots') {
+    const f = actionEl.getAttribute('data-filter') || 'current';
+    state.modal.filter = ['current', 'all', 'manual', 'auto'].includes(f) ? f : 'current';
+    updateSnapshotList();
+    return;
+  }
   if (action === 'create-snapshot' && state.modal?.type === 'snapshots') {
-    const inp = modalLayerEl.querySelector('#td-snap-name-input'), customName = (inp ? inp.value : state.modal.draftName || '').trim();
-    const snap = captureCurrentSnapshotData(customName, state.modal.createMode);
-    state.store.snapshots = state.store.snapshots || []; state.store.snapshots.unshift(snap); saveStore(state.store);
-    state.modal.draftName = ''; if (inp) inp.value = '';
-    const allChip = modalLayerEl.querySelector("[data-action='set-snapshot-filter'][data-filter='all']");
-    if (allChip) allChip.textContent = `全部快照 (${state.store.snapshots.length})`;
-    updateSnapshotList(); renderMain(); notify('success', `已保存快照「${snap.name}」`); return;
+    const nameInp = modalLayerEl.querySelector('#td-snap-name-input');
+    const noteInp = modalLayerEl.querySelector('#td-snap-note-input');
+    const customName = (nameInp ? nameInp.value : state.modal.draftName || '').trim();
+    const customNote = (noteInp ? noteInp.value : state.modal.draftNote || '').trim();
+
+    if (state.modal.kind === 'worldbook') {
+      const bookName = modalLayerEl.querySelector('#td-snap-wb-select')?.value || state.modal.targetBook;
+      if (!bookName) { notify('warning', '请先选择目标世界书'); return; }
+      captureWorldbookSnapshotData(bookName, customName, state.modal.createMode, { note: customNote })
+        .then((snap) => {
+          state.store.snapshots = state.store.snapshots || [];
+          state.store.snapshots.unshift(snap);
+          saveStore(state.store);
+          state.modal.draftName = '';
+          state.modal.draftNote = '';
+          renderModal();
+          renderMain();
+          notify('success', `已保存世界书快照「${snap.name}」`);
+        })
+        .catch((err) => { logError('创建世界书快照失败', err); notify('error', err.message || String(err)); });
+      return;
+    }
+
+    const snap = captureCurrentSnapshotData(customName, state.modal.createMode, {
+      note: customNote,
+    });
+    state.store.snapshots = state.store.snapshots || [];
+    state.store.snapshots.unshift(snap);
+    saveStore(state.store);
+    state.modal.draftName = '';
+    state.modal.draftNote = '';
+    renderModal();
+    renderMain();
+    notify('success', `已保存快照「${snap.name}」`);
+    return;
+  }
+  if (action === 'undo-last-restore') {
+    const snap = (state.store.snapshots || []).find((s) => s.id === state.lastUndoSnapshotId);
+    if (!snap) { notify('warning', '未找到可撤回的备份快照'); return; }
+    openConfirm({
+      title: '撤回上次恢复确认',
+      message: `确定要用备份「${snap.name}」还原回恢复前的状态吗？`,
+      confirmText: '确认撤回',
+      confirmClass: 'warn',
+      onConfirm: () => {
+        applySnapshot(snap, snap.mode === 'full', { skipAutoBackup: true }).then((ok) => {
+          if (ok) {
+            state.lastUndoSnapshotId = null;
+            renderMain();
+            if (state.modal?.type === 'snapshots') renderModal();
+          }
+        });
+      },
+    });
+    return;
+  }
+  if (action === 'toggle-snap-card-menu' && state.modal?.type === 'snapshots') {
+    const sid = actionEl.getAttribute('data-snap-id');
+    state.modal.expandedCardId = state.modal.expandedCardId === sid ? null : sid;
+    updateSnapshotList();
+    return;
+  }
+  if (action === 'pin-snapshot') {
+    const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
+    if (snap) {
+      snap.pinned = !snap.pinned;
+      saveStore(state.store);
+      updateSnapshotList();
+    }
+    return;
+  }
+  if (action === 'slim-snapshot') {
+    const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
+    if (!snap) return;
+    openConfirm({
+      title: '快照瘦身确认',
+      message: `确定要将「${snap.name}」转换为轻量开关快照吗？将移除其中备份的正文内容与生成参数，仅保留各条目启用状态。`,
+      confirmText: '确认瘦身',
+      confirmClass: 'warn',
+      onConfirm: () => {
+        if (slimFullSnapshot(snap.id)) {
+          saveStore(state.store);
+          updateSnapshotList();
+          notify('success', `已将「${snap.name}」瘦身为开关快照`);
+        }
+      },
+    });
+    return;
+  }
+  if (action === 'export-snapshot') {
+    const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
+    if (snap) exportSingleSnapshotAsStandardJson(snap);
+    return;
+  }
+  if (action === 'compare-snapshot-pick' && state.modal?.type === 'snapshots') {
+    const sid = actionEl.getAttribute('data-snap-id');
+    state.modal.compareBaseId = state.modal.compareBaseId === sid ? null : sid;
+    renderModal();
+    return;
+  }
+  if (action === 'cancel-snap-compare' && state.modal?.type === 'snapshots') {
+    state.modal.compareBaseId = null;
+    renderModal();
+    return;
+  }
+  if (action === 'view-snapshot' || action === 'compare-snapshot-with') {
+    const snapId = actionEl.getAttribute('data-snap-id');
+    const snap = (state.store.snapshots || []).find((s) => s.id === snapId);
+    if (!snap) return;
+    const compareBaseId = action === 'compare-snapshot-with' ? (state.modal?.compareBaseId || null) : null;
+    const baseSnap = compareBaseId ? (state.store.snapshots || []).find((s) => s.id === compareBaseId) : null;
+    if (action === 'compare-snapshot-with' && state.modal?.type === 'snapshots') {
+      state.modal.compareBaseId = null;
+      renderModal();
+    }
+    computeDetailedSnapshotDiff(snap, baseSnap).then((diff) => {
+      const selectedDiffIds = new Set();
+      if (!baseSnap) {
+        diff.switchDiffs.forEach((d) => { if (d.restorable) selectedDiffIds.add(d.diffId); });
+        diff.contentDiffs.forEach((d) => { if (d.restorable) selectedDiffIds.add(d.diffId); });
+        diff.settingDiffs.forEach((d) => { if (d.restorable) selectedDiffIds.add(d.diffId); });
+        diff.structDiffs.forEach((d) => { if (d.change === 'in_snap_only' && d.restorable) selectedDiffIds.add(d.diffId); });
+      }
+      state.snapshotDetailId = snap.id;
+      state.snapshotDetailCtx = {
+        snapId: snap.id,
+        compareBaseId: baseSnap ? baseSnap.id : null,
+        diff,
+        selectedDiffIds,
+        expandedContentIds: new Set(),
+      };
+      state.previewKey = null;
+      state.previewCtx = null;
+      renderPreviewModal();
+    }).catch((err) => {
+      logError('计算快照差异失败', err);
+      notify('error', err.message || String(err));
+    });
+    return;
+  }
+  if (action === 'toggle-snap-diff-expand' && state.snapshotDetailCtx) {
+    const did = actionEl.getAttribute('data-diff-id');
+    const set = state.snapshotDetailCtx.expandedContentIds;
+    if (set.has(did)) set.delete(did);
+    else set.add(did);
+    renderPreviewModal();
+    return;
+  }
+  if (action === 'snap-diff-select' && state.snapshotDetailCtx) {
+    const mode = actionEl.getAttribute('data-mode');
+    const { diff, selectedDiffIds } = state.snapshotDetailCtx;
+    selectedDiffIds.clear();
+    if (mode === 'all' || mode === 'switch') {
+      diff.switchDiffs.forEach((d) => { if (d.restorable) selectedDiffIds.add(d.diffId); });
+    }
+    if (mode === 'all' || mode === 'setting') {
+      diff.settingDiffs.forEach((d) => { if (d.restorable) selectedDiffIds.add(d.diffId); });
+    }
+    if (mode === 'all' || mode === 'content') {
+      diff.contentDiffs.forEach((d) => { if (d.restorable) selectedDiffIds.add(d.diffId); });
+    }
+    if (mode === 'all') {
+      diff.structDiffs.forEach((d) => { if (d.change === 'in_snap_only' && d.restorable) selectedDiffIds.add(d.diffId); });
+    }
+    renderPreviewModal();
+    return;
+  }
+  if (action === 'apply-selective-snapshot' && state.snapshotDetailCtx) {
+    const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
+    const { diff, selectedDiffIds } = state.snapshotDetailCtx;
+    if (!snap || selectedDiffIds.size === 0) return;
+    openConfirm({
+      title: '局部恢复差异确认',
+      message: `确定要将选中的 ${selectedDiffIds.size} 项差异恢复到「${snap.kind === 'worldbook' ? snap.targetName : state.presetName}」吗？（恢复前会自动生成撤回备份）`,
+      confirmText: '确认局部恢复',
+      confirmClass: 'warn',
+      onConfirm: () => {
+        applySelectiveSnapshot(snap, diff, selectedDiffIds).then((ok) => {
+          if (ok) {
+            state.snapshotDetailId = null;
+            state.snapshotDetailCtx = null;
+            renderPreviewModal();
+            renderMain();
+            if (state.modal?.type === 'snapshots') renderModal();
+          }
+        });
+      },
+    });
+    return;
+  }
+  if (action === 'save-snap-as-new') {
+    const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
+    promptSaveSnapshotAsNew(snap);
+    return;
   }
   if (action === 'apply-snapshot' || action === 'apply-snapshot-from-detail') { promptApplySnapshot(actionEl.getAttribute('data-snap-id')); return; }
-  if (action === 'view-snapshot') { state.snapshotDetailId = actionEl.getAttribute('data-snap-id'); state.previewKey = null; state.previewCtx = null; renderPreviewModal(); return; }
   if (action === 'overwrite-snapshot') {
     const snapId = actionEl.getAttribute('data-snap-id'), snap = (state.store.snapshots || []).find((s) => s.id === snapId);
     if (!snap) return;
+    const isWb = snap.kind === 'worldbook';
+    const curTarget = isWb ? snap.targetName : state.presetName;
+    const crossTip = !isWb && snap.targetName && snap.targetName !== state.presetName
+      ? `\n⚠️ 注意：该快照原属于「${snap.targetName}」，覆盖后来源将更新为当前预设「${state.presetName}」。`
+      : '';
     openConfirm({
-      title: '覆盖快照确认', message: `确定要用当前预设状态覆盖更新快照「${snap.name}」吗？`, confirmText: '确认覆盖', confirmClass: 'warn',
+      title: '覆盖快照确认',
+      message: `确定要用当前${isWb ? `世界书「${curTarget}」` : `预设「${curTarget}」`}的状态覆盖更新快照「${snap.name}」吗？${crossTip}`,
+      confirmText: '确认覆盖',
+      confirmClass: 'warn',
       onConfirm: () => {
-        const fresh = captureCurrentSnapshotData(snap.name, snap.mode); fresh.id = snap.id; fresh.createdAt = snap.createdAt;
-        const idx = state.store.snapshots.findIndex((s) => s.id === snapId); if (idx >= 0) state.store.snapshots[idx] = fresh;
-        saveStore(state.store); updateSnapshotList(); notify('success', `快照「${snap.name}」已更新`);
+        const applyFresh = (fresh) => {
+          fresh.note = snap.note || '';
+          fresh.pinned = !!snap.pinned;
+          fresh.auto = false;
+          const idx = state.store.snapshots.findIndex((s) => s.id === snapId);
+          if (idx >= 0) state.store.snapshots[idx] = fresh;
+          saveStore(state.store);
+          updateSnapshotList();
+          notify('success', `快照「${snap.name}」已更新`);
+        };
+        if (isWb) {
+          captureWorldbookSnapshotData(snap.targetName, snap.name, snap.mode, { id: snap.id, createdAt: snap.createdAt })
+            .then(applyFresh)
+            .catch((err) => { logError('覆盖世界书快照失败', err); notify('error', err.message || String(err)); });
+        } else {
+          applyFresh(captureCurrentSnapshotData(snap.name, snap.mode, { id: snap.id, createdAt: snap.createdAt }));
+        }
       },
     });
     return;
   }
   if (action === 'rename-snapshot') {
     const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
-    if (snap) { state.modal = { type: 'snapshotRename', snapId: snap.id, name: snap.name, prevModal: state.modal }; renderModal(); }
+    if (snap) {
+      state.modal = { type: 'snapshotRename', snapId: snap.id, name: snap.name, note: snap.note || '', prevModal: state.modal };
+      renderModal();
+    }
     return;
   }
-  if (action === 'back-to-snapshots' && state.modal?.type === 'snapshotRename') { state.modal = state.modal.prevModal || { type: 'snapshots', createMode: 'state', filter: 'current', draftName: '' }; renderModal(); return; }
+  if (action === 'back-to-snapshots' && state.modal?.type === 'snapshotRename') {
+    state.modal = state.modal.prevModal || { type: 'snapshots', kind: 'preset', createMode: 'state', filter: 'current', draftName: '', draftNote: '' };
+    renderModal();
+    return;
+  }
   if (action === 'submit-snap-rename' && state.modal?.type === 'snapshotRename') {
-    const inp = modalLayerEl.querySelector('#td-snap-rename-input'), name = (inp ? inp.value : state.modal.name || '').trim();
+    const inp = modalLayerEl.querySelector('#td-snap-rename-input');
+    const noteInp = modalLayerEl.querySelector('#td-snap-rename-note-input');
+    const name = (inp ? inp.value : state.modal.name || '').trim();
+    const note = (noteInp ? noteInp.value : state.modal.note || '').trim();
     if (!name) { notify('warning', '请输入快照名称'); return; }
     const snap = (state.store.snapshots || []).find((s) => s.id === state.modal.snapId);
-    if (snap) { snap.name = name; snap.updatedAt = Date.now(); saveStore(state.store); }
-    state.modal = state.modal.prevModal || { type: 'snapshots', createMode: 'state', filter: 'current', draftName: '' }; renderModal(); notify('success', '快照已重命名'); return;
+    if (snap) { snap.name = name; snap.note = note; snap.updatedAt = Date.now(); saveStore(state.store); }
+    state.modal = state.modal.prevModal || { type: 'snapshots', kind: 'preset', createMode: 'state', filter: 'current', draftName: '', draftNote: '' };
+    renderModal();
+    notify('success', '快照信息已更新');
+    return;
   }
   if (action === 'delete-snapshot') {
     const snapId = actionEl.getAttribute('data-snap-id'), snap = (state.store.snapshots || []).find((s) => s.id === snapId);
@@ -1075,10 +1421,14 @@ function handleRootClick(e) {
     openConfirm({
       title: '删除快照确认', message: `确定要永久删除快照「${snap.name}」吗？`, confirmText: '确认删除',
       onConfirm: () => {
-        state.store.snapshots = (state.store.snapshots || []).filter((s) => s.id !== snapId); saveStore(state.store);
-        const allChip = modalLayerEl.querySelector("[data-action='set-snapshot-filter'][data-filter='all']");
-        if (allChip) allChip.textContent = `全部快照 (${state.store.snapshots.length})`;
-        updateSnapshotList(); renderMain(); notify('info', '快照已删除');
+        deleteSnapshotPayload(snapId);
+        state.store.snapshots = (state.store.snapshots || []).filter((s) => s.id !== snapId);
+        if (state.lastUndoSnapshotId === snapId) state.lastUndoSnapshotId = null;
+        if (state.modal?.compareBaseId === snapId) state.modal.compareBaseId = null;
+        saveStore(state.store);
+        renderModal();
+        renderMain();
+        notify('info', '快照已删除');
       },
     });
     return;
@@ -1179,8 +1529,8 @@ function handleRootClick(e) {
     openConfirm({ title: '移除条目确认', message: `确定要将「${entry ? entry.name : itemKey}」从此分组中移除吗？`, confirmText: '确认移除', onConfirm: () => { removeEntryFromGroup(groupId, itemKey); renderMainBodyOnly(); } });
     return;
   }
-  if (action === 'preview-entry') { e.stopPropagation(); state.snapshotDetailId = null; state.previewCtx = null; state.previewKey = itemKey; renderPreviewModal(); return; }
-  if (action === 'close-preview') { discardPendingCustomMergeDraft(); state.previewKey = null; state.previewCtx = null; state.snapshotDetailId = null; renderPreviewModal(); return; }
+  if (action === 'preview-entry') { e.stopPropagation(); state.snapshotDetailId = null; state.snapshotDetailCtx = null; state.previewCtx = null; state.previewKey = itemKey; renderPreviewModal(); return; }
+  if (action === 'close-preview') { discardPendingCustomMergeDraft(); state.previewKey = null; state.previewCtx = null; state.snapshotDetailId = null; state.snapshotDetailCtx = null; renderPreviewModal(); return; }
   if (action === 'preview-undo') { pushEditSnapshot(true); if (editHistory.index > 0) { editHistory.index--; applyPreviewSnapshot(editHistory.stack[editHistory.index]); updatePreviewHistoryButtons(); } return; }
   if (action === 'preview-redo') { if (editHistory.index < editHistory.stack.length - 1) { editHistory.index++; applyPreviewSnapshot(editHistory.stack[editHistory.index]); updatePreviewHistoryButtons(); } return; }
   if (action === 'copy-preview') {
@@ -1501,7 +1851,10 @@ function handleRootInput(e) {
   if (id === 'td-group-name-input' && state.modal?.type === 'groupForm') { state.modal.name = e.target.value; return; }
   if (id === 'td-scheme-name-input' && state.modal?.type === 'schemeForm') { state.modal.name = e.target.value; return; }
   if (id === 'td-snap-name-input' && state.modal?.type === 'snapshots') { state.modal.draftName = e.target.value; return; }
+  if (id === 'td-snap-note-input' && state.modal?.type === 'snapshots') { state.modal.draftNote = e.target.value; return; }
+  if (id === 'td-snap-search-input' && state.modal?.type === 'snapshots') { state.modal.search = e.target.value; updateSnapshotList(); return; }
   if (id === 'td-snap-rename-input' && state.modal?.type === 'snapshotRename') { state.modal.name = e.target.value; return; }
+  if (id === 'td-snap-rename-note-input' && state.modal?.type === 'snapshotRename') { state.modal.note = e.target.value; return; }
   if (id === 'td-picker-search' && state.modal?.type === 'picker') { state.modal.query = e.target.value; state.modal.rangeAnchorKey = null; updatePickerList(); return; }
   if (id === 'td-size-range') {
     if (!state.store.settings.unlockOrbSliders) return;
@@ -1591,6 +1944,19 @@ function handleRootChange(e) {
     return;
   }
   if (id === 'td-merge-custom-enabled' && state.previewCtx?.type === 'mergeCustom') { pushEditSnapshot(true); return; }
+  if (id === 'td-snap-wb-select' && state.modal?.type === 'snapshots') { state.modal.targetBook = e.target.value; renderModal(); return; }
+  if (e.target.getAttribute('data-action') === 'toggle-snap-diff-check' && state.snapshotDetailCtx) {
+    const did = e.target.getAttribute('data-diff-id');
+    const set = state.snapshotDetailCtx.selectedDiffIds;
+    if (e.target.checked) set.add(did);
+    else set.delete(did);
+    const btn = previewLayerEl?.querySelector("[data-role='snap-selective-btn']");
+    if (btn) {
+      btn.textContent = `恢复所选差异 (${set.size})`;
+      btn.disabled = set.size === 0;
+    }
+    return;
+  }
   if (id === 'td-scheme-select') { setActiveSchemeId(e.target.value); renderMain(); return; }
   if (id === 'td-scheme-bind-check' && state.modal?.type === 'schemeForm') { state.modal.bindToCurrent = !!e.target.checked; return; }
   if (id === 'td-opacity-range' || id === 'td-size-range') saveStore(state.store);

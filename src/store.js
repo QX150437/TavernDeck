@@ -4,26 +4,122 @@ import {
 } from './utils.js';
 
 const MERGE_DRAFTS_STORAGE_KEY = 'TavernDeck_mergeDrafts_v1';
+const SNAPSHOT_PAYLOADS_STORAGE_KEY = 'TavernDeck_snapshotPayloads_v1';
 
-function stringifyMergeDrafts(obj) {
-  return JSON.stringify(obj, (_k, val) => (
-    val instanceof RegExp ? { __td_re: [val.source, val.flags] } : val
-  ));
+export function serializeRegExpDeep(val) {
+  if (val instanceof RegExp) return { __td_re: [val.source, val.flags] };
+  if (Array.isArray(val)) return val.map(serializeRegExpDeep);
+  if (val && typeof val === 'object') {
+    const out = {};
+    Object.keys(val).forEach((k) => { out[k] = serializeRegExpDeep(val[k]); });
+    return out;
+  }
+  return val;
 }
 
-function parseMergeDrafts(str) {
-  return JSON.parse(str, (_k, val) => (
-    val && typeof val === 'object' && Array.isArray(val.__td_re) && val.__td_re.length === 2
-      ? new RegExp(val.__td_re[0], val.__td_re[1])
-      : val
-  ));
+export function reviveRegExpDeep(val) {
+  if (Array.isArray(val)) return val.map(reviveRegExpDeep);
+  if (val && typeof val === 'object') {
+    if (Array.isArray(val.__td_re) && val.__td_re.length === 2) {
+      try { return new RegExp(val.__td_re[0], val.__td_re[1]); } catch (e) { return String(val.__td_re[0] || ''); }
+    }
+    const out = {};
+    Object.keys(val).forEach((k) => { out[k] = reviveRegExpDeep(val[k]); });
+    return out;
+  }
+  return val;
+}
+
+function stringifyWithRegExp(obj) {
+  return JSON.stringify(serializeRegExpDeep(obj));
+}
+
+function parseWithRegExp(str) {
+  return reviveRegExpDeep(JSON.parse(str));
+}
+
+let snapshotPayloadCache = null;
+
+function readAllSnapshotPayloads() {
+  if (snapshotPayloadCache) return snapshotPayloadCache;
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(SNAPSHOT_PAYLOADS_STORAGE_KEY) : null;
+    if (!raw) {
+      snapshotPayloadCache = {};
+      return snapshotPayloadCache;
+    }
+    const parsed = parseWithRegExp(raw);
+    snapshotPayloadCache = parsed && typeof parsed === 'object' ? parsed : {};
+    return snapshotPayloadCache;
+  } catch (e) {
+    logWarn('读取本地快照载荷失败', e);
+    snapshotPayloadCache = {};
+    return snapshotPayloadCache;
+  }
+}
+
+function writeAllSnapshotPayloads(map) {
+  snapshotPayloadCache = map || {};
+  try {
+    if (typeof localStorage === 'undefined') return true;
+    const keys = Object.keys(snapshotPayloadCache);
+    if (keys.length === 0) {
+      localStorage.removeItem(SNAPSHOT_PAYLOADS_STORAGE_KEY);
+    } else {
+      localStorage.setItem(SNAPSHOT_PAYLOADS_STORAGE_KEY, stringifyWithRegExp(snapshotPayloadCache));
+    }
+    return true;
+  } catch (e) {
+    logWarn('写入本地快照载荷失败（可能超出浏览器存储配额，建议瘦身或清理旧快照）', e);
+    notify('warning', '本地快照存储空间不足，建议删除或瘦身部分完整快照');
+    return false;
+  }
+}
+
+export function getSnapshotPayload(snapId) {
+  if (!snapId) return null;
+  const map = readAllSnapshotPayloads();
+  return map[snapId] || null;
+}
+
+export function setSnapshotPayload(snapId, payload) {
+  if (!snapId || !payload) return 0;
+  const map = readAllSnapshotPayloads();
+  const serialized = serializeRegExpDeep(payload);
+  map[snapId] = reviveRegExpDeep(serialized);
+  const bytes = JSON.stringify(serialized).length;
+  writeAllSnapshotPayloads(map);
+  return bytes;
+}
+
+export function deleteSnapshotPayload(snapId) {
+  if (!snapId) return;
+  const map = readAllSnapshotPayloads();
+  if (Object.prototype.hasOwnProperty.call(map, snapId)) {
+    delete map[snapId];
+    writeAllSnapshotPayloads(map);
+  }
+}
+
+export function getSnapshotPayloadSizeBytes(snap) {
+  if (!snap) return 0;
+  if (typeof snap.payloadBytes === 'number' && snap.payloadBytes > 0) return snap.payloadBytes;
+  const p = getSnapshotPayload(snap.id);
+  if (!p) return 0;
+  try {
+    const bytes = stringifyWithRegExp(p).length;
+    snap.payloadBytes = bytes;
+    return bytes;
+  } catch (e) {
+    return 0;
+  }
 }
 
 export function loadMergeDrafts() {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(MERGE_DRAFTS_STORAGE_KEY) : null;
     if (!raw) return { preset: null, worldbook: null };
-    const parsed = parseMergeDrafts(raw);
+    const parsed = parseWithRegExp(raw);
     return {
       preset: parsed && parsed.preset ? parsed.preset : null,
       worldbook: parsed && parsed.worldbook ? parsed.worldbook : null,
@@ -41,7 +137,7 @@ export function persistMergeDrafts() {
     if (!drafts.preset && !drafts.worldbook) {
       localStorage.removeItem(MERGE_DRAFTS_STORAGE_KEY);
     } else {
-      localStorage.setItem(MERGE_DRAFTS_STORAGE_KEY, stringifyMergeDrafts(drafts));
+      localStorage.setItem(MERGE_DRAFTS_STORAGE_KEY, stringifyWithRegExp(drafts));
     }
   } catch (e) {
     logWarn('保存本地缝合草稿失败', e);
@@ -58,6 +154,11 @@ export function saveMergeDraft(kind, session) {
 export function clearMergeDraft(kind) {
   if (!state.mergeDrafts || !kind) return;
   state.mergeDrafts[kind] = null;
+  persistMergeDrafts();
+}
+
+export function clearAllMergeDrafts() {
+  state.mergeDrafts = { preset: null, worldbook: null };
   persistMergeDrafts();
 }
 
@@ -143,6 +244,8 @@ export const state = {
   previewKey: null,
   previewCtx: null,
   snapshotDetailId: null,
+  snapshotDetailCtx: null,
+  lastUndoSnapshotId: null,
   selectPopup: null,
   confirmModal: null,
   mergeDrafts: loadMergeDrafts(),
@@ -216,6 +319,27 @@ export function loadStore() {
           groups: s && Array.isArray(s.groups) ? s.groups.map(normalizeGroupNode).filter(Boolean) : [],
         }))
       : def.schemes;
+    const normalizedSnapshots = Array.isArray(raw.snapshots)
+      ? raw.snapshots.filter(Boolean).map((rawSnap) => {
+          const snap = Object.assign({}, rawSnap);
+          snap.id = snap.id || genId();
+          snap.kind = snap.kind === 'worldbook' ? 'worldbook' : 'preset';
+          snap.targetName = snap.targetName || snap.presetName || '';
+          snap.presetName = snap.targetName;
+          snap.note = typeof snap.note === 'string' ? snap.note : '';
+          snap.pinned = !!snap.pinned;
+          snap.auto = !!snap.auto;
+          if (snap.fullPresetData || snap.fullWorldbookData) {
+            const payload = {};
+            if (snap.fullPresetData) payload.fullPresetData = snap.fullPresetData;
+            if (snap.fullWorldbookData) payload.fullWorldbookData = snap.fullWorldbookData;
+            snap.payloadBytes = setSnapshotPayload(snap.id, payload);
+            delete snap.fullPresetData;
+            delete snap.fullWorldbookData;
+          }
+          return snap;
+        })
+      : [];
     return {
       schemaVersion: SCHEMA_VERSION,
       settings,
@@ -223,7 +347,7 @@ export function loadStore() {
       presetBindings: raw.presetBindings && typeof raw.presetBindings === 'object' ? raw.presetBindings : {},
       activeSchemeByPreset: raw.activeSchemeByPreset && typeof raw.activeSchemeByPreset === 'object' ? raw.activeSchemeByPreset : {},
       activeSchemeId: raw.activeSchemeId || schemes[0].id,
-      snapshots: Array.isArray(raw.snapshots) ? raw.snapshots : [],
+      snapshots: normalizedSnapshots,
       extensions: raw.extensions && typeof raw.extensions === 'object' ? raw.extensions : {},
     };
   } catch (e) {
@@ -519,6 +643,18 @@ export function performDrop(op) {
   return false;
 }
 
+function hydrateSnapshotsForExport(snaps) {
+  return (snaps || []).map((snap) => {
+    const copy = JSON.parse(JSON.stringify(snap));
+    const heavy = getSnapshotPayload(snap.id);
+    if (heavy) {
+      if (heavy.fullPresetData) copy.fullPresetData = serializeRegExpDeep(heavy.fullPresetData);
+      if (heavy.fullWorldbookData) copy.fullWorldbookData = serializeRegExpDeep(heavy.fullWorldbookData);
+    }
+    return copy;
+  });
+}
+
 export function exportStoreData(opts) {
   const payload = {
     app: 'TavernDeck',
@@ -542,14 +678,14 @@ export function exportStoreData(opts) {
     payload.presetBindings = bindings;
   }
   if (opts.includeSnapshots) {
-    payload.snapshots = JSON.parse(JSON.stringify(state.store.snapshots || []));
+    payload.snapshots = hydrateSnapshotsForExport(state.store.snapshots);
   }
   if (opts.includeAll) {
     payload.scope = 'all';
     payload.settings = JSON.parse(JSON.stringify(state.store.settings));
     payload.schemes = JSON.parse(JSON.stringify(ensureSchemesPool()));
     payload.presetBindings = JSON.parse(JSON.stringify(state.store.presetBindings || {}));
-    payload.snapshots = JSON.parse(JSON.stringify(state.store.snapshots || []));
+    payload.snapshots = hydrateSnapshotsForExport(state.store.snapshots);
   }
   return payload;
 }
@@ -605,18 +741,285 @@ export function importStoreData(data, opts) {
   }
 
   if (opts.importSnapshots && Array.isArray(data.snapshots)) {
+    const normalizeImportedSnap = (rawSnap, newId) => {
+      const copy = JSON.parse(JSON.stringify(rawSnap));
+      copy.id = newId;
+      copy.kind = copy.kind === 'worldbook' ? 'worldbook' : 'preset';
+      copy.targetName = copy.targetName || copy.presetName || '';
+      copy.presetName = copy.targetName;
+      copy.note = typeof copy.note === 'string' ? copy.note : '';
+      copy.pinned = !!copy.pinned;
+      copy.auto = !!copy.auto;
+      if (copy.fullPresetData || copy.fullWorldbookData) {
+        const heavy = {};
+        if (copy.fullPresetData) heavy.fullPresetData = copy.fullPresetData;
+        if (copy.fullWorldbookData) heavy.fullWorldbookData = reviveRegExpDeep(copy.fullWorldbookData);
+        copy.payloadBytes = setSnapshotPayload(copy.id, heavy);
+        delete copy.fullPresetData;
+        delete copy.fullWorldbookData;
+      }
+      return copy;
+    };
+
     if (mode === 'overwrite') {
-      state.store.snapshots = JSON.parse(JSON.stringify(data.snapshots));
+      (state.store.snapshots || []).forEach((old) => deleteSnapshotPayload(old.id));
+      state.store.snapshots = data.snapshots.filter(Boolean).map((s) => normalizeImportedSnap(s, s.id || genId()));
     } else {
       const existingIds = new Set((state.store.snapshots || []).map((s) => s.id));
-      data.snapshots.forEach((snap) => {
-        const copy = JSON.parse(JSON.stringify(snap));
-        if (!copy.id || existingIds.has(copy.id)) copy.id = genId();
-        existingIds.add(copy.id);
-        state.store.snapshots.push(copy);
+      data.snapshots.filter(Boolean).forEach((snap) => {
+        let newId = snap.id || genId();
+        if (existingIds.has(newId)) newId = genId();
+        existingIds.add(newId);
+        state.store.snapshots.push(normalizeImportedSnap(snap, newId));
       });
     }
   }
 
   saveStore(state.store);
+}
+
+function getUtf8ByteLength(str) {
+  const s = String(str || '');
+  if (!s) return 0;
+  try {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).length;
+    if (typeof Blob !== 'undefined') return new Blob([s]).size;
+  } catch (e) {}
+  return s.length;
+}
+
+export function getStorageDiagnostics(devLogCount = 0) {
+  const storeObj = state.store || createDefaultStore();
+  const globalJson = JSON.stringify(storeObj);
+  const globalTotalBytes = getUtf8ByteLength(globalJson);
+
+  const schemesBytes = getUtf8ByteLength(JSON.stringify({
+    schemes: storeObj.schemes || [],
+    presetBindings: storeObj.presetBindings || {},
+    activeSchemeByPreset: storeObj.activeSchemeByPreset || {},
+  }));
+  const settingsBytes = getUtf8ByteLength(JSON.stringify(storeObj.settings || {}));
+  const orbImageBytes = getUtf8ByteLength(storeObj.settings?.orbImage || '');
+  const snapshotsMetaBytes = getUtf8ByteLength(JSON.stringify(storeObj.snapshots || []));
+  const mvuMap = storeObj.extensions?.mvuStarred || {};
+  const mvuBytes = getUtf8ByteLength(JSON.stringify(storeObj.extensions || {}));
+
+  const mvuItems = Object.keys(mvuMap).map((chatKey) => {
+    const list = Array.isArray(mvuMap[chatKey]) ? mvuMap[chatKey] : [];
+    return {
+      chatKey,
+      count: list.length,
+      bytes: getUtf8ByteLength(JSON.stringify(list)),
+    };
+  }).sort((a, b) => b.bytes - a.bytes);
+
+  const snapList = Array.isArray(storeObj.snapshots) ? storeObj.snapshots : [];
+  const snapById = new Map(snapList.map((s) => [s.id, s]));
+
+  const payloadMap = readAllSnapshotPayloads();
+  let payloadsTotalBytes = 0;
+  const payloadItems = [];
+  const orphanPayloadIds = [];
+
+  Object.keys(payloadMap).forEach((id) => {
+    const rawStr = stringifyWithRegExp(payloadMap[id]);
+    const bytes = getUtf8ByteLength(rawStr);
+    payloadsTotalBytes += bytes;
+    const snap = snapById.get(id);
+    if (!snap) {
+      orphanPayloadIds.push(id);
+      payloadItems.push({
+        id,
+        name: `孤儿载荷 (${id.slice(0, 8)})`,
+        kind: 'orphan',
+        targetName: '未关联任何快照',
+        auto: false,
+        pinned: false,
+        orphan: true,
+        bytes,
+        updatedAt: 0,
+      });
+    } else {
+      payloadItems.push({
+        id,
+        name: snap.name || id,
+        kind: snap.kind || 'preset',
+        targetName: snap.targetName || snap.presetName || '',
+        auto: !!snap.auto,
+        pinned: !!snap.pinned,
+        orphan: false,
+        bytes,
+        updatedAt: snap.updatedAt || snap.createdAt || 0,
+      });
+    }
+  });
+  payloadItems.sort((a, b) => b.bytes - a.bytes);
+
+  const missingPayloadSnaps = snapList.filter((s) => s && s.mode === 'full' && !payloadMap[s.id]);
+
+  const drafts = state.mergeDrafts || { preset: null, worldbook: null };
+  const presetDraftBytes = drafts.preset ? getUtf8ByteLength(stringifyWithRegExp(drafts.preset)) : 0;
+  const wbDraftBytes = drafts.worldbook ? getUtf8ByteLength(stringifyWithRegExp(drafts.worldbook)) : 0;
+  const draftsTotalBytes = presetDraftBytes + wbDraftBytes;
+
+  let originLocalStorageBytes = 0;
+  let otherLocalStorageBytes = 0;
+  let otherLocalStorageKeys = 0;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        const v = localStorage.getItem(k) || '';
+        const sz = getUtf8ByteLength(k) + getUtf8ByteLength(v);
+        originLocalStorageBytes += sz;
+        if (k !== SNAPSHOT_PAYLOADS_STORAGE_KEY && k !== MERGE_DRAFTS_STORAGE_KEY) {
+          otherLocalStorageBytes += sz;
+          otherLocalStorageKeys++;
+        }
+      }
+    }
+  } catch (e) {}
+
+  const aiCache = state._aiModelsCache && typeof state._aiModelsCache === 'object' ? state._aiModelsCache : {};
+  const aiCacheEndpoints = Object.keys(aiCache).length;
+  const aiCacheBytes = getUtf8ByteLength(JSON.stringify(aiCache));
+
+  const autoUnpinnedCount = snapList.filter((s) => s && s.auto && !s.pinned).length;
+  const fullUnpinnedCount = snapList.filter((s) => s && s.mode === 'full' && !s.pinned && !!payloadMap[s.id]).length;
+
+  return {
+    globalVar: {
+      key: STORAGE_KEY,
+      totalBytes: globalTotalBytes,
+      schemesBytes,
+      schemeCount: (storeObj.schemes || []).length,
+      settingsBytes,
+      orbImageBytes,
+      hasOrbImage: !!storeObj.settings?.orbImage,
+      snapshotsMetaBytes,
+      snapshotCount: snapList.length,
+      mvuBytes,
+      mvuItems,
+    },
+    localStorage: {
+      quotaEstimateBytes: 5 * 1024 * 1024,
+      originTotalBytes: originLocalStorageBytes,
+      tdTotalBytes: payloadsTotalBytes + draftsTotalBytes,
+      otherBytes: otherLocalStorageBytes,
+      otherKeyCount: otherLocalStorageKeys,
+      payloadsKey: SNAPSHOT_PAYLOADS_STORAGE_KEY,
+      payloadsTotalBytes,
+      payloadItems,
+      orphanPayloadIds,
+      missingPayloadCount: missingPayloadSnaps.length,
+      draftsKey: MERGE_DRAFTS_STORAGE_KEY,
+      draftsTotalBytes,
+      presetDraft: drafts.preset ? {
+        title: `${drafts.preset.oldName} ⇄ ${drafts.preset.newName}`,
+        bytes: presetDraftBytes,
+      } : null,
+      wbDraft: drafts.worldbook ? {
+        title: `${drafts.worldbook.oldName} ⇄ ${drafts.worldbook.newName}`,
+        bytes: wbDraftBytes,
+      } : null,
+    },
+    memory: {
+      devLogCount,
+      aiCacheEndpoints,
+      aiCacheBytes,
+    },
+    quickCounts: {
+      autoUnpinnedCount,
+      fullUnpinnedCount,
+      orphanCount: orphanPayloadIds.length,
+      missingPayloadCount: missingPayloadSnaps.length,
+    },
+    grandTotalBytes: globalTotalBytes + payloadsTotalBytes + draftsTotalBytes,
+  };
+}
+
+export function cleanOrphanSnapshotPayloads() {
+  const snapIds = new Set((state.store.snapshots || []).map((s) => s.id));
+  const map = readAllSnapshotPayloads();
+  let removed = 0;
+  Object.keys(map).forEach((id) => {
+    if (!snapIds.has(id)) {
+      delete map[id];
+      removed++;
+    }
+  });
+  if (removed > 0) writeAllSnapshotPayloads(map);
+  return removed;
+}
+
+export function repairMissingSnapshotPayloads() {
+  const map = readAllSnapshotPayloads();
+  let repaired = 0;
+  (state.store.snapshots || []).forEach((s) => {
+    if (s && s.mode === 'full' && !map[s.id]) {
+      s.mode = 'state';
+      s.payloadBytes = 0;
+      repaired++;
+    }
+  });
+  if (repaired > 0) saveStore(state.store);
+  return repaired;
+}
+
+export function clearMvuStarredChat(chatKey) {
+  const map = state.store?.extensions?.mvuStarred;
+  if (!map || !Object.prototype.hasOwnProperty.call(map, chatKey)) return false;
+  delete map[chatKey];
+  saveStore(state.store);
+  return true;
+}
+
+export function clearAllMvuStarred() {
+  if (!state.store?.extensions?.mvuStarred) return 0;
+  const count = Object.keys(state.store.extensions.mvuStarred).length;
+  delete state.store.extensions.mvuStarred;
+  saveStore(state.store);
+  return count;
+}
+
+export function cleanAutoBackupSnapshots() {
+  const list = state.store.snapshots || [];
+  const kept = [];
+  let removed = 0;
+  list.forEach((s) => {
+    if (s && s.auto && !s.pinned) {
+      deleteSnapshotPayload(s.id);
+      if (state.lastUndoSnapshotId === s.id) state.lastUndoSnapshotId = null;
+      removed++;
+    } else if (s) {
+      kept.push(s);
+    }
+  });
+  if (removed > 0) {
+    state.store.snapshots = kept;
+    saveStore(state.store);
+  }
+  return removed;
+}
+
+export function slimAllUnpinnedFullSnapshots() {
+  const map = readAllSnapshotPayloads();
+  let slimmed = 0;
+  (state.store.snapshots || []).forEach((s) => {
+    if (s && s.mode === 'full' && !s.pinned) {
+      if (Object.prototype.hasOwnProperty.call(map, s.id)) {
+        delete map[s.id];
+      }
+      s.mode = 'state';
+      s.payloadBytes = 0;
+      s.updatedAt = Date.now();
+      slimmed++;
+    }
+  });
+  if (slimmed > 0) {
+    writeAllSnapshotPayloads(map);
+    saveStore(state.store);
+  }
+  return slimmed;
 }

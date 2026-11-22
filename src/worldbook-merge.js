@@ -1,6 +1,7 @@
 import {
   callTH, notify, cloneWorldbookEntry, cloneWorldbookEntries, keysSignature,
 } from './utils.js';
+import { createAutoBackupSnapshot } from './snapshot.js';
 
 function strategySignature(s) {
   if (!s) return '';
@@ -164,6 +165,7 @@ export async function executeWorldbookStitch(session, targetMode, customTargetNa
     return name;
   }
 
+  await createAutoBackupSnapshot('worldbook', session.newName, '缝合覆盖前');
   await callTH('replaceWorldbook', session.newName, finalEntries, { render: 'debounced' });
   notify('success', `已将缝合结果覆盖保存至「${session.newName}」(${finalEntries.length} 条)`);
   return session.newName;
