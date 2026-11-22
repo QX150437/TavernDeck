@@ -4,7 +4,7 @@ import {
   cloneItemRef, copyToClipboard, downloadJsonFile, logWarn, logError,
 } from './utils.js';
 import {
-  state, saveStore, ensureSchemesPool, getBoundSchemeIds, getVisibleSchemes,
+  state, saveStore, saveMergeDraft, clearMergeDraft, ensureSchemesPool, getBoundSchemeIds, getVisibleSchemes,
   getActiveScheme, setActiveSchemeId, findGroupNode, createOrUpdateScheme,
   deleteActiveScheme, createOrUpdateGroup, clearGroupContents, deleteGroup,
   removeEntryFromGroup, setGroupItems, performDrop,
@@ -33,10 +33,12 @@ import {
   setUiManagersContext, renderSelectPopupView, renderManagerModalView,
   renderManagerPreviewView, updateWbMergeBody,
   handleManagerClick, handleManagerInput, handleManagerChange,
+  confirmDiscardDirtyModal,
 } from './ui-managers.js';
 import {
   initPresetMergeCustomCtx,
   handleMergeUiClick, handleMergeUiInput,
+  flushActiveMergeDraft, scheduleActiveMergeDraftSave, discardPendingCustomMergeDraft,
 } from './merge-ui.js';
 
 let rootEl = null;
@@ -595,7 +597,11 @@ function renderPreservingFocus(targetLayer, renderFn) {
   }
 }
 
-export function setPanelOpen(open) {
+export function setPanelOpen(open, force = false) {
+  if (!open && state.panelOpen && !force) {
+    confirmDiscardDirtyModal(() => setPanelOpen(false, true));
+    return;
+  }
   state.panelOpen = !!open;
   if (state.panelOpen) {
     wakeOrb();
@@ -725,8 +731,14 @@ function handleRootClick(e) {
     return;
   }
   if (e.target === selectLayerEl) { state.selectPopup = null; renderSelectPopupView(); return; }
-  if (e.target === modalLayerEl) { state.modal = null; renderModal(); return; }
-  if (e.target === previewLayerEl) { state.previewKey = null; state.previewCtx = null; state.snapshotDetailId = null; renderPreviewModal(); return; }
+  if (e.target === modalLayerEl) {
+    confirmDiscardDirtyModal(() => {
+      state.modal = null;
+      renderModal();
+    });
+    return;
+  }
+  if (e.target === previewLayerEl) { discardPendingCustomMergeDraft(); state.previewKey = null; state.previewCtx = null; state.snapshotDetailId = null; renderPreviewModal(); return; }
 
   const actionEl = e.target.closest('[data-action]');
   if (!actionEl) return;
@@ -851,6 +863,35 @@ function handleRootClick(e) {
   if (action === 'open-snapshots') { state.modal = { type: 'snapshots', createMode: 'state', filter: 'current', draftName: '' }; renderModal(); return; }
 
   if (action === 'open-preset-merge') { state.modal = { type: 'presetMergeSelect', oldName: '', newName: '' }; renderModal(); return; }
+  if (action === 'resume-preset-merge' && state.mergeDrafts?.preset) {
+    const session = state.mergeDrafts.preset;
+    state.modal = { type: 'presetMerge', session };
+    renderModal();
+    if (session._pendingCustom) {
+      const pc = session._pendingCustom;
+      const entry = session.entries.find((x) => x.key === pc.entryKey);
+      if (entry) {
+        state.previewKey = null;
+        state.snapshotDetailId = null;
+        state.previewCtx = {
+          type: 'mergeCustom',
+          entry,
+          contentOnly: !!pc.contentOnly,
+          syncScroll: false,
+          edited: true,
+          draft: JSON.parse(JSON.stringify(pc.draft)),
+        };
+        renderPreviewModal();
+      }
+    }
+    notify('info', '已恢复上次未完成的预设缝合草稿');
+    return;
+  }
+  if (action === 'discard-preset-merge-draft') {
+    clearMergeDraft('preset');
+    renderModal();
+    return;
+  }
   if (action === 'swap-merge-presets' && state.modal?.type === 'presetMergeSelect') {
     const oldSel = modalLayerEl.querySelector('#td-merge-old-select'), newSel = modalLayerEl.querySelector('#td-merge-new-select');
     const a = oldSel ? oldSel.value : state.modal.oldName, b = newSel ? newSel.value : state.modal.newName;
@@ -877,11 +918,16 @@ function handleRootClick(e) {
   if (action === 'set-merge-choice' && state.modal?.type === 'presetMerge') {
     e.stopPropagation();
     const entry = state.modal.session.entries.find((x) => x.key === actionEl.getAttribute('data-entry-key'));
-    if (entry) { entry.choice = actionEl.getAttribute('data-choice'); updatePresetMergeBody(); }
+    if (entry) {
+      entry.choice = actionEl.getAttribute('data-choice');
+      state.modal.session.dirty = true;
+      saveMergeDraft('preset', state.modal.session);
+      updatePresetMergeBody();
+    }
     return;
   }
-  if (action === 'merge-batch-old' && state.modal?.type === 'presetMerge') { state.modal.session.entries.forEach((it) => { if (it.oldPrompt) it.choice = 'old'; }); updatePresetMergeBody(); notify('info', '已全部选为保留旧版'); return; }
-  if (action === 'merge-batch-new' && state.modal?.type === 'presetMerge') { state.modal.session.entries.forEach((it) => { it.choice = 'new'; }); updatePresetMergeBody(); notify('info', '已全部选为采用新版'); return; }
+  if (action === 'merge-batch-old' && state.modal?.type === 'presetMerge') { state.modal.session.entries.forEach((it) => { if (it.oldPrompt) it.choice = 'old'; }); state.modal.session.dirty = true; saveMergeDraft('preset', state.modal.session); updatePresetMergeBody(); notify('info', '已全部选为保留旧版'); return; }
+  if (action === 'merge-batch-new' && state.modal?.type === 'presetMerge') { state.modal.session.entries.forEach((it) => { it.choice = 'new'; }); state.modal.session.dirty = true; saveMergeDraft('preset', state.modal.session); updatePresetMergeBody(); notify('info', '已全部选为采用新版'); return; }
   if (action === 'merge-batch-states' && state.modal?.type === 'presetMerge') {
     let cnt = 0;
     state.modal.session.entries.forEach((it) => {
@@ -891,6 +937,10 @@ function handleRootClick(e) {
         it.customPrompt = merged; it.choice = 'custom'; cnt++;
       }
     });
+    if (cnt > 0) {
+      state.modal.session.dirty = true;
+      saveMergeDraft('preset', state.modal.session);
+    }
     updatePresetMergeBody(); notify('success', `已将 ${cnt} 个冲突条目的开关状态设为旧版，正文保留新版`); return;
   }
   if ((action === 'open-merge-custom' || action === 'open-merge-custom-content-only') && state.modal?.type === 'presetMerge') {
@@ -907,7 +957,7 @@ function handleRootClick(e) {
     const session = state.modal.session;
     openConfirm({
       title: '覆盖目标预设确认', message: `确定要将缝合后的结果直接覆盖保存到预设「${session.newName}」吗？`, confirmText: '确认覆盖保存', confirmClass: 'danger',
-      onConfirm: () => executePresetStitch(session, 'overwrite').then(() => { state.modal = null; renderModal(); refreshAllCatalogs().then(() => renderMain()); }).catch((err) => { logError('覆盖缝合预设失败', err); notify('error', err.message || String(err)); }),
+      onConfirm: () => executePresetStitch(session, 'overwrite').then(() => { session.dirty = false; delete session._pendingCustom; clearMergeDraft('preset'); state.modal = null; renderModal(); refreshAllCatalogs().then(() => renderMain()); }).catch((err) => { logError('覆盖缝合预设失败', err); notify('error', err.message || String(err)); }),
     });
     return;
   }
@@ -915,7 +965,7 @@ function handleRootClick(e) {
     const session = state.modal.session;
     const newName = window.prompt('请输入另存为的新预设名称：', `${session.newName}-缝合版`);
     if (!newName || !newName.trim()) return;
-    executePresetStitch(session, 'new', newName.trim()).then(() => { state.modal = null; renderModal(); refreshAllCatalogs().then(() => renderMain()); }).catch((err) => { logError('另存缝合预设失败', err); notify('error', err.message || String(err)); });
+    executePresetStitch(session, 'new', newName.trim()).then(() => { session.dirty = false; delete session._pendingCustom; clearMergeDraft('preset'); state.modal = null; renderModal(); refreshAllCatalogs().then(() => renderMain()); }).catch((err) => { logError('另存缝合预设失败', err); notify('error', err.message || String(err)); });
     return;
   }
 
@@ -1112,7 +1162,7 @@ function handleRootClick(e) {
     return;
   }
   if (action === 'preview-entry') { e.stopPropagation(); state.snapshotDetailId = null; state.previewCtx = null; state.previewKey = itemKey; renderPreviewModal(); return; }
-  if (action === 'close-preview') { state.previewKey = null; state.previewCtx = null; state.snapshotDetailId = null; renderPreviewModal(); return; }
+  if (action === 'close-preview') { discardPendingCustomMergeDraft(); state.previewKey = null; state.previewCtx = null; state.snapshotDetailId = null; renderPreviewModal(); return; }
   if (action === 'preview-undo') { pushEditSnapshot(true); if (editHistory.index > 0) { editHistory.index--; applyPreviewSnapshot(editHistory.stack[editHistory.index]); updatePreviewHistoryButtons(); } return; }
   if (action === 'preview-redo') { if (editHistory.index < editHistory.stack.length - 1) { editHistory.index++; applyPreviewSnapshot(editHistory.stack[editHistory.index]); updatePreviewHistoryButtons(); } return; }
   if (action === 'copy-preview') {
@@ -1134,7 +1184,13 @@ function handleRootClick(e) {
     return;
   }
 
-  if (action === 'close-modal') { state.modal = null; renderModal(); return; }
+  if (action === 'close-modal') {
+    confirmDiscardDirtyModal(() => {
+      state.modal = null;
+      renderModal();
+    });
+    return;
+  }
   if (action === 'set-modal-mode' && state.modal?.type === 'groupForm') {
     const nextMode = actionEl.getAttribute('data-mode') === 'single' ? 'single' : 'multi';
     state.modal.mode = nextMode;
@@ -1342,6 +1398,10 @@ function handleRootClick(e) {
 
 function handleRootInput(e) {
   if (!e.target) return;
+  if (previewLayerEl && previewLayerEl.contains(e.target)
+    && (state.previewCtx?.type === 'mergeCustom' || state.previewCtx?.type === 'wbMergeCustom')) {
+    scheduleActiveMergeDraftSave(previewLayerEl);
+  }
   if (handleMergeUiInput(e, previewLayerEl)) return;
   if (handleManagerInput(e)) return;
 
@@ -1389,6 +1449,10 @@ function handleRootInput(e) {
 
 function handleRootChange(e) {
   if (!e.target) return;
+  if (previewLayerEl && previewLayerEl.contains(e.target)
+    && (state.previewCtx?.type === 'mergeCustom' || state.previewCtx?.type === 'wbMergeCustom')) {
+    scheduleActiveMergeDraftSave(previewLayerEl);
+  }
   if (handleManagerChange(e)) return;
 
   const id = e.target.id;
@@ -1438,7 +1502,7 @@ function handleRootChange(e) {
     }).catch((err) => { logError('读取导入文件失败', err); notify('error', `读取文件失败: ${err.message || err}`); });
     return;
   }
-  if (id === 'td-merge-settings-cb' && state.modal?.type === 'presetMerge') { state.modal.session.migrateSettings = !!e.target.checked; return; }
+  if (id === 'td-merge-settings-cb' && state.modal?.type === 'presetMerge') { state.modal.session.migrateSettings = !!e.target.checked; state.modal.session.dirty = true; saveMergeDraft('preset', state.modal.session); updatePresetMergeBody(); return; }
   if (id === 'td-merge-old-select' && state.modal?.type === 'presetMergeSelect') { state.modal.oldName = e.target.value; return; }
   if (id === 'td-merge-new-select' && state.modal?.type === 'presetMergeSelect') {
     state.modal.newName = e.target.value;
@@ -1632,6 +1696,16 @@ function onHostResize() {
 
 function onHostWandClick(e) { if (e.target?.closest?.('#extensionsMenuButton')) setTimeout(syncExtensionButton, 0); }
 
+function onHostBeforeUnload() {
+  if (previewLayerEl) flushActiveMergeDraft(previewLayerEl);
+}
+
+function onHostVisibilityChange() {
+  if (document.visibilityState === 'hidden' && previewLayerEl) {
+    flushActiveMergeDraft(previewLayerEl);
+  }
+}
+
 export function mountUI() {
   cleanupDOM();
   rootEl = document.createElement('div'); rootEl.id = ROOT_ID;
@@ -1700,6 +1774,9 @@ export function mountUI() {
   window.addEventListener('pointerup', onGlobalPointerUp);
   window.addEventListener('pointercancel', onGlobalPointerUp);
   document.addEventListener('click', onHostWandClick, true);
+  window.addEventListener('beforeunload', onHostBeforeUnload);
+  window.addEventListener('pagehide', onHostBeforeUnload);
+  document.addEventListener('visibilitychange', onHostVisibilityChange);
   window.addEventListener('resize', onHostResize);
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', onHostResize);
@@ -1714,6 +1791,9 @@ export function cleanupDOM() {
   window.removeEventListener('pointerup', onGlobalPointerUp);
   window.removeEventListener('pointercancel', onGlobalPointerUp);
   document.removeEventListener('click', onHostWandClick, true);
+  window.removeEventListener('beforeunload', onHostBeforeUnload);
+  window.removeEventListener('pagehide', onHostBeforeUnload);
+  document.removeEventListener('visibilitychange', onHostVisibilityChange);
   window.removeEventListener('resize', onHostResize);
   if (window.visualViewport) {
     window.visualViewport.removeEventListener('resize', onHostResize);

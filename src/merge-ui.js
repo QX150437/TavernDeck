@@ -2,7 +2,7 @@ import {
   escapeHtml, notify, computeSideLineDiffs, cloneWorldbookEntry,
   formatKeysInput, parseKeysInput, keysSignature,
 } from './utils.js';
-import { state } from './store.js';
+import { state, saveMergeDraft, clearMergeDraft } from './store.js';
 import { WB_POSITION_OPTIONS, buildDefaultWorldbookEntry } from './worldbook-manager.js';
 
 const WB_STYPE_LABELS = { selective: '绿灯(关键词)', constant: '蓝灯(常驻)', vectorized: '向量化' };
@@ -617,12 +617,72 @@ export function bindMergeCustomEvents(previewLayerEl) {
   }
 }
 
+let draftSaveTimer = null;
+
+export function flushActiveMergeDraft(previewLayerEl, force = false) {
+  if (draftSaveTimer) {
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+  }
+  const ctx = state.previewCtx;
+  if (ctx && (ctx.type === 'mergeCustom' || ctx.type === 'wbMergeCustom') && (ctx.edited || force)) {
+    const isPreset = ctx.type === 'mergeCustom';
+    const session = isPreset
+      ? (state.modal?.type === 'presetMerge' ? state.modal.session : null)
+      : (state.modal?.type === 'wbMerge' ? state.modal.session : null);
+    if (session) {
+      if (isPreset) syncPresetMergeCustomDraft(previewLayerEl);
+      else syncWbMergeCustomDraft(previewLayerEl);
+      session._pendingCustom = {
+        entryKey: ctx.entry.key,
+        contentOnly: !!ctx.contentOnly,
+        draft: JSON.parse(JSON.stringify(ctx.draft)),
+      };
+      saveMergeDraft(isPreset ? 'preset' : 'worldbook', session);
+      return;
+    }
+  }
+  if (state.modal?.type === 'presetMerge' && state.modal.session?.dirty) {
+    saveMergeDraft('preset', state.modal.session);
+  } else if (state.modal?.type === 'wbMerge' && state.modal.session?.dirty) {
+    saveMergeDraft('worldbook', state.modal.session);
+  }
+}
+
+export function scheduleActiveMergeDraftSave(previewLayerEl) {
+  const ctx = state.previewCtx;
+  if (!ctx || (ctx.type !== 'mergeCustom' && ctx.type !== 'wbMergeCustom')) return;
+  ctx.edited = true;
+  if (draftSaveTimer) clearTimeout(draftSaveTimer);
+  draftSaveTimer = setTimeout(() => {
+    draftSaveTimer = null;
+    flushActiveMergeDraft(previewLayerEl);
+  }, 360);
+}
+
+export function discardPendingCustomMergeDraft() {
+  if (draftSaveTimer) {
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+  }
+  if (state.modal?.type === 'presetMerge' && state.modal.session) {
+    delete state.modal.session._pendingCustom;
+    if (state.modal.session.dirty) saveMergeDraft('preset', state.modal.session);
+    else clearMergeDraft('preset');
+  } else if (state.modal?.type === 'wbMerge' && state.modal.session) {
+    delete state.modal.session._pendingCustom;
+    if (state.modal.session.dirty) saveMergeDraft('worldbook', state.modal.session);
+    else clearMergeDraft('worldbook');
+  }
+}
+
 export function handleMergeUiInput(e, previewLayerEl) {
   const ctx = state.previewCtx;
   if (!ctx || !e.target) return false;
   const id = e.target.id || '';
   if (['td-merge-old-content', 'td-merge-new-content', 'td-wbm-old-content', 'td-wbm-new-content'].includes(id)) {
     applyMergeCustomSideDiffs(previewLayerEl);
+    scheduleActiveMergeDraftSave(previewLayerEl);
     return true;
   }
   return false;
@@ -711,10 +771,15 @@ export function saveMergeCustomResult(previewLayerEl, hooks) {
 
     entry.customPrompt = base;
     entry.choice = 'custom';
+    if (state.modal?.type === 'presetMerge' && state.modal.session) {
+      delete state.modal.session._pendingCustom;
+      state.modal.session.dirty = true;
+      saveMergeDraft('preset', state.modal.session);
+    }
     state.previewCtx = null;
     hooks.renderPreviewModal();
     hooks.updatePresetMergeBody();
-    notify('success', ctx.contentOnly ? '已保存内容缝合结果（属性默认采用新版）' : '已保存该条目的缝合结果');
+    notify('success', ctx.contentOnly ? '已暂存内容缝合结果（请点击底部「覆盖」或「另存为」写入预设）' : '已暂存该条目缝合结果（请点击底部「覆盖」或「另存为」写入预设）');
     return true;
   }
 
@@ -769,10 +834,15 @@ export function saveMergeCustomResult(previewLayerEl, hooks) {
 
     entry.customEntry = base;
     entry.choice = 'custom';
+    if (state.modal?.type === 'wbMerge' && state.modal.session) {
+      delete state.modal.session._pendingCustom;
+      state.modal.session.dirty = true;
+      saveMergeDraft('worldbook', state.modal.session);
+    }
     state.previewCtx = null;
     hooks.renderPreviewModal();
     hooks.updateWbMergeBody();
-    notify('success', ctx.contentOnly ? '已保存内容缝合结果（属性默认采用新版）' : '已保存缝合结果');
+    notify('success', ctx.contentOnly ? '已暂存内容缝合结果（请点击底部「覆盖」或「另存为」写入世界书）' : '已暂存缝合结果（请点击底部「覆盖」或「另存为」写入世界书）');
     return true;
   }
   return false;
@@ -793,6 +863,7 @@ export function handleMergeUiClick(e, actionEl, action, previewLayerEl, hooks) {
     syncPresetMergeCustomDraft(previewLayerEl);
     syncWbMergeCustomDraft(previewLayerEl);
     ctx.contentOnly = !ctx.contentOnly;
+    if (ctx.edited) flushActiveMergeDraft(previewLayerEl);
     hooks.renderPreviewModal();
     return true;
   }
@@ -804,6 +875,8 @@ export function handleMergeUiClick(e, actionEl, action, previewLayerEl, hooks) {
     syncWbMergeCustomDraft(previewLayerEl);
     const ok = ctx.type === 'mergeCustom' ? applyPresetAttrSide(ctx, side, attrKey) : applyWbAttrSide(ctx, side, attrKey);
     if (ok) {
+      ctx.edited = true;
+      flushActiveMergeDraft(previewLayerEl, true);
       hooks.renderPreviewModal();
       notify('success', `已将${attrKey ? '该属性' : '全部属性'}设为${side === 'old' ? '旧版' : '新版'}`);
     }
@@ -817,6 +890,8 @@ export function handleMergeUiClick(e, actionEl, action, previewLayerEl, hooks) {
     if (srcTa && dstTa) {
       dstTa.value = srcTa.value;
       ctx.draft.content = srcTa.value;
+      ctx.edited = true;
+      flushActiveMergeDraft(previewLayerEl, true);
       hooks.pushEditSnapshot(true);
     }
     return true;
@@ -829,6 +904,8 @@ export function handleMergeUiClick(e, actionEl, action, previewLayerEl, hooks) {
     if (srcTa && dstTa) {
       dstTa.value = srcTa.value;
       ctx.draft.content = srcTa.value;
+      ctx.edited = true;
+      flushActiveMergeDraft(previewLayerEl, true);
       hooks.pushEditSnapshot(true);
     }
     return true;

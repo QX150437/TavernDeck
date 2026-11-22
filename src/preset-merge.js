@@ -140,6 +140,7 @@ export function buildPresetDiffSession(oldName, newName) {
     query: '',
     controlsOpen: false,
     migrateSettings: false,
+    dirty: false,
   };
 }
 

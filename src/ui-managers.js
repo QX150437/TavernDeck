@@ -3,7 +3,7 @@ import {
   computeLineDiff, cloneWorldbookEntry, formatKeysInput, parseKeysInput,
   hasTH, callTH, copyToClipboard, downloadTextFile, logWarn, logError,
 } from './utils.js';
-import { state, saveStore } from './store.js';
+import { state, saveStore, saveMergeDraft, clearMergeDraft } from './store.js';
 import { refreshAllCatalogs, refreshWorldbookCatalog } from './catalog.js';
 import { saveInUseToPreset } from './preset-merge.js';
 import { buildWorldbookDiffSession, executeWorldbookStitch } from './worldbook-merge.js';
@@ -50,6 +50,88 @@ let cropDrag = null;
 
 export function setUiManagersContext(nextCtx) {
   ctx = Object.assign(ctx, nextCtx || {});
+}
+
+export function confirmDiscardDirtyModal(onProceed) {
+  const m = state.modal;
+  if (m && (m.type === 'presetMerge' || m.type === 'wbMerge') && m.session?.dirty) {
+    const isPreset = m.type === 'presetMerge';
+    const draftKey = isPreset ? 'preset' : 'worldbook';
+    ctx.openConfirm({
+      title: '未应用的缝合结果',
+      message: `${isPreset ? '预设' : '世界书'}对比缝合「${m.session.oldName} ⇄ ${m.session.newName}」已有缝合修改，但尚未点击「覆盖」或「另存为」写入目标。直接关闭不会生效，是否暂存草稿？`,
+      confirmText: '放弃并关闭',
+      confirmClass: 'danger',
+      extraButton: {
+        text: '暂存草稿并关闭',
+        className: 'primary',
+        onClick: () => {
+          saveMergeDraft(draftKey, m.session);
+          notify('info', '已暂存缝合草稿，下次打开对比缝合可继续');
+          onProceed();
+        },
+      },
+      onConfirm: () => {
+        if (state.mergeDrafts && state.mergeDrafts[draftKey] === m.session) {
+          clearMergeDraft(draftKey);
+        }
+        onProceed();
+      },
+    });
+    return;
+  }
+  if (!m || !m.dirty || (m.type !== 'presetDetail' && m.type !== 'worldbookDetail')) {
+    onProceed();
+    return;
+  }
+  const isPreset = m.type === 'presetDetail';
+  const targetName = isPreset
+    ? (m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName)
+    : m.bookName;
+  ctx.openConfirm({
+    title: '未保存修改确认',
+    message: `${isPreset ? '预设' : '世界书'}「${targetName}」有未保存的修改，关闭后修改将会丢失，是否保存？`,
+    confirmText: '放弃修改',
+    confirmClass: 'danger',
+    extraButton: {
+      text: '保存并关闭',
+      className: 'primary',
+      onClick: () => {
+        if (isPreset) {
+          savePresetDetail(m.presetName, m.data, true)
+            .then(() => {
+              m.dirty = false;
+              notify('success', `已保存预设「${m.presetName}」`);
+              return refreshAllCatalogs();
+            })
+            .then(() => {
+              ctx.renderMain();
+              onProceed();
+            })
+            .catch((err) => {
+              logError('保存预设详情失败', err);
+              notify('error', `保存失败: ${err.message || err}`);
+            });
+        } else {
+          callTH('replaceWorldbook', m.bookName, m.entries, { render: 'debounced' })
+            .then(() => {
+              m.dirty = false;
+              notify('success', `已保存世界书「${m.bookName}」`);
+              return refreshWorldbookCatalog(false);
+            })
+            .then(() => {
+              ctx.renderMain();
+              onProceed();
+            })
+            .catch((err) => {
+              logError('保存世界书失败', err);
+              notify('error', `保存世界书失败: ${err.message || err}`);
+            });
+        }
+      },
+    },
+    onConfirm: onProceed,
+  });
 }
 
 export function drawOrbCropCanvas() {
@@ -340,6 +422,14 @@ export function updateWbMergeBody() {
 
   if (ctrlBox) ctrlBox.classList.toggle('is-open', !!session.controlsOpen);
   if (toggleBtn) toggleBtn.classList.toggle('is-active', !!session.controlsOpen);
+  const dirtyEl = modalLayerEl.querySelector("[data-role='wb-merge-dirty']");
+  if (dirtyEl) {
+    const customCnt = session.entries.filter((e) => e.choice === 'custom').length;
+    dirtyEl.textContent = session.dirty
+      ? `有未应用缝合${customCnt > 0 ? `（含手动缝合 ${customCnt} 项）` : ''} · 尚未写入`
+      : '';
+    dirtyEl.style.display = session.dirty ? 'block' : 'none';
+  }
   if (summaryEl) {
     const totalDiff = session.stats.conflict + session.stats.added + session.stats.removed;
     const qText = (session.query || '').trim();
@@ -452,11 +542,21 @@ export function renderManagerModalView(m) {
     const newVal = (m.newName && books.includes(m.newName)) ? m.newName : (books[0] || '');
     const oldVal = (m.oldName && books.includes(m.oldName)) ? m.oldName : findBestMatchingName(newVal, books);
     m.oldName = oldVal; m.newName = newVal;
+    const draft = state.mergeDrafts?.worldbook;
+    const draftHtml = draft ? `
+      <div class='td-attr-warn-banner' style='display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;'>
+        <span style='flex:1;min-width:160px;'>有未应用的缝合草稿：${escapeHtml(draft.oldName)} ⇄ ${escapeHtml(draft.newName)}${draft._pendingCustom ? '（含未保存的条目编辑）' : ''}</span>
+        <span style='display:flex;gap:6px;'>
+          <button type='button' class='td-btn sm primary' data-action='resume-wb-merge'>继续上次缝合</button>
+          <button type='button' class='td-btn sm' data-action='discard-wb-merge-draft'>丢弃</button>
+        </span>
+      </div>` : '';
     const optsHtml = (sel) => books.map((n) => `<option value='${escapeHtml(n)}' ${n === sel ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
     modalLayerEl.innerHTML = `
       <div class='td-modal'>
         <div class='td-modal-head'><div class='td-modal-title'>${ICONS.gitMerge} 世界书对比与缝合</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         <div class='td-modal-body'>
+          ${draftHtml}
           ${books.length < 2
             ? "<div class='td-empty'><div class='td-empty-title'>世界书数量不足</div><div class='td-empty-desc'>至少需要 2 本世界书才能进行对比与缝合。</div></div>"
             : `<div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>选择旧版世界书与新版世界书，将自动按名称与 UID 匹配条目并生成逐行差异对比。</div>
@@ -494,7 +594,10 @@ export function renderManagerModalView(m) {
           </div>
           <div class='td-picker-list td-scroll' data-role='wb-merge-list'></div>
         </div>
-        <div class='td-modal-foot'><button class='td-btn' data-action='wb-merge-save-as'>另存为新世界书</button><button class='td-btn primary' data-action='wb-merge-apply-target'>覆盖新版世界书</button></div>
+        <div class='td-modal-foot' style='flex-wrap:wrap;'>
+          <span data-role='wb-merge-dirty' style='margin-right:auto;font-size:11.5px;font-weight:600;color:var(--td-single);display:none;'></span>
+          <button class='td-btn' data-action='wb-merge-save-as'>另存为新世界书</button><button class='td-btn primary' data-action='wb-merge-apply-target'>覆盖新版世界书</button>
+        </div>
       </div>`;
     updateWbMergeBody();
     ctx.syncOverlayBounds();
@@ -1197,6 +1300,35 @@ export function handleManagerClick(e, actionEl, action) {
   }
 
   if (action === 'open-wb-merge') { state.modal = { type: 'wbMergeSelect', oldName: '', newName: '' }; ctx.renderModal(); return true; }
+  if (action === 'resume-wb-merge' && state.mergeDrafts?.worldbook) {
+    const session = state.mergeDrafts.worldbook;
+    state.modal = { type: 'wbMerge', session };
+    ctx.renderModal();
+    if (session._pendingCustom) {
+      const pc = session._pendingCustom;
+      const entry = session.entries.find((x) => x.key === pc.entryKey);
+      if (entry) {
+        state.previewKey = null;
+        state.snapshotDetailId = null;
+        state.previewCtx = {
+          type: 'wbMergeCustom',
+          entry,
+          contentOnly: !!pc.contentOnly,
+          syncScroll: false,
+          edited: true,
+          draft: JSON.parse(JSON.stringify(pc.draft)),
+        };
+        ctx.renderPreviewModal();
+      }
+    }
+    notify('info', '已恢复上次未完成的世界书缝合草稿');
+    return true;
+  }
+  if (action === 'discard-wb-merge-draft') {
+    clearMergeDraft('worldbook');
+    ctx.renderModal();
+    return true;
+  }
   if (action === 'swap-wb-merge' && state.modal?.type === 'wbMergeSelect') {
     const oldSel = modalLayerEl.querySelector('#td-wb-merge-old-select'), newSel = modalLayerEl.querySelector('#td-wb-merge-new-select');
     const a = oldSel ? oldSel.value : state.modal.oldName, b = newSel ? newSel.value : state.modal.newName;
@@ -1221,11 +1353,16 @@ export function handleManagerClick(e, actionEl, action) {
   if (action === 'set-wb-merge-choice' && state.modal?.type === 'wbMerge') {
     e.stopPropagation();
     const entry = state.modal.session.entries.find((x) => x.key === actionEl.getAttribute('data-entry-key'));
-    if (entry) { entry.choice = actionEl.getAttribute('data-choice'); updateWbMergeBody(); }
+    if (entry) {
+      entry.choice = actionEl.getAttribute('data-choice');
+      state.modal.session.dirty = true;
+      saveMergeDraft('worldbook', state.modal.session);
+      updateWbMergeBody();
+    }
     return true;
   }
-  if (action === 'wb-merge-batch-old' && state.modal?.type === 'wbMerge') { state.modal.session.entries.forEach((it) => { if (it.oldEntry) it.choice = 'old'; }); updateWbMergeBody(); return true; }
-  if (action === 'wb-merge-batch-new' && state.modal?.type === 'wbMerge') { state.modal.session.entries.forEach((it) => { it.choice = 'new'; }); updateWbMergeBody(); return true; }
+  if (action === 'wb-merge-batch-old' && state.modal?.type === 'wbMerge') { state.modal.session.entries.forEach((it) => { if (it.oldEntry) it.choice = 'old'; }); state.modal.session.dirty = true; saveMergeDraft('worldbook', state.modal.session); updateWbMergeBody(); return true; }
+  if (action === 'wb-merge-batch-new' && state.modal?.type === 'wbMerge') { state.modal.session.entries.forEach((it) => { it.choice = 'new'; }); state.modal.session.dirty = true; saveMergeDraft('worldbook', state.modal.session); updateWbMergeBody(); return true; }
   if (action === 'wb-merge-batch-states' && state.modal?.type === 'wbMerge') {
     let cnt = 0;
     state.modal.session.entries.forEach((it) => {
@@ -1234,6 +1371,10 @@ export function handleManagerClick(e, actionEl, action) {
         it.customEntry = merged; it.choice = 'custom'; cnt++;
       }
     });
+    if (cnt > 0) {
+      state.modal.session.dirty = true;
+      saveMergeDraft('worldbook', state.modal.session);
+    }
     updateWbMergeBody(); notify('success', `已将 ${cnt} 个冲突条目的开关迁移为旧版`); return true;
   }
   if ((action === 'open-wb-merge-custom' || action === 'open-wb-merge-custom-content-only') && state.modal?.type === 'wbMerge') {
@@ -1250,7 +1391,7 @@ export function handleManagerClick(e, actionEl, action) {
     const session = state.modal.session;
     ctx.openConfirm({
       title: '覆盖目标世界书确认', message: `确定要将缝合后的条目覆盖保存到世界书「${session.newName}」吗？`, confirmText: '确认覆盖', confirmClass: 'danger',
-      onConfirm: () => executeWorldbookStitch(session, 'overwrite').then(() => { state.modal = null; ctx.renderModal(); refreshWorldbookCatalog(false).then(() => ctx.renderMain()); }).catch((err) => { logError('覆盖缝合世界书失败', err); notify('error', err.message || String(err)); }),
+      onConfirm: () => executeWorldbookStitch(session, 'overwrite').then(() => { session.dirty = false; delete session._pendingCustom; clearMergeDraft('worldbook'); state.modal = null; ctx.renderModal(); refreshWorldbookCatalog(false).then(() => ctx.renderMain()); }).catch((err) => { logError('覆盖缝合世界书失败', err); notify('error', err.message || String(err)); }),
     });
     return true;
   }
@@ -1258,7 +1399,7 @@ export function handleManagerClick(e, actionEl, action) {
     const session = state.modal.session;
     const newName = window.prompt('请输入另存为的新世界书名称：', `${session.newName}-缝合版`);
     if (!newName || !newName.trim()) return true;
-    executeWorldbookStitch(session, 'new', newName.trim()).then(() => { state.modal = null; ctx.renderModal(); refreshWorldbookCatalog(false).then(() => ctx.renderMain()); }).catch((err) => { logError('另存缝合世界书失败', err); notify('error', err.message || String(err)); });
+    executeWorldbookStitch(session, 'new', newName.trim()).then(() => { session.dirty = false; delete session._pendingCustom; clearMergeDraft('worldbook'); state.modal = null; ctx.renderModal(); refreshWorldbookCatalog(false).then(() => ctx.renderMain()); }).catch((err) => { logError('另存缝合世界书失败', err); notify('error', err.message || String(err)); });
     return true;
   }
 
@@ -1299,7 +1440,13 @@ export function handleManagerClick(e, actionEl, action) {
     catch (err) { logError('读取预设详情失败', err); notify('error', err.message || String(err)); }
     return true;
   }
-  if (action === 'pm-back-list' && state.modal?.type === 'presetDetail') { state.modal = { type: 'presetManager', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
+  if (action === 'pm-back-list' && state.modal?.type === 'presetDetail') {
+    confirmDiscardDirtyModal(() => {
+      state.modal = { type: 'presetManager', query: '', toolsOpen: false };
+      ctx.renderModal();
+    });
+    return true;
+  }
   if (action === 'pm-detail-tab' && state.modal?.type === 'presetDetail') { state.modal.tab = actionEl.getAttribute('data-tab') || 'prompts'; state.modal.selectedIdx = new Set(); ctx.renderModal(); return true; }
   if (action === 'pm-detail-toggle-tools' && state.modal?.type === 'presetDetail') { state.modal.toolsOpen = !state.modal.toolsOpen; ctx.renderModal(); return true; }
   if (action === 'pm-jump-idx' && state.modal?.type === 'presetDetail') {
@@ -1693,7 +1840,13 @@ export function handleManagerClick(e, actionEl, action) {
     state.selectPopup = { type: 'moveWbTarget', fromIndices: [Number(actionEl.getAttribute('data-idx'))] };
     renderSelectPopupView(); return true;
   }
-  if (action === 'wbd-back-list' && state.modal?.type === 'worldbookDetail') { state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false }; ctx.renderModal(); return true; }
+  if (action === 'wbd-back-list' && state.modal?.type === 'worldbookDetail') {
+    confirmDiscardDirtyModal(() => {
+      state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false };
+      ctx.renderModal();
+    });
+    return true;
+  }
   if (action === 'wbd-toggle-entry' && state.modal?.type === 'worldbookDetail') {
     const idx = Number(actionEl.getAttribute('data-idx'));
     if (state.modal.entries[idx]) {
@@ -1849,7 +2002,10 @@ export function handleManagerChange(e) {
     if (ftype === 'bool') state.modal.data.settings[key] = !!target.checked;
     else if (ftype === 'number') state.modal.data.settings[key] = Number(target.value);
     else state.modal.data.settings[key] = target.value;
-    state.modal.dirty = true; return true;
+    state.modal.dirty = true;
+    const dirtyEl = ctx.getModalLayer()?.querySelector("[data-role='pm-dirty-label']");
+    if (dirtyEl) dirtyEl.textContent = '有未保存修改';
+    return true;
   }
 
   if (id === 'td-pm-import-file') {

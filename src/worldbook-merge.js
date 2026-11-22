@@ -123,6 +123,7 @@ export async function buildWorldbookDiffSession(oldName, newName) {
     filter: (stats.conflict + stats.added + stats.removed) > 0 ? 'diff' : 'all',
     query: '',
     controlsOpen: false,
+    dirty: false,
   };
 }
 

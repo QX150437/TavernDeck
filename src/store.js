@@ -1,7 +1,65 @@
 import {
   STORAGE_KEY, SCHEMA_VERSION,
-  hasTH, callTH, notify, genId, makeItemKey, cloneItemRef, logError,
+  hasTH, callTH, notify, genId, makeItemKey, cloneItemRef, logWarn, logError,
 } from './utils.js';
+
+const MERGE_DRAFTS_STORAGE_KEY = 'TavernDeck_mergeDrafts_v1';
+
+function stringifyMergeDrafts(obj) {
+  return JSON.stringify(obj, (_k, val) => (
+    val instanceof RegExp ? { __td_re: [val.source, val.flags] } : val
+  ));
+}
+
+function parseMergeDrafts(str) {
+  return JSON.parse(str, (_k, val) => (
+    val && typeof val === 'object' && Array.isArray(val.__td_re) && val.__td_re.length === 2
+      ? new RegExp(val.__td_re[0], val.__td_re[1])
+      : val
+  ));
+}
+
+export function loadMergeDrafts() {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(MERGE_DRAFTS_STORAGE_KEY) : null;
+    if (!raw) return { preset: null, worldbook: null };
+    const parsed = parseMergeDrafts(raw);
+    return {
+      preset: parsed && parsed.preset ? parsed.preset : null,
+      worldbook: parsed && parsed.worldbook ? parsed.worldbook : null,
+    };
+  } catch (e) {
+    logWarn('读取本地缝合草稿失败', e);
+    return { preset: null, worldbook: null };
+  }
+}
+
+export function persistMergeDrafts() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const drafts = state.mergeDrafts || { preset: null, worldbook: null };
+    if (!drafts.preset && !drafts.worldbook) {
+      localStorage.removeItem(MERGE_DRAFTS_STORAGE_KEY);
+    } else {
+      localStorage.setItem(MERGE_DRAFTS_STORAGE_KEY, stringifyMergeDrafts(drafts));
+    }
+  } catch (e) {
+    logWarn('保存本地缝合草稿失败', e);
+  }
+}
+
+export function saveMergeDraft(kind, session) {
+  if (!kind || !session) return;
+  state.mergeDrafts = state.mergeDrafts || { preset: null, worldbook: null };
+  state.mergeDrafts[kind] = session;
+  persistMergeDrafts();
+}
+
+export function clearMergeDraft(kind) {
+  if (!state.mergeDrafts || !kind) return;
+  state.mergeDrafts[kind] = null;
+  persistMergeDrafts();
+}
 
 export function createDefaultStore() {
   const defId = genId();
@@ -81,6 +139,7 @@ export const state = {
   snapshotDetailId: null,
   selectPopup: null,
   confirmModal: null,
+  mergeDrafts: loadMergeDrafts(),
   isBusy: false,
   orbIdle: false,
 };

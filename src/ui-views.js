@@ -463,6 +463,14 @@ export function updatePresetMergeBody() {
 
   if (ctrlBox) ctrlBox.classList.toggle('is-open', !!session.controlsOpen);
   if (toggleBtn) toggleBtn.classList.toggle('is-active', !!session.controlsOpen);
+  const dirtyEl = modalLayerEl.querySelector("[data-role='pm-merge-dirty']");
+  if (dirtyEl) {
+    const customCnt = session.entries.filter((e) => e.choice === 'custom').length;
+    dirtyEl.textContent = session.dirty
+      ? `有未应用缝合${customCnt > 0 ? `（含手动缝合 ${customCnt} 项）` : ''} · 尚未写入`
+      : '';
+    dirtyEl.style.display = session.dirty ? 'block' : 'none';
+  }
   if (summaryEl) {
     const totalDiff = session.stats.conflict + session.stats.added + session.stats.removed;
     const qText = (session.query || '').trim();
@@ -568,11 +576,21 @@ export function renderModal() {
     const newVal = (m.newName && list.includes(m.newName)) ? m.newName : (state.presetName && state.presetName !== 'in_use' ? state.presetName : (list[0] || ''));
     const oldVal = (m.oldName && list.includes(m.oldName)) ? m.oldName : findBestMatchingOldPreset(newVal, list);
     m.oldName = oldVal; m.newName = newVal;
+    const draft = state.mergeDrafts?.preset;
+    const draftHtml = draft ? `
+      <div class='td-attr-warn-banner' style='display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;'>
+        <span style='flex:1;min-width:160px;'>有未应用的缝合草稿：${escapeHtml(draft.oldName)} ⇄ ${escapeHtml(draft.newName)}${draft._pendingCustom ? '（含未保存的条目编辑）' : ''}</span>
+        <span style='display:flex;gap:6px;'>
+          <button type='button' class='td-btn sm primary' data-action='resume-preset-merge'>继续上次缝合</button>
+          <button type='button' class='td-btn sm' data-action='discard-preset-merge-draft'>丢弃</button>
+        </span>
+      </div>` : '';
     const optsHtml = (sel) => list.map((n) => `<option value='${escapeHtml(n)}' ${n === sel ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
     modalLayerEl.innerHTML = `
       <div class='td-modal'>
         <div class='td-modal-head'><div class='td-modal-title'>${ICONS.gitMerge} 预设版本对比与缝合</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
         <div class='td-modal-body'>
+          ${draftHtml}
           <div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>默认将「当前预设」设为新版预设，并自动模糊匹配最相近的旧版预设（也可手动更改或一键交换）。</div>
           <div class='td-field'><label class='td-label'>旧版本预设（Current · 修改来源）</label><select class='td-select' id='td-merge-old-select'>${optsHtml(oldVal)}</select></div>
           <div style='display:flex;justify-content:center;'><button type='button' class='td-btn sm' data-action='swap-merge-presets'>${ICONS.swap} 交换旧版 / 新版</button></div>
@@ -607,7 +625,10 @@ export function renderModal() {
           </div>
           <div class='td-picker-list td-scroll' data-role='merge-list'></div>
         </div>
-        <div class='td-modal-foot'><label style='margin-right:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;'><input type='checkbox' class='td-checkbox' id='td-merge-settings-cb' ${s.migrateSettings ? 'checked' : ''} /><span>迁移旧版参数</span></label><button class='td-btn' data-action='merge-save-as'>另存为新预设</button><button class='td-btn primary' data-action='merge-apply-target'>覆盖新版预设</button></div>
+        <div class='td-modal-foot' style='flex-wrap:wrap;'>
+          <span data-role='pm-merge-dirty' style='width:100%;font-size:11.5px;font-weight:600;color:var(--td-single);display:none;'></span>
+          <label style='margin-right:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;'><input type='checkbox' class='td-checkbox' id='td-merge-settings-cb' ${s.migrateSettings ? 'checked' : ''} /><span>迁移旧版参数</span></label><button class='td-btn' data-action='merge-save-as'>另存为新预设</button><button class='td-btn primary' data-action='merge-apply-target'>覆盖新版预设</button>
+        </div>
       </div>`;
     updatePresetMergeBody(); uiCtx.syncOverlayBounds(); return;
   }
