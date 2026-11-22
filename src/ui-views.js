@@ -66,6 +66,30 @@ export const ORB_STYLE_OPTIONS = [
   { id: 'glass', name: '液态玻璃', swatch: 'linear-gradient(135deg,#cbd5e1,#64748b)' },
 ];
 
+export const TOAST_THEME_OPTIONS = [
+  { id: 'panel', name: '跟随控制台主题', desc: '自适应暗夜/白天/羊皮/翡翠/赛博配色', swatch: 'linear-gradient(135deg,#6366f1,#151821)' },
+  { id: 'glass', name: '磨砂玻璃', desc: '高透模糊玻璃拟态与细腻亮边框', swatch: 'linear-gradient(135deg,rgba(255,255,255,0.5),rgba(148,163,184,0.35))' },
+  { id: 'pill', name: '灵动胶囊', desc: '圆润紧凑胶囊造型，轻盈悬浮', swatch: 'linear-gradient(135deg,#38bdf8,#6366f1)' },
+  { id: 'card', name: '极简色条', desc: '实底卡片搭配左侧 4px 状态强调色条', swatch: 'linear-gradient(90deg,#10b981 0%,#10b981 30%,#1e2230 30%)' },
+  { id: 'neon', name: '霓虹赛博', desc: '深邃暗底搭配状态色发光霓虹边框', swatch: 'linear-gradient(135deg,#ec4899,#06b6d4)' },
+  { id: 'ink', name: '复古羊皮', desc: '温润暖色纸感，古典褐金描边', swatch: '#f4ead2' },
+];
+
+export const NATIVE_TOAST_THEME_OPTIONS = [
+  { id: 'glass', name: '磨砂玻璃（推荐）', desc: '通透毛玻璃质感，百搭酒馆背景', swatch: 'linear-gradient(135deg,rgba(255,255,255,0.5),rgba(148,163,184,0.35))' },
+  { id: 'pill', name: '灵动胶囊', desc: '圆润紧凑胶囊造型，存在感适中', swatch: 'linear-gradient(135deg,#38bdf8,#6366f1)' },
+  { id: 'card', name: '极简色条', desc: '左侧状态强调色条，层级分明', swatch: 'linear-gradient(90deg,#f59e0b 0%,#f59e0b 30%,#1e2230 30%)' },
+  { id: 'neon', name: '霓虹赛博', desc: '深邃暗底搭配状态色发光描边', swatch: 'linear-gradient(135deg,#ec4899,#06b6d4)' },
+  { id: 'ink', name: '复古羊皮', desc: '温润羊皮纸色调，古典质感', swatch: '#f4ead2' },
+  { id: 'follow', name: '跟随插件通知主题', desc: '与 TavernDeck 插件通知保持一致', swatch: 'linear-gradient(135deg,#6366f1,#8b5cf6)' },
+];
+
+export const NATIVE_TOAST_POS_OPTIONS = [
+  { id: 'top-right', name: '右上角（默认 · 与插件错开防混淆）' },
+  { id: 'top-center', name: '顶部居中（与插件同区堆叠）' },
+  { id: 'bottom-right', name: '右下角（不遮挡顶部栏）' },
+];
+
 export const TEXT_COLOR_PRESETS = [
   { name: '默认 (跟随主题)', value: '' },
   { name: '琥珀金', value: '#f59e0b' },
@@ -789,6 +813,11 @@ export function renderModal() {
     const unlockOrb = !!s.unlockOrbSliders;
     const showOrb = s.showOrb !== false, enableExt = !!s.enableExtButton, enableTopBar = !!s.enableTopBarButton;
     const enableDrag = !!s.enableDragSort, collapseNative = !!s.collapseNativePresetSettings;
+    const takeoverNativeToast = !!s.takeoverNativeToast;
+    const nativeToastThemeObj = NATIVE_TOAST_THEME_OPTIONS.find((o) => o.id === (s.nativeToastTheme || 'glass')) || NATIVE_TOAST_THEME_OPTIONS[0];
+    const nativeToastPosObj = NATIVE_TOAST_POS_OPTIONS.find((o) => o.id === (s.nativeToastPosition || 'top-right')) || NATIVE_TOAST_POS_OPTIONS[0];
+    const tdToastThemeObj = TOAST_THEME_OPTIONS.find((o) => o.id === (s.tdToastTheme || 'panel')) || TOAST_THEME_OPTIONS[0];
+    const tdSilentToast = !!s.tdSilentToast;
     const collapseGrp = s.collapseGroupActions !== false, grpCfg = s.collapsedGroupItems || {};
     const collapseEntry = s.collapseEntryActions !== false, entryCfg = s.collapsedEntryItems || {};
 
@@ -826,6 +855,30 @@ export function renderModal() {
           </div>
 
           <div class='td-field'>
+            <label class='td-label'>插件通知优化（徽标：TD · 顶部居中）</label>
+            <div class='td-setting-row'>
+              <div style='display:flex;align-items:center;gap:10px;min-width:0;flex:1;'>
+                <span class='td-swatch' style='background:${escapeHtml(tdToastThemeObj.swatch)};'></span>
+                <div>
+                  <div class='td-setting-title'>插件通知 UI 主题</div>
+                  <div class='td-setting-desc'>当前：${escapeHtml(tdToastThemeObj.name)}</div>
+                </div>
+              </div>
+              <div style='display:flex;gap:5px;flex-shrink:0;'>
+                <button type='button' class='td-btn sm' data-action='preview-td-toast'>测试</button>
+                <button type='button' class='td-btn sm' data-action='open-select-popup' data-select-type='tdToastTheme'>选择</button>
+              </div>
+            </div>
+            <div class='td-setting-row'>
+              <div>
+                <div class='td-setting-title'>静默通知</div>
+                <div class='td-setting-desc'>开启后仅警告和报错信息才弹窗通知，普通/成功提示仅记入运行日志</div>
+              </div>
+              <button type='button' class='td-switch ${tdSilentToast ? 'on' : ''}' data-action='toggle-td-silent-toast'></button>
+            </div>
+          </div>
+
+          <div class='td-field'>
             <label class='td-label'>酒馆原生界面辅助</label>
             <div class='td-setting-row'>
               <div>
@@ -833,6 +886,33 @@ export function renderModal() {
                 <div class='td-setting-desc'>将酒馆预设下拉框下方的原生设定区域折叠，保留预设条目（可随时点横条原样展开）</div>
               </div>
               <button type='button' class='td-switch ${collapseNative ? 'on' : ''}' data-action='toggle-native-preset-collapse'></button>
+            </div>
+            <div class='td-setting-row'>
+              <div>
+                <div class='td-setting-title'>接管酒馆全部 UI 通知</div>
+                <div class='td-setting-desc'>开启后替换酒馆原生通知弹窗（徽标：ST，默认右上角以防与插件通知混淆）</div>
+              </div>
+              <button type='button' class='td-switch ${takeoverNativeToast ? 'on' : ''}' data-action='toggle-native-toast-takeover'></button>
+            </div>
+            <div class='td-setting-row' data-role='native-toast-sub' style='display:${takeoverNativeToast ? 'flex' : 'none'};'>
+              <div style='display:flex;align-items:center;gap:10px;min-width:0;flex:1;'>
+                <span class='td-swatch' style='background:${escapeHtml(nativeToastThemeObj.swatch)};'></span>
+                <div>
+                  <div class='td-setting-title'>酒馆通知 UI 主题</div>
+                  <div class='td-setting-desc'>当前：${escapeHtml(nativeToastThemeObj.name)}</div>
+                </div>
+              </div>
+              <div style='display:flex;gap:5px;flex-shrink:0;'>
+                <button type='button' class='td-btn sm' data-action='preview-native-toast'>测试</button>
+                <button type='button' class='td-btn sm' data-action='open-select-popup' data-select-type='nativeToastTheme'>选择</button>
+              </div>
+            </div>
+            <div class='td-setting-row' data-role='native-toast-pos-sub' style='display:${takeoverNativeToast ? 'flex' : 'none'};'>
+              <div>
+                <div class='td-setting-title'>酒馆通知显示位置</div>
+                <div class='td-setting-desc'>当前：${escapeHtml(nativeToastPosObj.name)}</div>
+              </div>
+              <button type='button' class='td-btn sm' data-action='open-select-popup' data-select-type='nativeToastPosition'>选择位置</button>
             </div>
           </div>
 

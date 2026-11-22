@@ -29,6 +29,7 @@ import {
 import { getDevLogs, clearDevLogs, formatLogsReport } from './dev-tools.js';
 import {
   ICONS, THEME_OPTIONS, ORB_STYLE_OPTIONS, TEXT_COLOR_PRESETS,
+  TOAST_THEME_OPTIONS, NATIVE_TOAST_THEME_OPTIONS, NATIVE_TOAST_POS_OPTIONS,
   editHistory, readPreviewSnapshot, pushEditSnapshot, updatePreviewHistoryButtons,
 } from './ui-views.js';
 import { initWbMergeCustomCtx, renderWbMergeCustomModal } from './merge-ui.js';
@@ -263,6 +264,50 @@ export function renderSelectPopupView() {
         <div class='td-modal-foot'>
           <button class='td-btn primary' data-action='close-select-popup'>关闭</button>
         </div>
+      </div>`;
+    ctx.syncOverlayBounds();
+    return;
+  }
+
+  if (sp.type === 'tdToastTheme' || sp.type === 'nativeToastTheme') {
+    const isNative = sp.type === 'nativeToastTheme';
+    const opts = isNative ? NATIVE_TOAST_THEME_OPTIONS : TOAST_THEME_OPTIONS;
+    const curVal = isNative
+      ? (state.store.settings.nativeToastTheme || 'glass')
+      : (state.store.settings.tdToastTheme || 'panel');
+    const itemsHtml = opts.map((o) => `
+      <button type='button' class='td-select-option ${o.id === curVal ? 'active' : ''}' data-action='select-popup-pick' data-value='${escapeHtml(o.id)}'>
+        <span class='td-select-option-left'>
+          <span class='td-swatch' style='background:${escapeHtml(o.swatch)};'></span>
+          <span style='min-width:0;display:flex;flex-direction:column;gap:2px;'>
+            <span class='td-select-option-name'>${escapeHtml(o.name)}</span>
+            <span style='font-size:11px;color:var(--td-text-muted);'>${escapeHtml(o.desc || '')}</span>
+          </span>
+        </span>
+        ${o.id === curVal ? "<span class='td-mode-tag multi'>当前</span>" : ''}
+      </button>`).join('');
+
+    layer.innerHTML = `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'><div class='td-modal-title'>${isNative ? '选择酒馆通知主题' : '选择插件通知主题'}</div><button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button></div>
+        <div class='td-modal-body'><div class='td-select-list td-scroll' style='max-height:380px;overflow-y:auto;'>${itemsHtml}</div></div>
+      </div>`;
+    ctx.syncOverlayBounds();
+    return;
+  }
+
+  if (sp.type === 'nativeToastPosition') {
+    const curVal = state.store.settings.nativeToastPosition || 'top-right';
+    const itemsHtml = NATIVE_TOAST_POS_OPTIONS.map((o) => `
+      <button type='button' class='td-select-option ${o.id === curVal ? 'active' : ''}' data-action='select-popup-pick' data-value='${escapeHtml(o.id)}'>
+        <span class='td-select-option-left'><span class='td-select-option-name'>${escapeHtml(o.name)}</span></span>
+        ${o.id === curVal ? "<span class='td-mode-tag multi'>当前</span>" : ''}
+      </button>`).join('');
+
+    layer.innerHTML = `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'><div class='td-modal-title'>选择酒馆通知显示位置</div><button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button></div>
+        <div class='td-modal-body'><div class='td-select-list'>${itemsHtml}</div></div>
       </div>`;
     ctx.syncOverlayBounds();
     return;
@@ -2514,6 +2559,9 @@ export function handleManagerClick(e, actionEl, action) {
     else if (t === 'groupTextColor') state.store.settings.groupTextColor = val;
     else if (t === 'entryTextColor') state.store.settings.entryTextColor = val;
     else if (t === 'topBarPosition') state.store.settings.topBarPosition = val || 'after_extensions';
+    else if (t === 'tdToastTheme') state.store.settings.tdToastTheme = val || 'panel';
+    else if (t === 'nativeToastTheme') state.store.settings.nativeToastTheme = val || 'glass';
+    else if (t === 'nativeToastPosition') state.store.settings.nativeToastPosition = val || 'top-right';
     saveStore(state.store); ctx.applyThemeAttributes(); ctx.syncTopBarUI();
     state.selectPopup = null; renderSelectPopupView();
     if (state.modal?.type === 'settings') ctx.renderModal();

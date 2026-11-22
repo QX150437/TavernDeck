@@ -74,42 +74,175 @@ const TOAST_ICONS = {
   info: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round'><circle cx='12' cy='12' r='9'/><line x1='12' y1='16' x2='12' y2='12'/><line x1='12' y1='8' x2='12.01' y2='8'/></svg>",
 };
 
-export function notify(type, message) {
+const notifyRuntimeConfig = {
+  tdToastTheme: 'panel',
+  tdSilentToast: false,
+  nativeToastTheme: 'glass',
+  nativeToastPosition: 'top-right',
+};
+
+export function syncNotifyRuntimeConfig(settings) {
+  if (!settings || typeof settings !== 'object') return;
+  notifyRuntimeConfig.tdToastTheme = settings.tdToastTheme || 'panel';
+  notifyRuntimeConfig.tdSilentToast = !!settings.tdSilentToast;
+  notifyRuntimeConfig.nativeToastTheme = settings.nativeToastTheme || 'glass';
+  notifyRuntimeConfig.nativeToastPosition = settings.nativeToastPosition || 'top-right';
+  if (typeof document !== 'undefined') {
+    const root = document.getElementById(ROOT_ID);
+    if (root) {
+      root.setAttribute('data-td-toast-theme', notifyRuntimeConfig.tdToastTheme);
+      const resolvedNative = notifyRuntimeConfig.nativeToastTheme === 'follow'
+        ? notifyRuntimeConfig.tdToastTheme
+        : notifyRuntimeConfig.nativeToastTheme;
+      root.setAttribute('data-native-toast-theme', resolvedNative);
+      root.setAttribute('data-native-toast-pos', notifyRuntimeConfig.nativeToastPosition);
+    }
+  }
+}
+
+function sanitizeToastHtml(raw) {
+  const str = String(raw ?? '');
+  if (!/[<>]/.test(str)) return escapeHtml(str).replace(/\n/g, '<br>');
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${str}</div>`, 'text/html');
+    const container = doc.body.firstElementChild;
+    if (!container) return escapeHtml(str).replace(/\n/g, '<br>');
+    const allowedTags = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'S', 'BR', 'CODE', 'PRE', 'SPAN', 'DIV', 'P', 'SMALL', 'UL', 'OL', 'LI', 'A']);
+    const walk = (node) => {
+      Array.from(node.childNodes).forEach((child) => {
+        if (child.nodeType === 1) {
+          const tag = child.tagName;
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IFRAME' || tag === 'OBJECT' || tag === 'EMBED') {
+            child.remove();
+            return;
+          }
+          if (!allowedTags.has(tag)) {
+            const frag = doc.createDocumentFragment();
+            while (child.firstChild) frag.appendChild(child.firstChild);
+            walk(frag);
+            child.replaceWith(frag);
+            return;
+          }
+          Array.from(child.attributes).forEach((attr) => {
+            const name = attr.name.toLowerCase();
+            if (name.startsWith('on') || (name === 'href' && /^\s*javascript:/i.test(attr.value))) {
+              child.removeAttribute(attr.name);
+            } else if (tag !== 'A' && name !== 'class') {
+              child.removeAttribute(attr.name);
+            }
+          });
+          if (tag === 'A') {
+            child.setAttribute('target', '_blank');
+            child.setAttribute('rel', 'noopener noreferrer');
+          }
+          walk(child);
+        }
+      });
+    };
+    walk(container);
+    return container.innerHTML;
+  } catch (e) {
+    return escapeHtml(str).replace(/\n/g, '<br>');
+  }
+}
+
+export function showToastElement({
+  channel = 'td',
+  kind = 'info',
+  title = '',
+  message = '',
+  isHtml = false,
+  sourceBadge = '',
+  duration,
+  tapToDismiss = true,
+  onClick = null,
+} = {}) {
+  const root = typeof document !== 'undefined' ? document.getElementById(ROOT_ID) : null;
+  if (!root) return null;
+
+  const ch = channel === 'native' ? 'native' : 'td';
+  const k = TOAST_ICONS[kind] ? kind : 'info';
+  let stack = root.querySelector(`.td-toast-stack.is-${ch}`);
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.className = `td-toast-stack is-${ch}`;
+    root.appendChild(stack);
+  }
+
+  const toast = document.createElement('div');
+  toast.className = `td-toast is-${k}`;
+  const badgeHtml = sourceBadge ? `<span class='td-toast-badge'>${escapeHtml(sourceBadge)}</span>` : '';
+  const msgBody = isHtml ? sanitizeToastHtml(message) : escapeHtml(message).replace(/\n/g, '<br>');
+  const contentHtml = title
+    ? `<div class='td-toast-content'><div class='td-toast-head'>${badgeHtml}<span class='td-toast-title'>${escapeHtml(title)}</span></div><div class='td-toast-msg'>${msgBody}</div></div>`
+    : `<div class='td-toast-content'><div class='td-toast-msg'>${badgeHtml}${msgBody}</div></div>`;
+
+  toast.innerHTML = `<span class='td-toast-icon'>${TOAST_ICONS[k]}</span>${contentHtml}<button type='button' class='td-toast-close' aria-label='关闭'>×</button>`;
+
+  const dismiss = () => {
+    if (toast.dataset.tdClosing) return;
+    toast.dataset.tdClosing = '1';
+    toast.classList.add('is-leaving');
+    setTimeout(() => toast.remove(), 180);
+  };
+  toast._tdDismiss = dismiss;
+
+  const defaultMs = k === 'error' ? 4600 : (k === 'warning' ? 3600 : 2600);
+  const ms = typeof duration === 'number' && !Number.isNaN(duration) ? duration : defaultMs;
+  let timer = ms > 0 ? setTimeout(dismiss, ms) : null;
+
+  toast.addEventListener('pointerenter', () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+  });
+  toast.addEventListener('pointerleave', () => {
+    if (ms > 0 && !toast.dataset.tdClosing) {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(dismiss, 1400);
+    }
+  });
+  toast.querySelector('.td-toast-close')?.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    dismiss();
+  });
+  toast.addEventListener('click', (ev) => {
+    if (typeof onClick === 'function') {
+      try { onClick(ev); } catch (err) {}
+    }
+    if (tapToDismiss !== false) dismiss();
+  });
+
+  stack.appendChild(toast);
+  const maxToasts = ch === 'native' ? 5 : 4;
+  while (stack.children.length > maxToasts) stack.firstElementChild.remove();
+  return toast;
+}
+
+export function notify(type, message, opts = {}) {
   const kind = TOAST_ICONS[type] ? type : 'info';
   if (kind === 'error') logError(message);
   else if (kind === 'warning') logWarn(message);
   else logInfo(message);
 
-  const root = typeof document !== 'undefined' ? document.getElementById(ROOT_ID) : null;
-  if (root) {
-    let stack = root.querySelector('.td-toast-stack');
-    if (!stack) {
-      stack = document.createElement('div');
-      stack.className = 'td-toast-stack';
-      root.appendChild(stack);
-    }
-    const toast = document.createElement('div');
-    toast.className = `td-toast is-${kind}`;
-    toast.innerHTML = `<span class='td-toast-icon'>${TOAST_ICONS[kind]}</span><div class='td-toast-msg'>${escapeHtml(message)}</div><button type='button' class='td-toast-close' aria-label='关闭'>×</button>`;
-    const dismiss = () => {
-      if (toast.dataset.tdClosing) return;
-      toast.dataset.tdClosing = '1';
-      toast.classList.add('is-leaving');
-      setTimeout(() => toast.remove(), 180);
-    };
-    const ms = kind === 'error' ? 4600 : (kind === 'warning' ? 3600 : 2600);
-    let timer = setTimeout(dismiss, ms);
-    toast.addEventListener('pointerenter', () => { clearTimeout(timer); });
-    toast.addEventListener('pointerleave', () => { timer = setTimeout(dismiss, 1400); });
-    toast.addEventListener('click', dismiss);
-    stack.appendChild(toast);
-    while (stack.children.length > 4) stack.firstElementChild.remove();
+  if (notifyRuntimeConfig.tdSilentToast && !opts?.forceShow && kind !== 'warning' && kind !== 'error') {
     return;
   }
 
+  const el = showToastElement({
+    channel: 'td',
+    kind,
+    title: opts?.title || '',
+    message,
+    isHtml: false,
+    sourceBadge: 'TD',
+    duration: opts?.duration,
+  });
+  if (el) return;
+
   try {
     const t = typeof toastr !== 'undefined' ? toastr : window.toastr;
-    if (t && typeof t[kind] === 'function') t[kind](message, APP_NAME);
+    const origFn = t?.__tdOrig?.[kind] || t?.[kind];
+    if (typeof origFn === 'function') origFn.call(t, message, APP_NAME);
   } catch (e) {
     logWarn('toastr 提示调用失败', e);
   }

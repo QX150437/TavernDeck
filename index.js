@@ -1,7 +1,7 @@
-import { APP_NAME, getST, hasTH, logInfo, logWarn } from './src/utils.js';
+import { APP_NAME, getST, hasTH, logInfo, logWarn, syncNotifyRuntimeConfig } from './src/utils.js';
 import { state, loadStore } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
-import { syncNativePresetCollapse } from './src/native-ui.js';
+import { syncNativePresetCollapse, syncNativeToastHook } from './src/native-ui.js';
 import { initDevErrorCapture } from './src/dev-tools.js';
 import { updatePickerList, updateSnapshotList, syncPreviewStatusUi, renderModal } from './src/ui-views.js';
 import {
@@ -12,6 +12,8 @@ let booted = false;
 let initialSynced = false;
 
 async function syncAndRefresh() {
+  syncNotifyRuntimeConfig(state.store?.settings);
+  syncNativeToastHook();
   syncNativePresetCollapse();
   syncTopBarUI();
   if (!hasTH('getPreset')) return;
@@ -105,7 +107,9 @@ function bootstrap() {
   booted = true;
   initDevErrorCapture();
   state.store = loadStore();
+  syncNotifyRuntimeConfig(state.store.settings);
   mountUI();
+  syncNativeToastHook();
   renderOrb();
   syncExtensionButton();
   syncTopBarUI();

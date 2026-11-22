@@ -1,4 +1,4 @@
-import { logWarn } from './utils.js';
+import { ROOT_ID, logWarn, showToastElement } from './utils.js';
 import { state } from './store.js';
 
 const BAR_ID = 'td-st-preset-collapse-bar';
@@ -204,5 +204,117 @@ export function syncTopBarButton(iconSvg, onClick, isOpen) {
     }
   } catch (e) {
     logWarn('同步顶部导航栏入口按钮失败', e);
+  }
+}
+
+export function syncNativeToastHook() {
+  try {
+    const t = (typeof toastr !== 'undefined' ? toastr : null)
+      || (typeof window !== 'undefined' ? window.toastr : null);
+    if (!t) return;
+
+    if (!t.__tdOrig) {
+      t.__tdOrig = {
+        success: t.success,
+        info: t.info,
+        warning: t.warning,
+        error: t.error,
+        clear: t.clear,
+        remove: t.remove,
+      };
+    }
+
+    const enabled = !!state.store?.settings?.takeoverNativeToast;
+    if (!enabled) {
+      if (t.__tdHooked) {
+        Object.assign(t, t.__tdOrig);
+        t.__tdHooked = false;
+      }
+      const stack = document.querySelector(`#${ROOT_ID} .td-toast-stack.is-native`);
+      if (stack) stack.innerHTML = '';
+      return;
+    }
+
+    if (t.__tdHooked) return;
+    t.__tdHooked = true;
+
+    const makeWrapper = (kind) => function tdToastrWrapper(message, title, overrides) {
+      const origFn = t.__tdOrig[kind];
+      if (!state.store?.settings?.takeoverNativeToast || !document.getElementById(ROOT_ID)) {
+        return origFn.apply(this, arguments);
+      }
+      let realTitle = title;
+      let opts = overrides;
+      if (title && typeof title === 'object' && !overrides) {
+        opts = title;
+        realTitle = '';
+      }
+      const mergedOpts = Object.assign({}, t.options || {}, opts || {});
+      const msgStr = message === undefined || message === null ? '' : String(message);
+      const titleStr = realTitle === undefined || realTitle === null ? '' : String(realTitle);
+      const isHtml = !mergedOpts.escapeHtml;
+      const hasCustomTimeout = typeof mergedOpts.timeOut === 'number';
+      const timeOut = hasCustomTimeout
+        ? (mergedOpts.timeOut === 0 ? 0 : Math.max(1200, mergedOpts.timeOut))
+        : (kind === 'error' ? 5000 : (kind === 'warning' ? 4000 : 3200));
+
+      const el = showToastElement({
+        channel: 'native',
+        kind,
+        title: titleStr,
+        message: msgStr,
+        isHtml,
+        sourceBadge: 'ST',
+        duration: timeOut,
+        tapToDismiss: mergedOpts.tapToDismiss !== false,
+        onClick: typeof mergedOpts.onclick === 'function' ? mergedOpts.onclick : null,
+      });
+      if (!el) return origFn.apply(this, arguments);
+      return typeof window.jQuery === 'function' ? window.jQuery(el) : el;
+    };
+
+    t.success = makeWrapper('success');
+    t.info = makeWrapper('info');
+    t.warning = makeWrapper('warning');
+    t.error = makeWrapper('error');
+
+    t.clear = function tdToastrClear(target, clearOptions) {
+      if (target) {
+        const dom = target[0] || target;
+        if (dom && typeof dom._tdDismiss === 'function') {
+          dom._tdDismiss();
+          return;
+        }
+      } else {
+        const stack = document.querySelector(`#${ROOT_ID} .td-toast-stack.is-native`);
+        if (stack) {
+          Array.from(stack.children).forEach((el) => {
+            if (typeof el._tdDismiss === 'function') el._tdDismiss();
+            else el.remove();
+          });
+        }
+      }
+      if (typeof t.__tdOrig.clear === 'function') {
+        return t.__tdOrig.clear.call(this, target, clearOptions);
+      }
+    };
+
+    t.remove = function tdToastrRemove(target) {
+      if (target) {
+        const dom = target[0] || target;
+        if (dom && dom.classList?.contains('td-toast')) {
+          dom.remove();
+          return;
+        }
+      } else {
+        const stack = document.querySelector(`#${ROOT_ID} .td-toast-stack.is-native`);
+        if (stack) stack.innerHTML = '';
+      }
+      if (typeof t.__tdOrig.remove === 'function') {
+        return t.__tdOrig.remove.call(this, target);
+      }
+    };
+  } catch (e) {
+    logWarn('接管酒馆原生通知失败', e);
   }
 }

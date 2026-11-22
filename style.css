@@ -851,8 +851,29 @@
 .td-toast-stack {
   position: fixed; top: max(14px, env(safe-area-inset-top, 14px)); left: 50%; transform: translateX(-50%);
   width: min(380px, calc(100vw - 24px)); display: flex; flex-direction: column; align-items: center; gap: 8px;
-  pointer-events: none; z-index: 100000;
+  pointer-events: none; z-index: 100001;
 }
+.td-toast-stack.is-native {
+  z-index: 100000;
+  width: min(360px, calc(100vw - 24px));
+  top: max(14px, env(safe-area-inset-top, 14px));
+  right: max(14px, env(safe-area-inset-right, 14px));
+  left: auto; transform: none; align-items: flex-end;
+}
+#tavern-deck-root[data-native-toast-pos='top-center'] .td-toast-stack.is-native {
+  top: max(14px, env(safe-area-inset-top, 14px)); left: 50%; right: auto; transform: translateX(-50%); align-items: center;
+}
+#tavern-deck-root[data-native-toast-pos='bottom-right'] .td-toast-stack.is-native {
+  top: auto; bottom: max(14px, env(safe-area-inset-bottom, 14px)); right: max(14px, env(safe-area-inset-right, 14px));
+  left: auto; transform: none; align-items: flex-end;
+}
+#tavern-deck-root[data-native-toast-pos='bottom-right'] .td-toast-stack.is-native .td-toast {
+  animation: tdToastInUp 0.22s cubic-bezier(.22,1,.36,1);
+}
+#tavern-deck-root[data-native-toast-pos='bottom-right'] .td-toast-stack.is-native .td-toast.is-leaving {
+  transform: translateY(8px) scale(0.97);
+}
+
 .td-toast {
   width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 13px;
   background: var(--td-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
@@ -869,14 +890,114 @@
 .td-toast.is-warning .td-toast-icon { background: var(--td-single-soft); color: var(--td-single); }
 .td-toast.is-error .td-toast-icon { background: var(--td-danger-soft); color: var(--td-danger); }
 .td-toast.is-info .td-toast-icon { background: var(--td-accent-soft); color: var(--td-accent); }
-.td-toast-msg { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; line-height: 1.4; word-break: break-word; }
+.td-toast-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.td-toast-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.td-toast-badge {
+  display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+  font-size: 9.5px; font-weight: 800; letter-spacing: 0.4px; line-height: 1.35;
+  padding: 1px 5px; border-radius: 5px; flex-shrink: 0; margin-right: 4px;
+}
+.td-toast-head .td-toast-badge { margin-right: 0; }
+.td-toast-stack.is-td .td-toast-badge {
+  background: var(--td-accent-soft); color: var(--td-accent); border: 1px solid rgba(99, 102, 241, 0.28);
+}
+.td-toast-stack.is-native .td-toast-badge {
+  background: rgba(148, 163, 184, 0.20); color: inherit; opacity: 0.85; border: 1px solid rgba(148, 163, 184, 0.32);
+}
+.td-toast-title {
+  font-size: 12px; font-weight: 700; opacity: 0.92;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.td-toast-msg { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; line-height: 1.42; word-break: break-word; }
+.td-toast-msg a { color: inherit; text-decoration: underline; }
 .td-toast-close {
   width: 22px; height: 22px; border: none; background: transparent; color: var(--td-text-dim);
   font-size: 16px; line-height: 1; border-radius: 6px; cursor: pointer; flex-shrink: 0; padding: 0;
 }
 .td-toast-close:hover { background: var(--td-surface-hover); color: var(--td-text); }
+
+/* 通知主题：磨砂玻璃 (glass) */
+#tavern-deck-root[data-td-toast-theme='glass'] .td-toast-stack.is-td .td-toast,
+#tavern-deck-root[data-native-toast-theme='glass'] .td-toast-stack.is-native .td-toast {
+  background: rgba(20, 24, 38, 0.68);
+  backdrop-filter: blur(22px) saturate(165%); -webkit-backdrop-filter: blur(22px) saturate(165%);
+  color: #f8fafc; border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.36), 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+}
+
+/* 通知主题：灵动胶囊 (pill) */
+#tavern-deck-root[data-td-toast-theme='pill'] .td-toast-stack.is-td .td-toast,
+#tavern-deck-root[data-native-toast-theme='pill'] .td-toast-stack.is-native .td-toast {
+  border-radius: 999px; padding: 8px 14px;
+  background: rgba(17, 20, 30, 0.92); color: #f1f5f9;
+  border: 1px solid rgba(255, 255, 255, 0.16); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.42);
+}
+#tavern-deck-root[data-td-toast-theme='pill'] .td-toast-stack.is-td .td-toast-icon,
+#tavern-deck-root[data-native-toast-theme='pill'] .td-toast-stack.is-native .td-toast-icon {
+  border-radius: 50%;
+}
+
+/* 通知主题：极简色条 (card) */
+#tavern-deck-root[data-td-toast-theme='card'] .td-toast-stack.is-td .td-toast,
+#tavern-deck-root[data-native-toast-theme='card'] .td-toast-stack.is-native .td-toast {
+  border-radius: 10px; background: #1a1e2b; color: #f1f5f9;
+  border: 1px solid rgba(255, 255, 255, 0.10); border-left-width: 4px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.48);
+}
+#tavern-deck-root[data-td-toast-theme='card'] .td-toast-stack.is-td .td-toast.is-success,
+#tavern-deck-root[data-native-toast-theme='card'] .td-toast-stack.is-native .td-toast.is-success { border-left-color: #10b981; }
+#tavern-deck-root[data-td-toast-theme='card'] .td-toast-stack.is-td .td-toast.is-warning,
+#tavern-deck-root[data-native-toast-theme='card'] .td-toast-stack.is-native .td-toast.is-warning { border-left-color: #f59e0b; }
+#tavern-deck-root[data-td-toast-theme='card'] .td-toast-stack.is-td .td-toast.is-error,
+#tavern-deck-root[data-native-toast-theme='card'] .td-toast-stack.is-native .td-toast.is-error { border-left-color: #ef4444; }
+#tavern-deck-root[data-td-toast-theme='card'] .td-toast-stack.is-td .td-toast.is-info,
+#tavern-deck-root[data-native-toast-theme='card'] .td-toast-stack.is-native .td-toast.is-info { border-left-color: #6366f1; }
+
+/* 通知主题：霓虹赛博 (neon) */
+#tavern-deck-root[data-td-toast-theme='neon'] .td-toast-stack.is-td .td-toast,
+#tavern-deck-root[data-native-toast-theme='neon'] .td-toast-stack.is-native .td-toast {
+  border-radius: 12px; background: rgba(9, 8, 22, 0.94); color: #f8fafc;
+  border: 1px solid rgba(236, 72, 153, 0.48);
+  box-shadow: 0 0 18px rgba(236, 72, 153, 0.24), 0 12px 30px rgba(0, 0, 0, 0.65);
+}
+#tavern-deck-root[data-td-toast-theme='neon'] .td-toast-stack.is-td .td-toast.is-success,
+#tavern-deck-root[data-native-toast-theme='neon'] .td-toast-stack.is-native .td-toast.is-success {
+  border-color: rgba(16, 185, 129, 0.55); box-shadow: 0 0 18px rgba(16, 185, 129, 0.24), 0 12px 30px rgba(0, 0, 0, 0.65);
+}
+#tavern-deck-root[data-td-toast-theme='neon'] .td-toast-stack.is-td .td-toast.is-warning,
+#tavern-deck-root[data-native-toast-theme='neon'] .td-toast-stack.is-native .td-toast.is-warning {
+  border-color: rgba(245, 158, 11, 0.55); box-shadow: 0 0 18px rgba(245, 158, 11, 0.24), 0 12px 30px rgba(0, 0, 0, 0.65);
+}
+#tavern-deck-root[data-td-toast-theme='neon'] .td-toast-stack.is-td .td-toast.is-error,
+#tavern-deck-root[data-native-toast-theme='neon'] .td-toast-stack.is-native .td-toast.is-error {
+  border-color: rgba(239, 68, 68, 0.6); box-shadow: 0 0 18px rgba(239, 68, 68, 0.28), 0 12px 30px rgba(0, 0, 0, 0.65);
+}
+#tavern-deck-root[data-td-toast-theme='neon'] .td-toast-stack.is-td .td-toast.is-info,
+#tavern-deck-root[data-native-toast-theme='neon'] .td-toast-stack.is-native .td-toast.is-info {
+  border-color: rgba(6, 182, 212, 0.55); box-shadow: 0 0 18px rgba(6, 182, 212, 0.24), 0 12px 30px rgba(0, 0, 0, 0.65);
+}
+
+/* 通知主题：复古羊皮 (ink) */
+#tavern-deck-root[data-td-toast-theme='ink'] .td-toast-stack.is-td .td-toast,
+#tavern-deck-root[data-native-toast-theme='ink'] .td-toast-stack.is-native .td-toast {
+  border-radius: 12px; background: rgba(247, 240, 224, 0.96); color: #3b2814;
+  border: 1px solid rgba(139, 90, 43, 0.35); box-shadow: 0 12px 32px rgba(64, 42, 16, 0.25);
+}
+#tavern-deck-root[data-td-toast-theme='ink'] .td-toast-stack.is-td .td-toast-close,
+#tavern-deck-root[data-native-toast-theme='ink'] .td-toast-stack.is-native .td-toast-close {
+  color: #85623d;
+}
+#tavern-deck-root[data-td-toast-theme='ink'] .td-toast-stack.is-td .td-toast-close:hover,
+#tavern-deck-root[data-native-toast-theme='ink'] .td-toast-stack.is-native .td-toast-close:hover {
+  background: rgba(139, 90, 43, 0.14); color: #3b2814;
+}
+
 @keyframes tdToastIn {
   from { opacity: 0; transform: translateY(-10px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes tdToastInUp {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 

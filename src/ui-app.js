@@ -2,6 +2,7 @@ import {
   APP_NAME, APP_SHORT, APP_CN, APP_VERSION, ROOT_ID, EXT_BTN_ID, EXT_SETTINGS_ID,
   hasTH, callTH, notify, genId, escapeHtml, cssEscape, makeItemKey,
   cloneItemRef, copyToClipboard, downloadJsonFile, logWarn, logError,
+  syncNotifyRuntimeConfig, showToastElement,
 } from './utils.js';
 import {
   state, saveStore, saveMergeDraft, clearMergeDraft, ensureSchemesPool, getBoundSchemeIds, getVisibleSchemes,
@@ -21,7 +22,7 @@ import {
   hasUnsavedPresetChanges, saveInUseToPreset, buildPresetDiffSession,
   executePresetStitch, findBestMatchingOldPreset,
 } from './preset-merge.js';
-import { syncNativePresetCollapse, syncTopBarButton } from './native-ui.js';
+import { syncNativePresetCollapse, syncTopBarButton, syncNativeToastHook } from './native-ui.js';
 import { isInActiveChat } from './worldbook-manager.js';
 import {
   ICONS, ORB_STYLE_OPTIONS, editHistory, setUiContext, getOrbSize, renderGroupHtml, renderGroupItemsListHtml,
@@ -337,6 +338,7 @@ export function applyThemeAttributes() {
   else rootEl.style.removeProperty('--td-group-color');
   if (s.entryTextColor) rootEl.style.setProperty('--td-entry-color', s.entryTextColor);
   else rootEl.style.removeProperty('--td-entry-color');
+  syncNotifyRuntimeConfig(s);
 }
 
 export function renderOrb() {
@@ -1016,7 +1018,7 @@ function handleRootClick(e) {
       onConfirm: () => {
         try {
           importStoreData(m.importPreview, { mode: m.impMode, importSchemes: !!m.impSchemes, importSnapshots: !!m.impSnapshots, importSettings: !!m.impSettings });
-          state.modal = null; renderModal(); renderOrb(); syncExtensionButton(); syncTopBarUI(); syncNativePresetCollapse(); renderMain(); notify('success', '配置导入成功');
+          state.modal = null; renderModal(); renderOrb(); syncExtensionButton(); syncTopBarUI(); syncNativePresetCollapse(); syncNativeToastHook(); renderMain(); notify('success', '配置导入成功');
         } catch (err) { logError('执行导入配置失败', err); notify('error', `导入失败: ${err.message || err}`); }
       },
     });
@@ -1295,11 +1297,52 @@ function handleRootClick(e) {
   // 设置交互
   if (action === 'trigger-orb-upload') { modalLayerEl.querySelector('#td-orb-img-input')?.click(); return; }
   if (action === 'clear-orb-image') { state.store.settings.orbImage = ''; saveStore(state.store); renderOrb(); renderModal(); notify('info', '已恢复默认悬浮球图标'); return; }
+  if (action === 'toggle-td-silent-toast') {
+    const nextVal = !state.store.settings.tdSilentToast;
+    state.store.settings.tdSilentToast = nextVal;
+    saveStore(state.store);
+    syncNotifyRuntimeConfig(state.store.settings);
+    actionEl.classList.toggle('on', nextVal);
+    notify(nextVal ? 'warning' : 'info', nextVal ? '已开启静默通知：仅警告和报错弹窗' : '已关闭静默通知：恢复全部插件弹窗', { forceShow: true });
+    return;
+  }
+  if (action === 'preview-td-toast') {
+    notify('success', '这是一条 TavernDeck 插件通知预览', { forceShow: true });
+    return;
+  }
   if (action === 'toggle-native-preset-collapse') {
     const nextVal = !state.store.settings.collapseNativePresetSettings;
     state.store.settings.collapseNativePresetSettings = nextVal;
     saveStore(state.store); actionEl.classList.toggle('on', nextVal); syncNativePresetCollapse();
     notify('info', nextVal ? '已折叠酒馆原生预设设定区域' : '已展开酒馆原生预设设定区域'); return;
+  }
+  if (action === 'toggle-native-toast-takeover') {
+    const nextVal = !state.store.settings.takeoverNativeToast;
+    state.store.settings.takeoverNativeToast = nextVal;
+    saveStore(state.store);
+    actionEl.classList.toggle('on', nextVal);
+    syncNativeToastHook();
+    const themeRow = modalLayerEl.querySelector("[data-role='native-toast-sub']");
+    const posRow = modalLayerEl.querySelector("[data-role='native-toast-pos-sub']");
+    if (themeRow) themeRow.style.display = nextVal ? 'flex' : 'none';
+    if (posRow) posRow.style.display = nextVal ? 'flex' : 'none';
+    if (nextVal) {
+      const t = (typeof toastr !== 'undefined' ? toastr : null) || window.toastr;
+      if (t && typeof t.info === 'function') t.info('酒馆原生通知已由 TavernDeck 接管美化', 'SillyTavern');
+      else showToastElement({ channel: 'native', kind: 'info', title: 'SillyTavern', message: '酒馆原生通知已由 TavernDeck 接管美化', sourceBadge: 'ST' });
+    } else {
+      notify('info', '已恢复酒馆原生通知样式');
+    }
+    return;
+  }
+  if (action === 'preview-native-toast') {
+    const t = (typeof toastr !== 'undefined' ? toastr : null) || window.toastr;
+    if (t && typeof t.info === 'function' && state.store.settings.takeoverNativeToast) {
+      t.info('这是一条模拟的酒馆原生 UI 通知预览', 'SillyTavern');
+    } else {
+      showToastElement({ channel: 'native', kind: 'info', title: 'SillyTavern', message: '这是一条模拟的酒馆原生 UI 通知预览', sourceBadge: 'ST' });
+    }
+    return;
   }
   if (action === 'toggle-entry-switch') {
     const key = actionEl.getAttribute('data-key'), s = state.store.settings;

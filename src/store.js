@@ -73,6 +73,11 @@ export function createDefaultStore() {
       groupTextColor: '',
       entryTextColor: '',
       collapseNativePresetSettings: false,
+      takeoverNativeToast: false,
+      nativeToastTheme: 'glass',
+      nativeToastPosition: 'top-right',
+      tdToastTheme: 'panel',
+      tdSilentToast: false,
       showOrb: true,
       enableExtButton: false,
       enableTopBarButton: false,
@@ -180,6 +185,13 @@ export function loadStore() {
     }
     settings.orbImageFit = settings.orbImageFit === 'contain' ? 'contain' : 'cover';
     settings.unlockOrbSliders = !!settings.unlockOrbSliders;
+    settings.takeoverNativeToast = !!settings.takeoverNativeToast;
+    if (!settings.nativeToastTheme) settings.nativeToastTheme = 'glass';
+    if (!['top-right', 'top-center', 'bottom-right'].includes(settings.nativeToastPosition)) {
+      settings.nativeToastPosition = 'top-right';
+    }
+    if (!settings.tdToastTheme) settings.tdToastTheme = 'panel';
+    settings.tdSilentToast = !!settings.tdSilentToast;
     settings.collapsedGroupItems = Object.assign(
       {},
       def.settings.collapsedGroupItems,
