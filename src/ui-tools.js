@@ -6,9 +6,9 @@ import {
   state, saveStore, clearMergeDraft, clearAllMergeDrafts, ensureSchemesPool,
   exportStoreData, importStoreData, deleteSnapshotPayload,
   getStorageDiagnostics, cleanOrphanSnapshotPayloads, repairMissingSnapshotPayloads,
-  clearMvuStarredChat, clearAllMvuStarred, cleanAutoBackupSnapshots, slimAllUnpinnedFullSnapshots,
+  clearMvuStarredChat, clearAllMvuStarred, cleanAutoBackupSnapshots,
+  migrateLocalSnapshotsToBackend,
 } from './store.js';
-import { slimFullSnapshot } from './snapshot.js';
 import { syncNativePresetCollapse, syncNativeToastHook } from './native-ui.js';
 import { getDevLogs, clearDevLogs, formatLogsReport } from './dev-tools.js';
 import { ICONS, uiCtx, formatByteSize, openConfirm } from './ui-common.js';
@@ -19,27 +19,45 @@ export const toolsUiModule = {
       const devLogCount = getDevLogs('ALL').length;
       const d = getStorageDiagnostics(devLogCount);
       const ls = d.localStorage;
+      const bk = d.backend;
       const gv = d.globalVar;
       const mem = d.memory;
       const qc = d.quickCounts;
       const originPct = Math.min(100, Math.round((ls.originTotalBytes / ls.quotaEstimateBytes) * 100));
       const tdLsPct = Math.min(100, Math.round((ls.tdTotalBytes / ls.quotaEstimateBytes) * 100));
 
-      const payloadRowsHtml = ls.payloadItems.length === 0
-        ? "<div class='td-group-empty'>暂无完整快照载荷数据</div>"
-        : ls.payloadItems.map((it) => `
+      const backendRowsHtml = bk.items.length === 0
+        ? "<div class='td-group-empty'>暂无酒馆后端快照文件</div>"
+        : bk.items.map((it) => `
             <div class='td-storage-row'>
               <div style='min-width:0;flex:1;'>
                 <div style='display:flex;align-items:center;gap:5px;flex-wrap:wrap;'>
                   <span style='font-weight:700;font-size:12.5px;word-break:break-word;'>${escapeHtml(it.name)}</span>
+                  <span class='td-src-badge'>${it.kind === 'worldbook' ? '世界书' : '预设'}</span>
+                  ${it.auto ? "<span class='td-mode-tag single'>自动</span>" : ''}
+                  ${it.pinned ? "<span class='td-mode-tag ok'>置顶</span>" : ''}
+                </div>
+                <div style='font-size:11px;color:var(--td-text-muted);margin-top:2px;word-break:break-all;'>${escapeHtml(it.fileName)}${it.bytes > 0 ? ` · ${formatByteSize(it.bytes)}` : ''}</div>
+              </div>
+              <div style='display:flex;gap:4px;flex-shrink:0;'>
+                <button type='button' class='td-btn sm danger' data-action='storage-del-snap' data-snap-id='${escapeHtml(it.id)}' data-orphan='0' title='删除后端文件与快照记录'>删除</button>
+              </div>
+            </div>`).join('');
+
+      const payloadRowsHtml = ls.payloadItems.length === 0
+        ? ''
+        : ls.payloadItems.map((it) => `
+            <div class='td-storage-row'>
+              <div class='td-storage-info'>
+                <div class='td-storage-head-row'>
+                  <span class='td-storage-title'>${escapeHtml(it.name)}</span>
                   ${it.orphan ? "<span class='td-mode-tag del'>孤儿</span>" : `<span class='td-src-badge'>${it.kind === 'worldbook' ? '世界书' : '预设'}</span>`}
                   ${it.auto ? "<span class='td-mode-tag single'>自动</span>" : ''}
                   ${it.pinned ? "<span class='td-mode-tag ok'>置顶</span>" : ''}
                 </div>
-                <div style='font-size:11px;color:var(--td-text-muted);margin-top:2px;'>${escapeHtml(it.targetName)} · 占用 ${formatByteSize(it.bytes)}</div>
+                <div class='td-storage-sub'>${escapeHtml(it.targetName)} · 占用 ${formatByteSize(it.bytes)}</div>
               </div>
-              <div style='display:flex;gap:4px;flex-shrink:0;'>
-                ${!it.orphan ? `<button type='button' class='td-btn sm warn' data-action='storage-slim-one' data-snap-id='${escapeHtml(it.id)}'>瘦身</button>` : ''}
+              <div class='td-storage-actions'>
                 <button type='button' class='td-btn sm danger' data-action='storage-del-snap' data-snap-id='${escapeHtml(it.id)}' data-orphan='${it.orphan ? '1' : '0'}'>删除</button>
               </div>
             </div>`).join('');
@@ -78,7 +96,6 @@ export const toolsUiModule = {
                 ${qc.orphanCount > 0 ? `<button type='button' class='td-btn sm warn' data-action='storage-clean-orphans'>清理孤儿载荷 (${qc.orphanCount})</button>` : ''}
                 ${qc.missingPayloadCount > 0 ? `<button type='button' class='td-btn sm warn' data-action='storage-repair-missing'>修复缺失载荷索引 (${qc.missingPayloadCount})</button>` : ''}
                 ${qc.autoUnpinnedCount > 0 ? `<button type='button' class='td-btn sm warn' data-action='storage-clean-auto'>清理自动备份 (${qc.autoUnpinnedCount})</button>` : ''}
-                ${qc.fullUnpinnedCount > 0 ? `<button type='button' class='td-btn sm' data-action='storage-slim-all'>全部未置顶快照瘦身 (${qc.fullUnpinnedCount})</button>` : ''}
               </div>
             </div>
 
@@ -114,44 +131,70 @@ export const toolsUiModule = {
 
             <div class='td-storage-card'>
               <div class='td-storage-card-head'>
-                <span>2. 浏览器本地存储 (localStorage)</span>
+                <span>2. 酒馆后端文件 (users/files/)</span>
+                <span class='td-mode-tag ok'>${formatByteSize(bk.totalBytes)}</span>
+              </div>
+              <div class='td-storage-desc'>完整快照保存于酒馆服务端文件夹，突破浏览器 5MB 限制且跨端可用。</div>
+              <div class='td-storage-sublist'>
+                <details class='td-attr-diff-box' ${m.backendOpen !== false ? 'open' : ''}>
+                  <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='backendOpen'>
+                    <span>快照文件列表 (${bk.items.length} 个 · ${formatByteSize(bk.totalBytes)})</span>
+                  </summary>
+                  <div class='td-storage-sublist' style='padding:6px;max-height:220px;overflow-y:auto;border-top:1px solid var(--td-border);'>${backendRowsHtml}</div>
+                </details>
+              </div>
+            </div>
+
+            <div class='td-storage-card'>
+              <div class='td-storage-card-head'>
+                <span>3. 浏览器本地存储 (localStorage)</span>
                 <span class='td-mode-tag single'>${formatByteSize(ls.tdTotalBytes)}</span>
               </div>
-              <div class='td-storage-desc'>仅存当前浏览器本地，不拖慢酒馆全局变量读写。</div>
+              <div class='td-storage-desc'>仅存轻量的对比缝合草稿以防意外刷新丢失；如有旧版本地快照可迁移至后端。</div>
               <div class='td-storage-sublist'>
-                <details class='td-attr-diff-box' ${m.payloadsOpen !== false ? 'open' : ''}>
-                  <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='payloadsOpen'>
-                    <span>完整快照载荷 (${ls.payloadItems.length} 项 · ${formatByteSize(ls.payloadsTotalBytes)})</span>
-                  </summary>
-                  <div class='td-storage-sublist' style='padding:6px;max-height:220px;overflow-y:auto;border-top:1px solid var(--td-border);'>${payloadRowsHtml}</div>
-                </details>
+                ${ls.payloadItems.length > 0 ? `
+                  <details class='td-attr-diff-box' ${m.payloadsOpen ? 'open' : ''}>
+                    <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='payloadsOpen'>
+                      <span>旧版遗留本地快照 (${ls.payloadItems.length} 项 · ${formatByteSize(ls.payloadsTotalBytes)})</span>
+                      ${bk.available ? `<button type='button' class='td-btn sm primary' onclick='event.stopPropagation()' data-action='storage-migrate-local'>迁至后端</button>` : ''}
+                    </summary>
+                    <div class='td-storage-sublist' style='padding:6px;max-height:200px;overflow-y:auto;border-top:1px solid var(--td-border);'>${payloadRowsHtml}</div>
+                  </details>` : ''}
 
                 <div class='td-storage-row'>
-                  <div style='flex:1;min-width:0;'>
-                    <div style='font-size:12.5px;font-weight:700;'>对比缝合草稿 (${formatByteSize(ls.draftsTotalBytes)})</div>
-                    <div style='font-size:11px;color:var(--td-text-muted);'>
-                      ${ls.presetDraft ? `预设: ${escapeHtml(ls.presetDraft.title)} (${formatByteSize(ls.presetDraft.bytes)})` : '无预设草稿'}
-                      ·
-                      ${ls.wbDraft ? `世界书: ${escapeHtml(ls.wbDraft.title)} (${formatByteSize(ls.wbDraft.bytes)})` : '无世界书草稿'}
+                  <div class='td-storage-info'>
+                    <div class='td-storage-head-row'>
+                      <span class='td-storage-title'>对比缝合草稿</span>
+                      <span class='td-src-badge'>${formatByteSize(ls.draftsTotalBytes)}</span>
+                    </div>
+                    <div class='td-storage-sub'>
+                      <div>预设：${ls.presetDraft ? `${escapeHtml(ls.presetDraft.title)} (${formatByteSize(ls.presetDraft.bytes)})` : '无草稿'}</div>
+                      <div>世界书：${ls.wbDraft ? `${escapeHtml(ls.wbDraft.title)} (${formatByteSize(ls.wbDraft.bytes)})` : '无草稿'}</div>
                     </div>
                   </div>
-                  <div style='display:flex;gap:4px;flex-shrink:0;'>
-                    ${ls.presetDraft ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-draft' data-kind='preset'>清预设</button>` : ''}
-                    ${ls.wbDraft ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-draft' data-kind='worldbook'>清世界书</button>` : ''}
-                    ${ls.draftsTotalBytes > 0 ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-all-drafts'>全清</button>` : ''}
-                  </div>
+                  ${ls.draftsTotalBytes > 0 ? `
+                    <div class='td-storage-actions'>
+                      ${ls.presetDraft ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-draft' data-kind='preset'>清预设</button>` : ''}
+                      ${ls.wbDraft ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-draft' data-kind='worldbook'>清世界书</button>` : ''}
+                      <button type='button' class='td-btn sm danger' data-action='storage-clear-all-drafts'>全清</button>
+                    </div>` : ''}
                 </div>
 
                 <div class='td-storage-row'>
-                  <span style='flex:1;font-size:12px;color:var(--td-text-muted);'>同源其他数据（酒馆与其他插件 ${ls.otherKeyCount} 项）</span>
-                  <span class='td-src-badge'>${formatByteSize(ls.otherBytes)}</span>
+                  <div class='td-storage-info'>
+                    <div class='td-storage-title' style='font-weight:600;color:var(--td-text-muted);'>同源其他数据</div>
+                    <div class='td-storage-sub'>酒馆与其他扩展（共 ${ls.otherKeyCount} 项）</div>
+                  </div>
+                  <div class='td-storage-actions'>
+                    <span class='td-src-badge'>${formatByteSize(ls.otherBytes)}</span>
+                  </div>
                 </div>
               </div>
             </div>
 
             <div class='td-storage-card'>
               <div class='td-storage-card-head'>
-                <span>3. 运行时内存缓存 (Memory)</span>
+                <span>4. 运行时内存缓存 (Memory)</span>
                 <span class='td-mode-tag ok'>临时</span>
               </div>
               <div class='td-storage-sublist'>
@@ -259,17 +302,35 @@ export const toolsUiModule = {
   handleClick(e, actionEl, action) {
     const modalLayerEl = uiCtx.getModalLayer();
 
-    if (action === 'open-storage-manager') { state.modal = { type: 'storageManager', payloadsOpen: true, mvuOpen: false }; uiCtx.renderModal(); return true; }
+    if (action === 'open-storage-manager') { state.modal = { type: 'storageManager', backendOpen: true, payloadsOpen: false, mvuOpen: false }; uiCtx.renderModal(); return true; }
     if (action === 'storage-refresh' && state.modal?.type === 'storageManager') { uiCtx.renderModal(); return true; }
     if (action === 'storage-toggle-sec' && state.modal?.type === 'storageManager') {
       const sec = actionEl.getAttribute('data-sec');
-      if (sec === 'payloadsOpen') state.modal.payloadsOpen = state.modal.payloadsOpen === false;
+      if (sec === 'backendOpen') state.modal.backendOpen = state.modal.backendOpen === false;
+      else if (sec === 'payloadsOpen') state.modal.payloadsOpen = !state.modal.payloadsOpen;
       else if (sec === 'mvuOpen') state.modal.mvuOpen = !state.modal.mvuOpen;
       return true;
     }
+    if (action === 'storage-migrate-local') {
+      openConfirm({
+        title: '迁移本地快照至后端确认',
+        message: '确定要将旧版 localStorage 中的完整快照全部上传保存至酒馆后端 (users/files/) 并释放本地 5MB 配额吗？',
+        confirmText: '开始迁移',
+        confirmClass: 'primary',
+        onConfirm: () => {
+          migrateLocalSnapshotsToBackend().then(({ migrated, orphansRemoved }) => {
+            uiCtx.renderModal();
+            notify('success', `迁移完成：已转移 ${migrated} 条快照到后端${orphansRemoved > 0 ? `，清理 ${orphansRemoved} 条孤儿` : ''}`);
+          }).catch((err) => { logError('迁移本地快照失败', err); notify('error', err.message || String(err)); });
+        },
+      });
+      return true;
+    }
     if (action === 'storage-export-backup') {
-      downloadJsonFile(exportStoreData({ includeAll: true }), `TavernDeck-全量备份-${new Date().toISOString().slice(0, 10)}.json`);
-      notify('success', '已导出全量配置与快照备份');
+      exportStoreData({ includeAll: true }).then((payload) => {
+        downloadJsonFile(payload, `TavernDeck-全量备份-${new Date().toISOString().slice(0, 10)}.json`);
+        notify('success', '已导出全量配置与快照备份');
+      }).catch((err) => { logError('导出备份失败', err); notify('error', err.message || String(err)); });
       return true;
     }
     if (action === 'storage-clear-orb-img') {
@@ -309,9 +370,16 @@ export const toolsUiModule = {
       return true;
     }
     if (action === 'storage-clean-orphans') {
-      const cnt = cleanOrphanSnapshotPayloads();
-      uiCtx.renderModal();
-      notify('success', cnt > 0 ? `已清理 ${cnt} 条孤儿快照载荷` : '没有需要清理的孤儿载荷');
+      openConfirm({
+        title: '清理孤儿载荷确认',
+        message: '确定要清理未关联任何快照索引的孤儿载荷数据吗？',
+        confirmText: '确认清理',
+        onConfirm: () => {
+          const cnt = cleanOrphanSnapshotPayloads();
+          uiCtx.renderModal();
+          notify('success', cnt > 0 ? `已清理 ${cnt} 条孤儿快照载荷` : '没有需要清理的孤儿载荷');
+        },
+      });
       return true;
     }
     if (action === 'storage-repair-missing') {
@@ -323,57 +391,40 @@ export const toolsUiModule = {
     if (action === 'storage-clean-auto') {
       openConfirm({
         title: '清理自动备份确认',
-        message: '确定要删除所有未置顶的自动备份快照吗？（手动创建的快照和已置顶快照不受影响）',
+        message: '确定要删除所有未置顶的自动备份快照及对应酒馆后端文件吗？（手动创建的快照和已置顶快照不受影响）',
         confirmText: '确认清理',
         onConfirm: () => {
-          const cnt = cleanAutoBackupSnapshots();
-          uiCtx.renderMain();
-          uiCtx.renderModal();
-          notify('success', `已清理 ${cnt} 条自动备份快照`);
+          cleanAutoBackupSnapshots().then((cnt) => {
+            uiCtx.renderMain();
+            uiCtx.renderModal();
+            notify('success', `已清理 ${cnt} 条自动备份快照及后端文件`);
+          }).catch((err) => { logError('清理自动备份失败', err); notify('error', err.message || String(err)); });
         },
       });
-      return true;
-    }
-    if (action === 'storage-slim-all') {
-      openConfirm({
-        title: '批量快照瘦身确认',
-        message: '确定要将所有未置顶的完整快照转为轻量开关快照吗？将释放本地浏览器存储空间，保留条目开关状态但不再保留正文与参数备份。',
-        confirmText: '确认全部瘦身',
-        confirmClass: 'warn',
-        onConfirm: () => {
-          const cnt = slimAllUnpinnedFullSnapshots();
-          uiCtx.renderModal();
-          notify('success', `已瘦身 ${cnt} 条完整快照`);
-        },
-      });
-      return true;
-    }
-    if (action === 'storage-slim-one') {
-      const sid = actionEl.getAttribute('data-snap-id');
-      if (sid && slimFullSnapshot(sid)) {
-        uiCtx.renderModal();
-        notify('success', '已将该快照瘦身为开关快照');
-      }
       return true;
     }
     if (action === 'storage-del-snap') {
       const sid = actionEl.getAttribute('data-snap-id');
       const isOrphan = actionEl.getAttribute('data-orphan') === '1';
       if (!sid) return true;
+      const snap = !isOrphan ? (state.store.snapshots || []).find((s) => s.id === sid) : null;
       openConfirm({
-        title: '删除快照存储确认',
-        message: isOrphan ? '确定要删除这条未关联的孤儿载荷吗？' : '确定要永久删除该快照及其完整数据吗？',
+        title: '删除后端文件与快照确认',
+        message: isOrphan
+          ? '确定要删除这条未关联的孤儿载荷吗？'
+          : `确定要永久删除快照「${snap?.name || sid}」${snap?.payloadFile ? `及其酒馆后端文件（${snap.payloadFile}）` : ''}吗？此操作不可撤销。`,
         confirmText: '确认删除',
         onConfirm: () => {
-          deleteSnapshotPayload(sid);
-          if (!isOrphan) {
-            state.store.snapshots = (state.store.snapshots || []).filter((s) => s.id !== sid);
-            if (state.lastUndoSnapshotId === sid) state.lastUndoSnapshotId = null;
-            saveStore(state.store);
-            uiCtx.renderMain();
-          }
-          uiCtx.renderModal();
-          notify('info', '已删除快照数据');
+          deleteSnapshotPayload(isOrphan ? sid : (snap || sid), { strict: true }).then(() => {
+            if (!isOrphan) {
+              state.store.snapshots = (state.store.snapshots || []).filter((s) => s.id !== sid);
+              if (state.lastUndoSnapshotId === sid) state.lastUndoSnapshotId = null;
+              saveStore(state.store);
+              uiCtx.renderMain();
+            }
+            uiCtx.renderModal();
+            notify('info', '已删除快照及对应文件');
+          }).catch((err) => { logError('删除后端快照文件失败', err); notify('error', `删除失败: ${err.message || err}`); });
         },
       });
       return true;
@@ -434,12 +485,20 @@ export const toolsUiModule = {
       return true;
     }
     if (action === 'toggle-io-exp-opt' && state.modal?.type === 'ioCenter') { const k = actionEl.getAttribute('data-key'); state.modal[k] = !state.modal[k]; actionEl.classList.toggle('on', !!state.modal[k]); return true; }
-    if (action === 'export-all-json') { downloadJsonFile(exportStoreData({ includeAll: true }), `TavernDeck-全量备份-${new Date().toISOString().slice(0, 10)}.json`); notify('success', '已导出全量配置备份'); return true; }
+    if (action === 'export-all-json') {
+      exportStoreData({ includeAll: true }).then((payload) => {
+        downloadJsonFile(payload, `TavernDeck-全量备份-${new Date().toISOString().slice(0, 10)}.json`);
+        notify('success', '已导出全量配置备份');
+      }).catch((err) => { logError('导出全部配置失败', err); notify('error', err.message || String(err)); });
+      return true;
+    }
     if (action === 'export-partial-json' && state.modal?.type === 'ioCenter') {
       const ids = Array.from(state.modal.selectedSchemeIds);
       if (ids.length === 0 && !state.modal.expSnapshots && !state.modal.expSettings) { notify('warning', '请至少勾选一项要导出的内容'); return true; }
-      downloadJsonFile(exportStoreData({ schemeIds: ids, includeSnapshots: !!state.modal.expSnapshots, includeSettings: !!state.modal.expSettings }), `TavernDeck-局部备份-${new Date().toISOString().slice(0, 10)}.json`);
-      notify('success', '已导出局部配置备份');
+      exportStoreData({ schemeIds: ids, includeSnapshots: !!state.modal.expSnapshots, includeSettings: !!state.modal.expSettings }).then((payload) => {
+        downloadJsonFile(payload, `TavernDeck-局部备份-${new Date().toISOString().slice(0, 10)}.json`);
+        notify('success', '已导出局部配置备份');
+      }).catch((err) => { logError('导出局部配置失败', err); notify('error', err.message || String(err)); });
       return true;
     }
     if (action === 'trigger-io-file' && state.modal?.type === 'ioCenter') { modalLayerEl?.querySelector('#td-io-file-input')?.click(); return true; }
@@ -463,10 +522,11 @@ export const toolsUiModule = {
         title: '确认导入配置', message: `将以「${m.impMode === 'overwrite' ? '覆盖模式' : '合并模式'}」导入所选配置数据，是否继续？`,
         confirmText: '确认导入', confirmClass: m.impMode === 'overwrite' ? 'danger' : 'primary',
         onConfirm: () => {
-          try {
-            importStoreData(m.importPreview, { mode: m.impMode, importSchemes: !!m.impSchemes, importSnapshots: !!m.impSnapshots, importSettings: !!m.impSettings });
-            state.modal = null; uiCtx.renderModal(); uiCtx.renderOrb(); uiCtx.syncExtensionButton(); uiCtx.syncTopBarUI(); syncNativePresetCollapse(); syncNativeToastHook(); uiCtx.renderMain(); notify('success', '配置导入成功');
-          } catch (err) { logError('执行导入配置失败', err); notify('error', `导入失败: ${err.message || err}`); }
+          importStoreData(m.importPreview, { mode: m.impMode, importSchemes: !!m.impSchemes, importSnapshots: !!m.impSnapshots, importSettings: !!m.impSettings })
+            .then(() => {
+              state.modal = null; uiCtx.renderModal(); uiCtx.renderOrb(); uiCtx.syncExtensionButton(); uiCtx.syncTopBarUI(); syncNativePresetCollapse(); syncNativeToastHook(); uiCtx.renderMain(); notify('success', '配置导入成功');
+            })
+            .catch((err) => { logError('执行导入配置失败', err); notify('error', `导入失败: ${err.message || err}`); });
         },
       });
       return true;

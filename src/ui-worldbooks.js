@@ -283,26 +283,31 @@ export const worldbooksUiModule = {
     const modalLayerEl = uiCtx.getModalLayer();
     const previewLayerEl = uiCtx.getPreviewLayer();
 
-    if (action === 'wbm-open-snapshots' || action === 'wbd-open-snapshots') {
-      const targetBook = action === 'wbd-open-snapshots' && state.modal?.type === 'worldbookDetail'
-        ? state.modal.bookName
-        : '';
-      const openSnaps = () => {
-        state.modal = {
-          type: 'snapshots',
-          kind: 'worldbook',
-          targetBook,
-          createMode: 'state',
-          filter: targetBook ? 'current' : 'all',
-          search: '',
-          draftName: '',
-          draftNote: '',
-          createOpen: false,
-        };
-        uiCtx.renderModal();
+    if (action === 'wbd-open-snapshots' && state.modal?.type === 'worldbookDetail') {
+      state.selectPopup = {
+        type: 'quickSnapshot',
+        kind: 'worldbook',
+        targetName: state.modal.bookName,
+        mode: 'state',
+        name: '',
+        note: '',
       };
-      if (action === 'wbd-open-snapshots') confirmDiscardDirtyModal(openSnaps);
-      else openSnaps();
+      uiCtx.renderSelectPopup();
+      return true;
+    }
+    if (action === 'wbm-open-snapshots') {
+      state.modal = {
+        type: 'snapshots',
+        kind: 'worldbook',
+        targetBook: '',
+        createMode: 'state',
+        filter: 'all',
+        search: '',
+        draftName: '',
+        draftNote: '',
+        createOpen: false,
+      };
+      uiCtx.renderModal();
       return true;
     }
     if (action === 'open-worldbook-manager') { state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false }; uiCtx.renderModal(); return true; }

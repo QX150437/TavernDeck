@@ -12,20 +12,19 @@ import { PRESET_SETTING_FIELDS } from './preset-manager.js';
 
 const MAX_AUTO_SNAPSHOTS = 10;
 
-function pruneAutoSnapshots() {
+async function pruneAutoSnapshots() {
   const list = state.store.snapshots || [];
   const autoUnpinned = list
     .filter((s) => s && s.auto && !s.pinned)
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   if (autoUnpinned.length <= MAX_AUTO_SNAPSHOTS) return;
-  const toRemoveIds = new Set(
-    autoUnpinned.slice(0, autoUnpinned.length - MAX_AUTO_SNAPSHOTS).map((s) => s.id),
-  );
+  const toRemove = autoUnpinned.slice(0, autoUnpinned.length - MAX_AUTO_SNAPSHOTS);
+  const toRemoveIds = new Set(toRemove.map((s) => s.id));
   state.store.snapshots = list.filter((s) => !toRemoveIds.has(s.id));
-  toRemoveIds.forEach((id) => deleteSnapshotPayload(id));
+  await Promise.all(toRemove.map((s) => deleteSnapshotPayload(s)));
 }
 
-export function captureCurrentSnapshotData(name, mode, opts = {}) {
+export async function captureCurrentSnapshotData(name, mode, opts = {}) {
   const targetPreset = opts.presetName || state.presetName || '当前预设';
   const preset = callTH('getPreset', opts.sourceName || 'in_use');
   const prompts = preset && Array.isArray(preset.prompts) ? preset.prompts : [];
@@ -39,14 +38,19 @@ export function captureCurrentSnapshotData(name, mode, opts = {}) {
   const snapId = opts.id || genId();
   const resolvedMode = mode === 'full' ? 'full' : 'state';
   let payloadBytes = 0;
+  let payloadFile = '';
   if (resolvedMode === 'full' && preset) {
-    payloadBytes = setSnapshotPayload(snapId, {
+    const saved = await setSnapshotPayload(snapId, {
       fullPresetData: {
         settings: JSON.parse(JSON.stringify(preset.settings || {})),
         prompts: JSON.parse(JSON.stringify(preset.prompts || [])),
         prompts_unused: JSON.parse(JSON.stringify(preset.prompts_unused || [])),
       },
-    });
+    }, { prevFileName: opts.prevFileName });
+    payloadBytes = saved.bytes;
+    payloadFile = saved.fileName;
+  } else if (opts.prevFileName) {
+    await deleteSnapshotPayload({ id: snapId, payloadFile: opts.prevFileName });
   }
 
   return {
@@ -62,6 +66,7 @@ export function captureCurrentSnapshotData(name, mode, opts = {}) {
     createdAt: opts.createdAt || Date.now(),
     updatedAt: Date.now(),
     payloadBytes,
+    ...(payloadFile ? { payloadFile } : {}),
     stats: {
       enabledCount,
       totalCount: promptStates.length,
@@ -85,10 +90,15 @@ export async function captureWorldbookSnapshotData(bookName, name, mode, opts = 
   const snapId = opts.id || genId();
   const resolvedMode = mode === 'full' ? 'full' : 'state';
   let payloadBytes = 0;
+  let payloadFile = '';
   if (resolvedMode === 'full') {
-    payloadBytes = setSnapshotPayload(snapId, {
+    const saved = await setSnapshotPayload(snapId, {
       fullWorldbookData: entries,
-    });
+    }, { prevFileName: opts.prevFileName });
+    payloadBytes = saved.bytes;
+    payloadFile = saved.fileName;
+  } else if (opts.prevFileName) {
+    await deleteSnapshotPayload({ id: snapId, payloadFile: opts.prevFileName });
   }
 
   return {
@@ -104,6 +114,7 @@ export async function captureWorldbookSnapshotData(bookName, name, mode, opts = 
     createdAt: opts.createdAt || Date.now(),
     updatedAt: Date.now(),
     payloadBytes,
+    ...(payloadFile ? { payloadFile } : {}),
     stats: {
       enabledCount,
       totalCount: entryStates.length,
@@ -123,7 +134,7 @@ export async function createAutoBackupSnapshot(kind, targetName, reason = '操�
       snap = await captureWorldbookSnapshotData(targetName, label, 'full', { auto: true });
     } else {
       const sourceName = (targetName && targetName !== 'in_use' && targetName !== state.presetName) ? targetName : 'in_use';
-      snap = captureCurrentSnapshotData(label, 'full', {
+      snap = await captureCurrentSnapshotData(label, 'full', {
         presetName: targetName === 'in_use' ? state.presetName : (targetName || state.presetName),
         sourceName,
         auto: true,
@@ -132,7 +143,7 @@ export async function createAutoBackupSnapshot(kind, targetName, reason = '操�
     if (!snap) return null;
     state.store.snapshots = state.store.snapshots || [];
     state.store.snapshots.unshift(snap);
-    pruneAutoSnapshots();
+    await pruneAutoSnapshots();
     saveStore(state.store);
     return snap;
   } catch (e) {
@@ -141,12 +152,13 @@ export async function createAutoBackupSnapshot(kind, targetName, reason = '操�
   }
 }
 
-export function slimFullSnapshot(snapId) {
+export async function slimFullSnapshot(snapId) {
   const snap = (state.store.snapshots || []).find((s) => s.id === snapId);
   if (!snap || snap.mode !== 'full') return false;
-  deleteSnapshotPayload(snap.id);
+  await deleteSnapshotPayload(snap, { strict: true });
   snap.mode = 'state';
   snap.payloadBytes = 0;
+  delete snap.payloadFile;
   snap.updatedAt = Date.now();
   saveStore(state.store);
   return true;
@@ -210,8 +222,8 @@ function formatWbStrategySummary(e) {
 export async function computeDetailedSnapshotDiff(targetSnap, baseSnap = null) {
   const isCompare = !!baseSnap;
   const kind = targetSnap.kind === 'worldbook' ? 'worldbook' : 'preset';
-  const targetPayload = targetSnap.mode === 'full' ? getSnapshotPayload(targetSnap.id) : null;
-  const basePayload = baseSnap && baseSnap.mode === 'full' ? getSnapshotPayload(baseSnap.id) : null;
+  const targetPayload = targetSnap.mode === 'full' ? await getSnapshotPayload(targetSnap) : null;
+  const basePayload = baseSnap && baseSnap.mode === 'full' ? await getSnapshotPayload(baseSnap) : null;
 
   const result = {
     kind,
@@ -496,7 +508,7 @@ export async function applySnapshot(snap, restoreFull, opts = {}) {
       if (autoSnap) state.lastUndoSnapshotId = autoSnap.id;
     }
 
-    const payload = snap.mode === 'full' ? getSnapshotPayload(snap.id) : null;
+    const payload = snap.mode === 'full' ? await getSnapshotPayload(snap) : null;
 
     if (snap.kind === 'worldbook') {
       const bookName = snap.targetName;
@@ -699,7 +711,7 @@ export async function applySelectiveSnapshot(snap, diffObj, selectedDiffIds) {
 export async function saveSnapshotAsNewTarget(snap, newName) {
   const clean = String(newName || '').trim();
   if (!clean) throw new Error('请输入新名称');
-  const payload = getSnapshotPayload(snap?.id);
+  const payload = await getSnapshotPayload(snap);
   if (!payload) throw new Error('该快照不包含完整数据，无法另存为独立预设或世界书');
 
   if (snap.kind === 'worldbook') {
@@ -727,10 +739,10 @@ export async function saveSnapshotAsNewTarget(snap, newName) {
   return clean;
 }
 
-export function exportSingleSnapshotAsStandardJson(snap) {
+export async function exportSingleSnapshotAsStandardJson(snap) {
   if (!snap) return;
   const safeName = String(snap.name || snap.targetName || 'snapshot').replace(/[\\/:*?"<>|]/g, '_');
-  const payload = snap.mode === 'full' ? getSnapshotPayload(snap.id) : null;
+  const payload = snap.mode === 'full' ? await getSnapshotPayload(snap) : null;
   if (snap.mode === 'full' && payload) {
     if (snap.kind === 'worldbook' && payload.fullWorldbookData) {
       downloadJsonFile(serializeRegExpDeep(payload.fullWorldbookData), `${safeName}-世界书.json`);

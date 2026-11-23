@@ -306,21 +306,16 @@ export const presetsUiModule = {
       return true;
     }
     if (action === 'pm-open-snapshots' && state.modal?.type === 'presetDetail') {
-      const targetPreset = state.modal.presetName;
-      confirmDiscardDirtyModal(() => {
-        state.modal = {
-          type: 'snapshots',
-          kind: 'preset',
-          targetBook: '',
-          createMode: 'state',
-          filter: (targetPreset === 'in_use' || targetPreset === state.presetName) ? 'current' : 'all',
-          search: '',
-          draftName: '',
-          draftNote: '',
-          createOpen: false,
-        };
-        uiCtx.renderModal();
-      });
+      const targetPreset = state.modal.presetName === 'in_use' ? state.presetName : state.modal.presetName;
+      state.selectPopup = {
+        type: 'quickSnapshot',
+        kind: 'preset',
+        targetName: targetPreset,
+        mode: 'state',
+        name: '',
+        note: '',
+      };
+      uiCtx.renderSelectPopup();
       return true;
     }
     if (action === 'pm-back-list' && state.modal?.type === 'presetDetail') {

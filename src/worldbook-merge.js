@@ -1,7 +1,7 @@
 import {
   callTH, notify, genId, cloneWorldbookEntry, cloneWorldbookEntries, keysSignature,
 } from './utils.js';
-import { serializeRegExpDeep } from './store.js';
+import { serializeRegExpDeep, reviveRegExpDeep } from './store.js';
 import { createAutoBackupSnapshot } from './snapshot.js';
 
 function strategySignature(s) {
@@ -563,6 +563,7 @@ export async function hydrateWbMergeDraft(draft) {
   if (!draft) return null;
   if (draft.v === 3) {
     const session = await buildDualWorldbookSession(draft.sourceName, draft.baseName);
+    const pool = Array.isArray(draft.dataPool) ? draft.dataPool : [];
     const decodeSide = (encodedList) => (encodedList || []).map((token) => {
       if (typeof token === 'string') {
         const orig = session.origMap[token];
@@ -570,8 +571,11 @@ export async function hydrateWbMergeDraft(draft) {
         return { _key: genId(), origRef: token, data: cloneWorldbookEntry(orig.data) };
       }
       if (token && typeof token === 'object') {
+        if (typeof token.p === 'number' && pool[token.p]) {
+          return { _key: genId(), origRef: token.r || null, _migTag: token.mt || null, data: cloneWorldbookEntry(reviveRegExpDeep(pool[token.p])) };
+        }
         if (token.d) {
-          return { _key: genId(), origRef: token.r || null, _migTag: token.mt || null, data: cloneWorldbookEntry(token.d) };
+          return { _key: genId(), origRef: token.r || null, _migTag: token.mt || null, data: cloneWorldbookEntry(reviveRegExpDeep(token.d)) };
         }
         if (token.r && session.origMap[token.r]) {
           const data = cloneWorldbookEntry(session.origMap[token.r].data);
@@ -588,6 +592,18 @@ export async function hydrateWbMergeDraft(draft) {
     session.sourceQuery = draft.sourceQuery || '';
     session.baseQuery = draft.baseQuery || '';
     session.activePane = draft.activePane || 'both';
+    if (Array.isArray(draft.undoStack)) {
+      session.undoStack = draft.undoStack.map((snap) => ({
+        sourceEntries: decodeSide(snap.s),
+        baseEntries: decodeSide(snap.b),
+      }));
+    }
+    if (Array.isArray(draft.redoStack)) {
+      session.redoStack = draft.redoStack.map((snap) => ({
+        sourceEntries: decodeSide(snap.s),
+        baseEntries: decodeSide(snap.b),
+      }));
+    }
     if (draft._pendingCustom) {
       const pc = JSON.parse(JSON.stringify(draft._pendingCustom));
       if (pc.draft) {

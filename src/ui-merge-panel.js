@@ -593,8 +593,11 @@ export const mergePanelUiModule = {
             state.previewKey = null; state.snapshotDetailId = null;
             state.previewCtx = {
               type: 'mergeCustom',
+              isDualV3: true,
               targetSide: pc.targetSide || 'base',
               targetKey: pc.targetKey || null,
+              srcKey: sItem?._key || null,
+              baseKey: bItem?._key || null,
               srcRef: pc.srcRef || null,
               baseRef: pc.baseRef || null,
               entry: {
@@ -660,8 +663,11 @@ export const mergePanelUiModule = {
             state.previewKey = null; state.snapshotDetailId = null;
             state.previewCtx = {
               type: 'wbMergeCustom',
+              isDualV3: true,
               targetSide: pc.targetSide || 'base',
               targetKey: pc.targetKey || null,
+              srcKey: sItem?._key || null,
+              baseKey: bItem?._key || null,
               srcRef: pc.srcRef || null,
               baseRef: pc.baseRef || null,
               entry: {

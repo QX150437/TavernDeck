@@ -715,6 +715,9 @@ function handleRootKeydown(e) {
     else if (e.target.id === 'td-mig-target-idx') {
       selectLayerEl.querySelector("[data-action='confirm-merge-migrate']")?.click();
     }
+    else if (e.target.id === 'td-qsnap-name' || e.target.id === 'td-qsnap-note') {
+      selectLayerEl.querySelector("[data-action='qsnap-confirm']")?.click();
+    }
     else if (e.target.id === 'td-panel-width-input' || e.target.id === 'td-panel-height-input') {
       modalLayerEl.querySelector("[data-action='apply-panel-size']")?.click();
     }

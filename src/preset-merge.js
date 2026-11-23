@@ -613,6 +613,7 @@ export function hydratePresetMergeDraft(draft) {
   if (!draft) return null;
   if (draft.v === 3) {
     const session = buildDualPresetSession(draft.sourceName, draft.baseName);
+    const pool = Array.isArray(draft.dataPool) ? draft.dataPool : [];
     const decodeSide = (encodedList) => (encodedList || []).map((token) => {
       if (typeof token === 'string') {
         const orig = session.origMap[token];
@@ -620,6 +621,9 @@ export function hydratePresetMergeDraft(draft) {
         return { _key: genId(), origRef: token, data: cloneJson(orig.data) };
       }
       if (token && typeof token === 'object') {
+        if (typeof token.p === 'number' && pool[token.p]) {
+          return { _key: genId(), origRef: token.r || null, _migTag: token.mt || null, data: cloneJson(pool[token.p]) };
+        }
         if (token.d) {
           return { _key: genId(), origRef: token.r || null, _migTag: token.mt || null, data: cloneJson(token.d) };
         }
@@ -640,6 +644,22 @@ export function hydratePresetMergeDraft(draft) {
     session.activePane = draft.activePane || 'both';
     session.migrateSettings = !!draft.migrateSettings;
     session.migrateSettingsDir = draft.migrateSettingsDir || (draft.migrateSettings ? 'a2b' : 'none');
+    if (Array.isArray(draft.undoStack)) {
+      session.undoStack = draft.undoStack.map((snap) => ({
+        sourceEntries: decodeSide(snap.s),
+        baseEntries: decodeSide(snap.b),
+        migrateSettings: !!snap.ms,
+        migrateSettingsDir: snap.msd || (snap.ms ? 'a2b' : 'none'),
+      }));
+    }
+    if (Array.isArray(draft.redoStack)) {
+      session.redoStack = draft.redoStack.map((snap) => ({
+        sourceEntries: decodeSide(snap.s),
+        baseEntries: decodeSide(snap.b),
+        migrateSettings: !!snap.ms,
+        migrateSettingsDir: snap.msd || (snap.ms ? 'a2b' : 'none'),
+      }));
+    }
     if (draft._pendingCustom) {
       const pc = cloneJson(draft._pendingCustom);
       if (pc.draft) {

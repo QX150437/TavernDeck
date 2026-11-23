@@ -1,6 +1,6 @@
 import {
   STORAGE_KEY, SCHEMA_VERSION,
-  hasTH, callTH, notify, genId, makeItemKey, cloneItemRef, logWarn, logError,
+  getST, hasTH, callTH, notify, genId, makeItemKey, cloneItemRef, logWarn, logError,
 } from './utils.js';
 
 const MERGE_DRAFTS_STORAGE_KEY = 'TavernDeck_mergeDrafts_v1';
@@ -58,6 +58,41 @@ function readAllSnapshotPayloads() {
   }
 }
 
+function utf8ToBase64(str) {
+  const s = String(str || '');
+  if (typeof TextEncoder !== 'undefined') {
+    const bytes = new TextEncoder().encode(s);
+    let bin = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(bin);
+  }
+  return btoa(unescape(encodeURIComponent(s)));
+}
+
+function normalizeBackendFileName(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const parts = s.split(/[\\/]/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : '';
+}
+
+function getBackendFileCandidates(raw) {
+  const s = String(raw || '').trim();
+  const base = normalizeBackendFileName(s);
+  const out = [];
+  const push = (v) => { if (v && !out.includes(v)) out.push(v); };
+  push(base);
+  if (base) {
+    push(`/user/files/${base}`);
+    push(`user/files/${base}`);
+  }
+  push(s);
+  return out;
+}
+
 function writeAllSnapshotPayloads(map) {
   snapshotPayloadCache = map || {};
   try {
@@ -70,44 +105,186 @@ function writeAllSnapshotPayloads(map) {
     }
     return true;
   } catch (e) {
-    logWarn('写入本地快照载荷失败（可能超出浏览器存储配额，建议瘦身或清理旧快照）', e);
-    notify('warning', '本地快照存储空间不足，建议删除或瘦身部分完整快照');
+    logWarn('写入本地快照载荷失败（可能超出浏览器存储配额）', e);
+    notify('warning', '本地浏览器存储空间不足');
     return false;
   }
 }
 
-export function getSnapshotPayload(snapId) {
-  if (!snapId) return null;
-  const map = readAllSnapshotPayloads();
-  return map[snapId] || null;
-}
-
-export function setSnapshotPayload(snapId, payload) {
+export function setSnapshotPayloadLocal(snapId, payload) {
   if (!snapId || !payload) return 0;
   const map = readAllSnapshotPayloads();
   const serialized = serializeRegExpDeep(payload);
   map[snapId] = reviveRegExpDeep(serialized);
-  const bytes = JSON.stringify(serialized).length;
+  const bytes = getUtf8ByteLength(JSON.stringify(serialized));
   writeAllSnapshotPayloads(map);
   return bytes;
 }
 
-export function deleteSnapshotPayload(snapId) {
-  if (!snapId) return;
+export function hasSnapshotPayload(snap) {
+  if (!snap) return false;
+  if (snap.payloadFile) return true;
   const map = readAllSnapshotPayloads();
-  if (Object.prototype.hasOwnProperty.call(map, snapId)) {
-    delete map[snapId];
-    writeAllSnapshotPayloads(map);
+  return !!map[snap.id];
+}
+
+export async function getSnapshotPayload(snapOrId) {
+  if (!snapOrId) return null;
+  const snap = typeof snapOrId === 'string'
+    ? (state.store.snapshots || []).find((s) => s.id === snapOrId)
+    : snapOrId;
+  const snapId = typeof snapOrId === 'string' ? snapOrId : snapOrId.id;
+
+  if (snap?.payloadFile) {
+    const base = normalizeBackendFileName(snap.payloadFile);
+    if (hasTH('getTavernFile')) {
+      for (const cand of [base, snap.payloadFile].filter((v, i, a) => v && a.indexOf(v) === i)) {
+        try {
+          const res = await callTH('getTavernFile', cand);
+          if (res && res.ok) {
+            const text = await res.text();
+            if (text) return parseWithRegExp(text);
+          }
+        } catch (e) {}
+      }
+    }
+    if (base && typeof fetch === 'function') {
+      for (const url of [`/user/files/${encodeURIComponent(base)}`, `user/files/${encodeURIComponent(base)}`]) {
+        try {
+          const res = await fetch(url);
+          if (res && res.ok) {
+            const text = await res.text();
+            if (text) return parseWithRegExp(text);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  if (snapId) {
+    const map = readAllSnapshotPayloads();
+    if (map[snapId]) return map[snapId];
+  }
+  return null;
+}
+
+export async function setSnapshotPayload(snapId, payload, opts = {}) {
+  if (!snapId || !payload) return { fileName: '', bytes: 0, storage: 'none' };
+  const serialized = serializeRegExpDeep(payload);
+  const jsonStr = JSON.stringify(serialized);
+  const bytes = getUtf8ByteLength(jsonStr);
+
+  if (hasTH('uploadTavernFile')) {
+    const desiredName = opts.prevFileName
+      ? `taverndeck_snap_${snapId}_${Date.now().toString(36)}.json`
+      : `taverndeck_snap_${snapId}.json`;
+    const actualName = await callTH('uploadTavernFile', desiredName, utf8ToBase64(jsonStr));
+    const fileName = normalizeBackendFileName(actualName) || desiredName;
+    const prevNorm = normalizeBackendFileName(opts.prevFileName);
+    if (prevNorm && prevNorm !== fileName && hasTH('deleteTavernFile')) {
+      for (const cand of getBackendFileCandidates(opts.prevFileName)) {
+        try {
+          await callTH('deleteTavernFile', cand);
+          break;
+        } catch (e) {
+          logWarn(`清理旧快照文件「${cand}」失败`, e);
+        }
+      }
+    }
+    const localMap = readAllSnapshotPayloads();
+    if (Object.prototype.hasOwnProperty.call(localMap, snapId)) {
+      delete localMap[snapId];
+      writeAllSnapshotPayloads(localMap);
+    }
+    return { fileName, bytes, storage: 'file' };
+  }
+
+  setSnapshotPayloadLocal(snapId, payload);
+  return { fileName: '', bytes, storage: 'local' };
+}
+
+export async function deleteSnapshotPayload(snapOrId, opts = {}) {
+  const snap = typeof snapOrId === 'string'
+    ? (state.store.snapshots || []).find((s) => s.id === snapOrId)
+    : snapOrId;
+  const snapId = typeof snapOrId === 'string' ? snapOrId : snapOrId?.id;
+
+  if (snap?.payloadFile) {
+    const base = normalizeBackendFileName(snap.payloadFile);
+    const thCands = [base, snap.payloadFile].filter((v, i, a) => v && a.indexOf(v) === i);
+    let deletedOk = false;
+    let lastErr = null;
+
+    if (hasTH('deleteTavernFile')) {
+      for (const cand of thCands) {
+        try {
+          await callTH('deleteTavernFile', cand);
+          deletedOk = true;
+          break;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+    }
+
+    if (!deletedOk && typeof fetch === 'function') {
+      const st = getST();
+      const headers = st && typeof st.getRequestHeaders === 'function'
+        ? st.getRequestHeaders()
+        : { 'Content-Type': 'application/json' };
+      const apiCands = [
+        base,
+        base ? `user/files/${base}` : '',
+        base ? `/user/files/${base}` : '',
+        base ? `files/${base}` : '',
+        base ? `/files/${base}` : '',
+        snap.payloadFile,
+      ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+      for (const p of apiCands) {
+        try {
+          const res = await fetch('/api/files/delete', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ path: p }),
+          });
+          if (res.ok || res.status === 404) {
+            deletedOk = true;
+            break;
+          }
+          const errText = await res.text().catch(() => '');
+          lastErr = new Error(errText || `HTTP ${res.status}`);
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+    }
+
+    if (!deletedOk && lastErr) {
+      logWarn(`删除酒馆后端快照文件「${snap.payloadFile}」失败`, lastErr);
+      if (opts.strict) throw lastErr;
+    }
+    delete snap.payloadFile;
+  }
+
+  if (snapId) {
+    const map = readAllSnapshotPayloads();
+    if (Object.prototype.hasOwnProperty.call(map, snapId)) {
+      delete map[snapId];
+      writeAllSnapshotPayloads(map);
+    }
   }
 }
 
 export function getSnapshotPayloadSizeBytes(snap) {
   if (!snap) return 0;
   if (typeof snap.payloadBytes === 'number' && snap.payloadBytes > 0) return snap.payloadBytes;
-  const p = getSnapshotPayload(snap.id);
+  if (snap.payloadFile) return 0;
+  const map = readAllSnapshotPayloads();
+  const p = map[snap.id];
   if (!p) return 0;
   try {
-    const bytes = stringifyWithRegExp(p).length;
+    const bytes = getUtf8ByteLength(stringifyWithRegExp(p));
     snap.payloadBytes = bytes;
     return bytes;
   } catch (e) {
@@ -158,7 +335,19 @@ export function compactMergeDraft(kind, session) {
   if (session.v === 3 && Array.isArray(session.sourceEntries) && Array.isArray(session.baseEntries)) {
     const origMap = session.origMap || {};
     const idKey = isPreset ? 'id' : 'uid';
-    const encodeSide = (list) => list.map((item) => {
+    const dataPool = [];
+    const dataPoolMap = new Map();
+    const internData = (dataObj) => {
+      const norm = isPreset ? JSON.parse(JSON.stringify(dataObj)) : serializeRegExpDeep(dataObj);
+      const sig = JSON.stringify(norm);
+      if (dataPoolMap.has(sig)) return dataPoolMap.get(sig);
+      const idx = dataPool.length;
+      dataPool.push(isPreset ? norm : reviveRegExpDeep(norm));
+      dataPoolMap.set(sig, idx);
+      return idx;
+    };
+
+    const encodeSide = (list) => (list || []).map((item) => {
       const ref = item.origRef;
       const orig = ref ? origMap[ref] : null;
       const mt = item._migTag || null;
@@ -172,13 +361,26 @@ export function compactMergeDraft(kind, session) {
           if (mt) patch.mt = mt;
           return patch;
         }
-        return mt ? { r: ref, d: item.data, mt } : { r: ref, d: item.data };
       }
-      if (ref) {
-        return mt ? { r: ref, d: item.data, mt } : { r: ref, d: item.data };
-      }
-      return mt ? { d: item.data, mt } : { d: item.data };
+      const token = { p: internData(item.data) };
+      if (ref) token.r = ref;
+      if (mt) token.mt = mt;
+      return token;
     });
+
+    const encodeHistorySnap = (snap) => ({
+      s: encodeSide(snap.sourceEntries),
+      b: encodeSide(snap.baseEntries),
+      ...(isPreset ? {
+        ms: !!snap.migrateSettings,
+        msd: snap.migrateSettingsDir || (snap.migrateSettings ? 'a2b' : 'none'),
+      } : {}),
+    });
+
+    const sourceList = encodeSide(session.sourceEntries);
+    const baseList = encodeSide(session.baseEntries);
+    const undoStack = (session.undoStack || []).slice(-20).map(encodeHistorySnap);
+    const redoStack = (session.redoStack || []).slice(-10).map(encodeHistorySnap);
 
     let pendingCustom = null;
     if (session._pendingCustom && session._pendingCustom.draft) {
@@ -215,8 +417,11 @@ export function compactMergeDraft(kind, session) {
       sourceDirty: !!session.sourceDirty,
       baseDirty: !!session.baseDirty,
       dirty: !!session.dirty,
-      sourceList: encodeSide(session.sourceEntries),
-      baseList: encodeSide(session.baseEntries),
+      ...(dataPool.length > 0 ? { dataPool } : {}),
+      sourceList,
+      baseList,
+      ...(undoStack.length > 0 ? { undoStack } : {}),
+      ...(redoStack.length > 0 ? { redoStack } : {}),
       ...(pendingCustom ? { _pendingCustom: pendingCustom } : {}),
     };
   }
@@ -487,11 +692,14 @@ export function loadStore() {
           snap.note = typeof snap.note === 'string' ? snap.note : '';
           snap.pinned = !!snap.pinned;
           snap.auto = !!snap.auto;
+          if (snap.payloadFile) {
+            snap.payloadFile = normalizeBackendFileName(snap.payloadFile);
+          }
           if (snap.fullPresetData || snap.fullWorldbookData) {
             const payload = {};
             if (snap.fullPresetData) payload.fullPresetData = snap.fullPresetData;
             if (snap.fullWorldbookData) payload.fullWorldbookData = snap.fullWorldbookData;
-            snap.payloadBytes = setSnapshotPayload(snap.id, payload);
+            snap.payloadBytes = setSnapshotPayloadLocal(snap.id, payload);
             delete snap.fullPresetData;
             delete snap.fullWorldbookData;
           }
@@ -801,19 +1009,20 @@ export function performDrop(op) {
   return false;
 }
 
-function hydrateSnapshotsForExport(snaps) {
-  return (snaps || []).map((snap) => {
+async function hydrateSnapshotsForExport(snaps) {
+  return Promise.all((snaps || []).map(async (snap) => {
     const copy = JSON.parse(JSON.stringify(snap));
-    const heavy = getSnapshotPayload(snap.id);
+    const heavy = await getSnapshotPayload(snap);
     if (heavy) {
       if (heavy.fullPresetData) copy.fullPresetData = serializeRegExpDeep(heavy.fullPresetData);
       if (heavy.fullWorldbookData) copy.fullWorldbookData = serializeRegExpDeep(heavy.fullWorldbookData);
     }
+    delete copy.payloadFile;
     return copy;
-  });
+  }));
 }
 
-export function exportStoreData(opts) {
+export async function exportStoreData(opts) {
   const payload = {
     app: 'TavernDeck',
     schemaVersion: SCHEMA_VERSION,
@@ -836,19 +1045,19 @@ export function exportStoreData(opts) {
     payload.presetBindings = bindings;
   }
   if (opts.includeSnapshots) {
-    payload.snapshots = hydrateSnapshotsForExport(state.store.snapshots);
+    payload.snapshots = await hydrateSnapshotsForExport(state.store.snapshots);
   }
   if (opts.includeAll) {
     payload.scope = 'all';
     payload.settings = JSON.parse(JSON.stringify(state.store.settings));
     payload.schemes = JSON.parse(JSON.stringify(ensureSchemesPool()));
     payload.presetBindings = JSON.parse(JSON.stringify(state.store.presetBindings || {}));
-    payload.snapshots = hydrateSnapshotsForExport(state.store.snapshots);
+    payload.snapshots = await hydrateSnapshotsForExport(state.store.snapshots);
   }
   return payload;
 }
 
-export function importStoreData(data, opts) {
+export async function importStoreData(data, opts) {
   if (!data || typeof data !== 'object' || data.app !== 'TavernDeck') {
     throw new Error('无效的 TavernDeck 备份文件格式');
   }
@@ -899,7 +1108,7 @@ export function importStoreData(data, opts) {
   }
 
   if (opts.importSnapshots && Array.isArray(data.snapshots)) {
-    const normalizeImportedSnap = (rawSnap, newId) => {
+    const normalizeImportedSnap = async (rawSnap, newId) => {
       const copy = JSON.parse(JSON.stringify(rawSnap));
       copy.id = newId;
       copy.kind = copy.kind === 'worldbook' ? 'worldbook' : 'preset';
@@ -908,11 +1117,14 @@ export function importStoreData(data, opts) {
       copy.note = typeof copy.note === 'string' ? copy.note : '';
       copy.pinned = !!copy.pinned;
       copy.auto = !!copy.auto;
+      delete copy.payloadFile;
       if (copy.fullPresetData || copy.fullWorldbookData) {
         const heavy = {};
         if (copy.fullPresetData) heavy.fullPresetData = copy.fullPresetData;
         if (copy.fullWorldbookData) heavy.fullWorldbookData = reviveRegExpDeep(copy.fullWorldbookData);
-        copy.payloadBytes = setSnapshotPayload(copy.id, heavy);
+        const saved = await setSnapshotPayload(copy.id, heavy);
+        copy.payloadBytes = saved.bytes;
+        if (saved.fileName) copy.payloadFile = saved.fileName;
         delete copy.fullPresetData;
         delete copy.fullWorldbookData;
       }
@@ -920,16 +1132,21 @@ export function importStoreData(data, opts) {
     };
 
     if (mode === 'overwrite') {
-      (state.store.snapshots || []).forEach((old) => deleteSnapshotPayload(old.id));
-      state.store.snapshots = data.snapshots.filter(Boolean).map((s) => normalizeImportedSnap(s, s.id || genId()));
+      await Promise.all((state.store.snapshots || []).map((old) => deleteSnapshotPayload(old)));
+      state.store.snapshots = await Promise.all(
+        data.snapshots.filter(Boolean).map((s) => normalizeImportedSnap(s, s.id || genId())),
+      );
     } else {
       const existingIds = new Set((state.store.snapshots || []).map((s) => s.id));
+      const tasks = [];
       data.snapshots.filter(Boolean).forEach((snap) => {
         let newId = snap.id || genId();
         if (existingIds.has(newId)) newId = genId();
         existingIds.add(newId);
-        state.store.snapshots.push(normalizeImportedSnap(snap, newId));
+        tasks.push(normalizeImportedSnap(snap, newId));
       });
+      const added = await Promise.all(tasks);
+      state.store.snapshots.push(...added);
     }
   }
 
@@ -1013,7 +1230,27 @@ export function getStorageDiagnostics(devLogCount = 0) {
   });
   payloadItems.sort((a, b) => b.bytes - a.bytes);
 
-  const missingPayloadSnaps = snapList.filter((s) => s && s.mode === 'full' && !payloadMap[s.id]);
+  const backendItems = [];
+  let backendTotalBytes = 0;
+  snapList.forEach((s) => {
+    if (!s || !s.payloadFile) return;
+    const bytes = typeof s.payloadBytes === 'number' && s.payloadBytes > 0 ? s.payloadBytes : 0;
+    backendTotalBytes += bytes;
+    backendItems.push({
+      id: s.id,
+      fileName: normalizeBackendFileName(s.payloadFile) || s.payloadFile,
+      name: s.name || s.id,
+      kind: s.kind || 'preset',
+      targetName: s.targetName || s.presetName || '',
+      auto: !!s.auto,
+      pinned: !!s.pinned,
+      bytes,
+      updatedAt: s.updatedAt || s.createdAt || 0,
+    });
+  });
+  backendItems.sort((a, b) => b.bytes - a.bytes);
+
+  const missingPayloadSnaps = snapList.filter((s) => s && s.mode === 'full' && !s.payloadFile && !payloadMap[s.id]);
 
   const drafts = state.mergeDrafts || { preset: null, worldbook: null };
   const presetDraftBytes = drafts.preset ? getUtf8ByteLength(stringifyWithRegExp(drafts.preset)) : 0;
@@ -1044,7 +1281,7 @@ export function getStorageDiagnostics(devLogCount = 0) {
   const aiCacheBytes = getUtf8ByteLength(JSON.stringify(aiCache));
 
   const autoUnpinnedCount = snapList.filter((s) => s && s.auto && !s.pinned).length;
-  const fullUnpinnedCount = snapList.filter((s) => s && s.mode === 'full' && !s.pinned && !!payloadMap[s.id]).length;
+  const fullUnpinnedCount = snapList.filter((s) => s && s.mode === 'full' && !s.pinned && (!!s.payloadFile || !!payloadMap[s.id])).length;
 
   return {
     globalVar: {
@@ -1059,6 +1296,11 @@ export function getStorageDiagnostics(devLogCount = 0) {
       snapshotCount: snapList.length,
       mvuBytes,
       mvuItems,
+    },
+    backend: {
+      available: hasTH('uploadTavernFile') && hasTH('getTavernFile') && hasTH('deleteTavernFile'),
+      totalBytes: backendTotalBytes,
+      items: backendItems,
     },
     localStorage: {
       quotaEstimateBytes: 5 * 1024 * 1024,
@@ -1093,7 +1335,7 @@ export function getStorageDiagnostics(devLogCount = 0) {
       orphanCount: orphanPayloadIds.length,
       missingPayloadCount: missingPayloadSnaps.length,
     },
-    grandTotalBytes: globalTotalBytes + payloadsTotalBytes + draftsTotalBytes,
+    grandTotalBytes: globalTotalBytes + backendTotalBytes + payloadsTotalBytes + draftsTotalBytes,
   };
 }
 
@@ -1115,7 +1357,7 @@ export function repairMissingSnapshotPayloads() {
   const map = readAllSnapshotPayloads();
   let repaired = 0;
   (state.store.snapshots || []).forEach((s) => {
-    if (s && s.mode === 'full' && !map[s.id]) {
+    if (s && s.mode === 'full' && !s.payloadFile && !map[s.id]) {
       s.mode = 'state';
       s.payloadBytes = 0;
       repaired++;
@@ -1141,43 +1383,80 @@ export function clearAllMvuStarred() {
   return count;
 }
 
-export function cleanAutoBackupSnapshots() {
+export async function cleanAutoBackupSnapshots() {
   const list = state.store.snapshots || [];
   const kept = [];
-  let removed = 0;
+  const toDelete = [];
   list.forEach((s) => {
-    if (s && s.auto && !s.pinned) {
-      deleteSnapshotPayload(s.id);
-      if (state.lastUndoSnapshotId === s.id) state.lastUndoSnapshotId = null;
-      removed++;
-    } else if (s) {
-      kept.push(s);
-    }
+    if (s && s.auto && !s.pinned) toDelete.push(s);
+    else if (s) kept.push(s);
   });
-  if (removed > 0) {
-    state.store.snapshots = kept;
-    saveStore(state.store);
-  }
-  return removed;
+  if (toDelete.length === 0) return 0;
+
+  await Promise.all(toDelete.map((s) => deleteSnapshotPayload(s)));
+  toDelete.forEach((s) => {
+    if (state.lastUndoSnapshotId === s.id) state.lastUndoSnapshotId = null;
+  });
+  state.store.snapshots = kept;
+  saveStore(state.store);
+  return toDelete.length;
 }
 
-export function slimAllUnpinnedFullSnapshots() {
+export async function slimAllUnpinnedFullSnapshots() {
   const map = readAllSnapshotPayloads();
-  let slimmed = 0;
-  (state.store.snapshots || []).forEach((s) => {
-    if (s && s.mode === 'full' && !s.pinned) {
-      if (Object.prototype.hasOwnProperty.call(map, s.id)) {
-        delete map[s.id];
+  const targets = (state.store.snapshots || []).filter((s) => s && s.mode === 'full' && !s.pinned);
+  if (targets.length === 0) return 0;
+
+  await Promise.all(targets.map(async (s) => {
+    if (s.payloadFile && hasTH('deleteTavernFile')) {
+      try { await callTH('deleteTavernFile', s.payloadFile); } catch (e) {
+        logWarn(`瘦身删除后端文件「${s.payloadFile}」失败`, e);
       }
-      s.mode = 'state';
-      s.payloadBytes = 0;
-      s.updatedAt = Date.now();
-      slimmed++;
+      delete s.payloadFile;
     }
-  });
-  if (slimmed > 0) {
+    if (Object.prototype.hasOwnProperty.call(map, s.id)) {
+      delete map[s.id];
+    }
+    s.mode = 'state';
+    s.payloadBytes = 0;
+    s.updatedAt = Date.now();
+  }));
+  writeAllSnapshotPayloads(map);
+  saveStore(state.store);
+  return targets.length;
+}
+
+export async function migrateLocalSnapshotsToBackend() {
+  if (!hasTH('uploadTavernFile')) {
+    throw new Error('当前酒馆助手版本不支持 uploadTavernFile 接口');
+  }
+  const map = readAllSnapshotPayloads();
+  const ids = Object.keys(map);
+  if (ids.length === 0) return { migrated: 0, orphansRemoved: 0 };
+
+  const snapById = new Map((state.store.snapshots || []).map((s) => [s.id, s]));
+  let migrated = 0;
+  let orphansRemoved = 0;
+
+  try {
+    for (const id of ids) {
+      const snap = snapById.get(id);
+      if (!snap) {
+        delete map[id];
+        orphansRemoved++;
+        continue;
+      }
+      const saved = await setSnapshotPayload(id, map[id], { prevFileName: snap.payloadFile });
+      if (saved.fileName) {
+        snap.payloadFile = saved.fileName;
+        snap.payloadBytes = saved.bytes;
+        delete map[id];
+        migrated++;
+      }
+    }
+  } finally {
     writeAllSnapshotPayloads(map);
     saveStore(state.store);
   }
-  return slimmed;
+  return { migrated, orphansRemoved };
 }

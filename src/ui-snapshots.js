@@ -1,7 +1,7 @@
-import { escapeHtml, formatTime, hasTH, callTH, notify, logError } from './utils.js';
-import { state, saveStore, getSnapshotPayload, getSnapshotPayloadSizeBytes, deleteSnapshotPayload } from './store.js';
+import { escapeHtml, formatTime, genId, cloneWorldbookEntries, hasTH, callTH, notify, logError } from './utils.js';
+import { state, saveStore, hasSnapshotPayload, getSnapshotPayloadSizeBytes, deleteSnapshotPayload, setSnapshotPayload } from './store.js';
 import {
-  captureCurrentSnapshotData, captureWorldbookSnapshotData, slimFullSnapshot,
+  captureCurrentSnapshotData, captureWorldbookSnapshotData,
   computeSnapshotDiff, computeDetailedSnapshotDiff, applySnapshot,
   applySelectiveSnapshot, saveSnapshotAsNewTarget, exportSingleSnapshotAsStandardJson,
 } from './snapshot.js';
@@ -50,7 +50,7 @@ export function updateSnapshotList() {
 
   listEl.innerHTML = snaps.map((s) => {
     const isFull = s.mode === 'full';
-    const hasPayload = isFull && !!getSnapshotPayload(s.id);
+    const hasPayload = isFull && hasSnapshotPayload(s);
     const rawSize = isFull ? getSnapshotPayloadSizeBytes(s) : 0;
     const sizeText = rawSize > 0 ? formatByteSize(rawSize) : '';
     const diffs = computeSnapshotDiff(s);
@@ -95,7 +95,6 @@ export function updateSnapshotList() {
             <button class='td-btn sm' data-action='overwrite-snapshot' data-snap-id='${escapeHtml(s.id)}'>更新覆盖</button>
             <button class='td-btn sm' data-action='rename-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.edit} 名称/备注</button>
             <button class='td-btn sm' data-action='export-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.download} 导出</button>
-            ${isFull ? `<button class='td-btn sm warn' data-action='slim-snapshot' data-snap-id='${escapeHtml(s.id)}' title='去除正文与参数载荷，转为轻量开关快照以节省空间'>瘦身</button>` : ''}
             <button class='td-btn sm danger' data-action='delete-snapshot' data-snap-id='${escapeHtml(s.id)}'>${ICONS.trash} 删除</button>
           </div>` : ''}
       </div>`;
@@ -122,8 +121,7 @@ function promptSaveSnapshotAsNew(snap) {
 function promptApplySnapshot(snapId) {
   const snap = (state.store.snapshots || []).find((s) => s.id === snapId);
   if (!snap) return;
-  const payload = snap.mode === 'full' ? getSnapshotPayload(snap.id) : null;
-  const hasFull = snap.mode === 'full' && !!payload;
+  const hasFull = snap.mode === 'full' && hasSnapshotPayload(snap);
   const finishApply = (full) => {
     state.snapshotDetailId = null;
     state.snapshotDetailCtx = null;
@@ -214,6 +212,46 @@ function promptApplySnapshot(snapId) {
 }
 
 export const snapshotsUiModule = {
+  renderSelectPopup(sp, selectLayerEl) {
+    if (sp.type !== 'quickSnapshot') return false;
+    const m = state.modal;
+    if (!m) return false;
+    const isWb = sp.kind === 'worldbook';
+    const targetName = sp.targetName || (isWb ? m.bookName : (m.presetName === 'in_use' ? state.presetName : m.presetName));
+    const mode = sp.mode === 'full' ? 'full' : 'state';
+
+    selectLayerEl.innerHTML = `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>${ICONS.camera} 新建${isWb ? '世界书' : '预设'}快照</div>
+          <button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div style='font-size:12px;color:var(--td-text-muted);'>目标：<strong>${escapeHtml(targetName)}</strong>${m.dirty ? " <span class='td-mode-tag single'>含当前未保存编辑</span>" : ''}</div>
+          <div class='td-field'>
+            <input class='td-input' id='td-qsnap-name' type='text' placeholder='快照名称（留空自动生成）' value='${escapeHtml(sp.name || '')}' style='height:34px;font-size:13.5px;' />
+            <input class='td-input' id='td-qsnap-note' type='text' placeholder='备注说明（可选）' value='${escapeHtml(sp.note || '')}' style='height:34px;font-size:13.5px;' />
+          </div>
+          <div class='td-seg-grid'>
+            <button type='button' class='td-seg-card ${mode === 'state' ? 'active' : ''}' data-action='qsnap-set-mode' data-mode='state' style='padding:8px 10px;'>
+              <div class='td-seg-title' style='font-size:12.5px;'>开关状态快照</div>
+              <div class='td-seg-desc'>极轻量，记录条目启用状态</div>
+            </button>
+            <button type='button' class='td-seg-card single-card ${mode === 'full' ? 'active' : ''}' data-action='qsnap-set-mode' data-mode='full' style='padding:8px 10px;'>
+              <div class='td-seg-title' style='font-size:12.5px;'>${isWb ? '完整世界书快照' : '完整预设快照'}</div>
+              <div class='td-seg-desc'>${isWb ? '含全部条目正文与策略' : '含全部正文与生成参数'}</div>
+            </button>
+          </div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' data-action='close-select-popup'>取消</button>
+          <button class='td-btn primary' data-action='qsnap-confirm'>${ICONS.camera} 保存快照</button>
+        </div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+    return true;
+  },
+
   renderModal(m, modalLayerEl) {
     if (m.type === 'snapshots') {
       const kind = m.kind === 'worldbook' ? 'worldbook' : 'preset';
@@ -456,6 +494,115 @@ export const snapshotsUiModule = {
 
   handleClick(e, actionEl, action) {
     const modalLayerEl = uiCtx.getModalLayer();
+    if (state.selectPopup?.type === 'quickSnapshot') {
+      const sp = state.selectPopup;
+      const selectLayerEl = uiCtx.getSelectLayer();
+      if (action === 'qsnap-set-mode') {
+        sp.mode = actionEl.getAttribute('data-mode') === 'full' ? 'full' : 'state';
+        selectLayerEl?.querySelectorAll("[data-action='qsnap-set-mode']").forEach((card) => {
+          card.classList.toggle('active', card.getAttribute('data-mode') === sp.mode);
+        });
+        return true;
+      }
+      if (action === 'qsnap-confirm') {
+        if (sp._saving) return true;
+        const nameInp = selectLayerEl?.querySelector('#td-qsnap-name');
+        const noteInp = selectLayerEl?.querySelector('#td-qsnap-note');
+        const customName = (nameInp ? nameInp.value : sp.name || '').trim();
+        const customNote = (noteInp ? noteInp.value : sp.note || '').trim();
+        const mode = sp.mode === 'full' ? 'full' : 'state';
+        const m = state.modal;
+        const snapId = genId();
+        sp._saving = true;
+
+        (async () => {
+          let snap = null;
+          if (sp.kind === 'worldbook' && m?.type === 'worldbookDetail') {
+            const entries = cloneWorldbookEntries(m.entries || []);
+            let enabledCount = 0;
+            const entryStates = entries.map((ent) => {
+              const en = !!ent.enabled;
+              if (en) enabledCount++;
+              return { uid: Number(ent.uid), name: String(ent.name || `条目 #${ent.uid}`), enabled: en };
+            });
+            const saved = mode === 'full' ? await setSnapshotPayload(snapId, { fullWorldbookData: entries }) : { fileName: '', bytes: 0 };
+            snap = {
+              id: snapId,
+              kind: 'worldbook',
+              name: customName || `${m.bookName} · ${formatTime(Date.now())}`,
+              note: customNote,
+              pinned: false,
+              auto: false,
+              targetName: m.bookName,
+              presetName: m.bookName,
+              mode,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              payloadBytes: saved.bytes,
+              ...(saved.fileName ? { payloadFile: saved.fileName } : {}),
+              stats: { enabledCount, totalCount: entryStates.length },
+              entryStates,
+            };
+          } else if (sp.kind === 'preset' && m?.type === 'presetDetail') {
+            const pName = m.presetName === 'in_use' ? (state.presetName || '当前预设') : m.presetName;
+            const pData = m.data || {};
+            const prompts = Array.isArray(pData.prompts) ? pData.prompts : [];
+            let enabledCount = 0;
+            const promptStates = prompts.map((p) => {
+              const en = !!p.enabled;
+              if (en) enabledCount++;
+              return { id: String(p.id), name: String(p.name || p.id), enabled: en };
+            });
+            const saved = mode === 'full'
+              ? await setSnapshotPayload(snapId, {
+                  fullPresetData: {
+                    settings: JSON.parse(JSON.stringify(pData.settings || {})),
+                    prompts: JSON.parse(JSON.stringify(prompts)),
+                    prompts_unused: JSON.parse(JSON.stringify(pData.prompts_unused || [])),
+                  },
+                })
+              : { fileName: '', bytes: 0 };
+            snap = {
+              id: snapId,
+              kind: 'preset',
+              name: customName || `${pName} · ${formatTime(Date.now())}`,
+              note: customNote,
+              pinned: false,
+              auto: false,
+              targetName: pName,
+              presetName: pName,
+              mode,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              payloadBytes: saved.bytes,
+              ...(saved.fileName ? { payloadFile: saved.fileName } : {}),
+              stats: {
+                enabledCount,
+                totalCount: promptStates.length,
+                unusedCount: Array.isArray(pData.prompts_unused) ? pData.prompts_unused.length : 0,
+              },
+              promptStates,
+            };
+          }
+
+          if (snap) {
+            state.store.snapshots = state.store.snapshots || [];
+            state.store.snapshots.unshift(snap);
+            saveStore(state.store);
+            state.selectPopup = null;
+            uiCtx.renderSelectPopup();
+            uiCtx.renderMain();
+            notify('success', `已保存${sp.kind === 'worldbook' ? '世界书' : '预设'}快照「${snap.name}」`);
+          }
+        })().catch((err) => {
+          sp._saving = false;
+          logError('新建快照失败', err);
+          notify('error', err.message || String(err));
+        });
+        return true;
+      }
+    }
+
     if (action === 'open-snapshots') {
       state.modal = {
         type: 'snapshots',
@@ -522,17 +669,18 @@ export const snapshotsUiModule = {
         return true;
       }
 
-      const snap = captureCurrentSnapshotData(customName, state.modal.createMode, {
-        note: customNote,
-      });
-      state.store.snapshots = state.store.snapshots || [];
-      state.store.snapshots.unshift(snap);
-      saveStore(state.store);
-      state.modal.draftName = '';
-      state.modal.draftNote = '';
-      uiCtx.renderModal();
-      uiCtx.renderMain();
-      notify('success', `已保存快照「${snap.name}」`);
+      captureCurrentSnapshotData(customName, state.modal.createMode, { note: customNote })
+        .then((snap) => {
+          state.store.snapshots = state.store.snapshots || [];
+          state.store.snapshots.unshift(snap);
+          saveStore(state.store);
+          state.modal.draftName = '';
+          state.modal.draftNote = '';
+          uiCtx.renderModal();
+          uiCtx.renderMain();
+          notify('success', `已保存快照「${snap.name}」`);
+        })
+        .catch((err) => { logError('创建预设快照失败', err); notify('error', err.message || String(err)); });
       return true;
     }
     if (action === 'undo-last-restore') {
@@ -570,27 +718,14 @@ export const snapshotsUiModule = {
       }
       return true;
     }
-    if (action === 'slim-snapshot') {
-      const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
-      if (!snap) return true;
-      openConfirm({
-        title: '快照瘦身确认',
-        message: `确定要将「${snap.name}」转换为轻量开关快照吗？将移除其中备份的正文内容与生成参数，仅保留各条目启用状态。`,
-        confirmText: '确认瘦身',
-        confirmClass: 'warn',
-        onConfirm: () => {
-          if (slimFullSnapshot(snap.id)) {
-            saveStore(state.store);
-            updateSnapshotList();
-            notify('success', `已将「${snap.name}」瘦身为开关快照`);
-          }
-        },
-      });
-      return true;
-    }
     if (action === 'export-snapshot') {
       const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
-      if (snap) exportSingleSnapshotAsStandardJson(snap);
+      if (snap) {
+        exportSingleSnapshotAsStandardJson(snap).catch((err) => {
+          logError('导出快照失败', err);
+          notify('error', err.message || String(err));
+        });
+      }
       return true;
     }
     if (action === 'compare-snapshot-pick' && state.modal?.type === 'snapshots') {
@@ -723,11 +858,13 @@ export const snapshotsUiModule = {
             notify('success', `快照「${snap.name}」已更新`);
           };
           if (isWb) {
-            captureWorldbookSnapshotData(snap.targetName, snap.name, snap.mode, { id: snap.id, createdAt: snap.createdAt })
+            captureWorldbookSnapshotData(snap.targetName, snap.name, snap.mode, { id: snap.id, createdAt: snap.createdAt, prevFileName: snap.payloadFile })
               .then(applyFresh)
               .catch((err) => { logError('覆盖世界书快照失败', err); notify('error', err.message || String(err)); });
           } else {
-            applyFresh(captureCurrentSnapshotData(snap.name, snap.mode, { id: snap.id, createdAt: snap.createdAt }));
+            captureCurrentSnapshotData(snap.name, snap.mode, { id: snap.id, createdAt: snap.createdAt, prevFileName: snap.payloadFile })
+              .then(applyFresh)
+              .catch((err) => { logError('覆盖预设快照失败', err); notify('error', err.message || String(err)); });
           }
         },
       });
@@ -765,14 +902,18 @@ export const snapshotsUiModule = {
       openConfirm({
         title: '删除快照确认', message: `确定要永久删除快照「${snap.name}」吗？`, confirmText: '确认删除',
         onConfirm: () => {
-          deleteSnapshotPayload(snapId);
-          state.store.snapshots = (state.store.snapshots || []).filter((s) => s.id !== snapId);
-          if (state.lastUndoSnapshotId === snapId) state.lastUndoSnapshotId = null;
-          if (state.modal?.compareBaseId === snapId) state.modal.compareBaseId = null;
-          saveStore(state.store);
-          uiCtx.renderModal();
-          uiCtx.renderMain();
-          notify('info', '快照已删除');
+          deleteSnapshotPayload(snap, { strict: true }).then(() => {
+            state.store.snapshots = (state.store.snapshots || []).filter((s) => s.id !== snapId);
+            if (state.lastUndoSnapshotId === snapId) state.lastUndoSnapshotId = null;
+            if (state.modal?.compareBaseId === snapId) state.modal.compareBaseId = null;
+            saveStore(state.store);
+            uiCtx.renderModal();
+            uiCtx.renderMain();
+            notify('info', '快照已删除');
+          }).catch((err) => {
+            logError('删除快照文件失败', err);
+            notify('error', `删除后端文件失败: ${err.message || err}`);
+          });
         },
       });
       return true;
@@ -785,12 +926,50 @@ export const snapshotsUiModule = {
     const target = e.target;
     if (!target) return false;
     const id = target.id;
+    if (id === 'td-qsnap-name' && state.selectPopup?.type === 'quickSnapshot') { state.selectPopup.name = target.value; return true; }
+    if (id === 'td-qsnap-note' && state.selectPopup?.type === 'quickSnapshot') { state.selectPopup.note = target.value; return true; }
     if (id === 'td-snap-name-input' && state.modal?.type === 'snapshots') { state.modal.draftName = target.value; return true; }
     if (id === 'td-snap-note-input' && state.modal?.type === 'snapshots') { state.modal.draftNote = target.value; return true; }
     if (id === 'td-snap-search-input' && state.modal?.type === 'snapshots') { state.modal.search = target.value; updateSnapshotList(); return true; }
     if (id === 'td-snap-rename-input' && state.modal?.type === 'snapshotRename') { state.modal.name = target.value; return true; }
     if (id === 'td-snap-rename-note-input' && state.modal?.type === 'snapshotRename') { state.modal.note = target.value; return true; }
     return false;
+  },
+
+  renderQuickCreateModal(kind, targetName) {
+    const isWb = kind === 'worldbook';
+    const m = state.modal;
+    const mode = m.quickSnapMode === 'full' ? 'full' : 'state';
+    const dName = m.quickSnapName || '';
+    const dNote = m.quickSnapNote || '';
+    return `
+      <div class='td-modal td-modal-sm'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>${ICONS.camera} 新建${isWb ? '世界书' : '预设'}快照</div>
+          <button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button>
+        </div>
+        <div class='td-modal-body'>
+          <div class='td-field'>
+            <label class='td-label'>目标${isWb ? '世界书' : '预设'}：${escapeHtml(targetName || '当前')}</label>
+            <input class='td-input' id='td-qsnap-name' type='text' placeholder='快照名称（留空自动生成）' value='${escapeHtml(dName)}' />
+            <input class='td-input' id='td-qsnap-note' type='text' placeholder='备注说明（可选）' value='${escapeHtml(dNote)}' />
+          </div>
+          <div class='td-seg-grid'>
+            <button type='button' class='td-seg-card ${mode === 'state' ? 'active' : ''}' data-action='qsnap-set-mode' data-mode='state' style='padding:8px 10px;'>
+              <div class='td-seg-title' style='font-size:12.5px;'>开关状态快照</div>
+              <div class='td-seg-desc'>极轻量，记录条目启用状态</div>
+            </button>
+            <button type='button' class='td-seg-card single-card ${mode === 'full' ? 'active' : ''}' data-action='qsnap-set-mode' data-mode='full' style='padding:8px 10px;'>
+              <div class='td-seg-title' style='font-size:12.5px;'>${isWb ? '完整世界书快照' : '完整预设快照'}</div>
+              <div class='td-seg-desc'>${isWb ? '含全部条目正文、关键词与策略' : '含全部提示词正文与生成参数'}</div>
+            </button>
+          </div>
+        </div>
+        <div class='td-modal-foot'>
+          <button class='td-btn' data-action='close-select-popup'>取消</button>
+          <button class='td-btn primary' data-action='qsnap-confirm'>${ICONS.camera} 保存快照</button>
+        </div>
+      </div>`;
   },
 
   handleChange(e) {
