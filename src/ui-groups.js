@@ -76,6 +76,7 @@ export function renderGroupItemsListHtml(group) {
       !foldBadge ? `<span class='td-src-badge'>${escapeHtml(typeBadge)}</span>` : '',
       !foldPreview && !missing ? `<button class='td-icon-btn' data-action='preview-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' title='预览与编辑'>${ICONS.eye}</button>` : '',
       !foldRemove ? `<button class='td-icon-btn danger' data-action='remove-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' title='从分组移除'>${ICONS.close}</button>` : '',
+      controlBtn,
       hasAnyFolded ? `<button class='td-icon-btn ${drawerOpen ? 'is-active' : ''}' data-action='toggle-item-drawer' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' title='更多操作'>${ICONS.more}</button>` : '',
     ].join('');
 
@@ -93,7 +94,6 @@ export function renderGroupItemsListHtml(group) {
         <div class='td-item ${missing ? 'missing' : ''}' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}'>
           ${gripHtml}
           <div class='td-item-main'>
-            ${controlBtn}
             <span class='td-item-name' title='${escapeHtml(name)}'>${escapeHtml(name)}</span>
           </div>
           <div class='td-item-ops'>${inlineOps}</div>

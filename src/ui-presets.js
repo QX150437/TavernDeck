@@ -144,10 +144,12 @@ export const presetsUiModule = {
                 <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
                   ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='pm-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
                   <span class='td-idx-badge'>#${idx + 1}</span>
-                  <button type='button' class='td-switch sm ${p.enabled ? 'on' : ''}' data-action='pm-toggle-prompt' data-list='${listName}' data-idx='${idx}'></button>
                   <span class='td-mgr-row-title' title='${escapeHtml(p.name || p.id)}'>${escapeHtml(p.name || p.id)}</span>
                 </div>
-                <span class='td-src-badge'>${escapeHtml(p.role || 'system')} · ${posLabel}</span>
+                <div style='display:flex;align-items:center;gap:7px;flex-shrink:0;'>
+                  <span class='td-src-badge'>${escapeHtml(p.role || 'system')} · ${posLabel}</span>
+                  <button type='button' class='td-switch sm ${p.enabled ? 'on' : ''}' data-action='pm-toggle-prompt' data-list='${listName}' data-idx='${idx}'></button>
+                </div>
               </div>
               <div class='td-mgr-row-actions'>
                 <button class='td-btn sm primary' data-action='pm-edit-content' data-list='${listName}' data-idx='${idx}'>${ICONS.eye} 编辑内容</button>

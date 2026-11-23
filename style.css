@@ -391,7 +391,7 @@
 .td-item-ops .td-icon-btn { width: 30px; height: 30px; border-radius: 8px; }
 .td-item-drawer {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 6px 10px 8px 38px; border-top: 1px dashed var(--td-border);
+  padding: 6px 10px 8px 14px; border-top: 1px dashed var(--td-border);
   background: var(--td-surface); border-radius: 0 0 10px 10px;
 }
 

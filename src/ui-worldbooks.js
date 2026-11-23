@@ -155,10 +155,12 @@ export const worldbooksUiModule = {
               <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
                 ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='wbd-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
                 <span class='td-idx-badge'>#${idx + 1}</span>
-                <button type='button' class='td-switch sm ${e.enabled ? 'on' : ''}' data-action='wbd-toggle-entry' data-idx='${idx}'></button>
                 <span class='td-mgr-row-title' title='${escapeHtml(e.name || `条目 #${e.uid}`)}'>${escapeHtml(e.name || `条目 #${e.uid}`)}</span>
               </div>
-              <span class='td-src-badge'>${stBadge} · 顺${e.position?.order ?? 100}</span>
+              <div style='display:flex;align-items:center;gap:7px;flex-shrink:0;'>
+                <span class='td-src-badge'>${stBadge} · 顺${e.position?.order ?? 100}</span>
+                <button type='button' class='td-switch sm ${e.enabled ? 'on' : ''}' data-action='wbd-toggle-entry' data-idx='${idx}'></button>
+              </div>
             </div>
             ${keysText ? `<div class='td-mgr-row-sub' style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>关键词: ${escapeHtml(keysText)}</div>` : ''}
             <div class='td-mgr-row-actions'>
