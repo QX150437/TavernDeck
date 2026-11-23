@@ -3,6 +3,7 @@ import { state } from './store.js';
 import {
   ICONS, uiCtx, editHistory, readPreviewSnapshot, updatePreviewHistoryButtons,
 } from './ui-common.js';
+import { renderQuickInsertHtml } from './ui-snippets.js';
 import { updatePickerList } from './ui-groups.js';
 import { updateSnapshotList } from './ui-snapshots.js';
 
@@ -95,10 +96,10 @@ export function renderPreviewModal() {
 
   let fieldsHtml = `<div class='td-field'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(item.name || '')}' /></div>`;
   if (ref.type === 'regex') {
-    fieldsHtml += `<div class='td-field'><label class='td-label'>查找正则 (Find Regex)</label><input class='td-input' id='td-edit-find-regex' type='text' value='${escapeHtml(raw.find_regex || '')}' /></div><div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>替换为 (Replace String)</label><textarea class='td-textarea td-scroll' id='td-edit-replace-string' style='flex:1;'>${escapeHtml(raw.replace_string || '')}</textarea></div>`;
+    fieldsHtml += `<div class='td-field'><label class='td-label'>查找正则 (Find Regex)</label><input class='td-input' id='td-edit-find-regex' type='text' value='${escapeHtml(raw.find_regex || '')}' /></div><div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>替换为 (Replace String)</label>${renderQuickInsertHtml('td-edit-replace-string')}<textarea class='td-textarea td-scroll' id='td-edit-replace-string' style='flex:1;'>${escapeHtml(raw.replace_string || '')}</textarea></div>`;
   } else {
     const isPlaceholder = ref.type === 'preset' && typeof raw.content !== 'string', contentVal = typeof raw.content === 'string' ? raw.content : '';
-    fieldsHtml += `<div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目内容 ${isPlaceholder ? '（此条为酒馆内置占位符，一般无正文）' : ''}</label><textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;' ${isPlaceholder ? "placeholder='该条目为内置占位符'" : ''}>${escapeHtml(contentVal)}</textarea></div>`;
+    fieldsHtml += `<div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目内容 ${isPlaceholder ? '（此条为酒馆内置占位符，一般无正文）' : ''}</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;' ${isPlaceholder ? "placeholder='该条目为内置占位符'" : ''}>${escapeHtml(contentVal)}</textarea></div>`;
   }
 
   previewLayerEl.classList.add('is-open');

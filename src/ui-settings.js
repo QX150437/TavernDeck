@@ -184,6 +184,14 @@ export function renderSelectPopup() {
   }
   layer.classList.add('is-open');
 
+  const modules = uiCtx.getModules ? uiCtx.getModules() : [];
+  for (let i = 0; i < modules.length; i++) {
+    const mod = modules[i];
+    if (mod && typeof mod.renderSelectPopup === 'function' && mod.renderSelectPopup(sp, layer)) {
+      return;
+    }
+  }
+
   if (sp.type === 'aiItemPreview') {
     const metaTags = (sp.metas || []).filter(Boolean)
       .map((t) => `<span class='td-meta-tag'>${escapeHtml(t)}</span>`)

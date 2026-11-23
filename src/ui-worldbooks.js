@@ -15,6 +15,7 @@ import {
   ICONS, uiCtx, openConfirm, confirmDiscardDirtyModal,
   editHistory, readPreviewSnapshot, updatePreviewHistoryButtons, pushEditSnapshot,
 } from './ui-common.js';
+import { renderQuickInsertHtml } from './ui-snippets.js';
 
 function serializeWbEntries(entries) {
   return JSON.stringify(serializeRegExpDeep(entries || []));
@@ -218,7 +219,7 @@ export const worldbooksUiModule = {
           </div>
           <div class='td-modal-body'>
             <div class='td-field'><label class='td-label'>条目标题</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(e.name || '')}' /></div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目正文（支持撤销/重做）</label><textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:220px;'>${escapeHtml(e.content || '')}</textarea></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:220px;'>${escapeHtml(e.content || '')}</textarea></div>
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='wb-save-content'>${ICONS.save} 应用到世界书</button></div>
         </div>`;
@@ -264,7 +265,7 @@ export const worldbooksUiModule = {
               <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-previn' ${e.recursion?.prevent_incoming ? 'checked' : ''} /> 禁止被递归激活</label>
               <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-prevout' ${e.recursion?.prevent_outgoing ? 'checked' : ''} /> 禁止递归激活其他</label>
             </div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目正文（支持撤销/重做）</label><textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:130px;'>${escapeHtml(e.content || '')}</textarea></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:130px;'>${escapeHtml(e.content || '')}</textarea></div>
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='wb-save-entry'>${ICONS.save} 确认</button></div>
         </div>`;

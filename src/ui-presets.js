@@ -11,6 +11,7 @@ import {
   ICONS, uiCtx, openConfirm, confirmDiscardDirtyModal,
   editHistory, readPreviewSnapshot, updatePreviewHistoryButtons, pushEditSnapshot,
 } from './ui-common.js';
+import { renderQuickInsertHtml } from './ui-snippets.js';
 
 function syncPresetDetailDirty(m) {
   if (!m || m.type !== 'presetDetail') return false;
@@ -181,7 +182,7 @@ export const presetsUiModule = {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
             <div class='td-modal-title'>预设编辑 · ${escapeHtml(m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName)}</div>
-            <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='pm-back-list'>返回</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+            <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='pm-open-snapshots'>${ICONS.camera} 快照</button><button class='td-btn sm' data-action='pm-back-list'>返回</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body td-picker-body'>
             <div class='td-source-tabs cols-3'>
@@ -212,7 +213,7 @@ export const presetsUiModule = {
           </div>
           <div class='td-modal-body'>
             <div class='td-field'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(p.name || '')}' /></div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>提示词正文（支持撤销/重做）</label><textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:220px;'>${escapeHtml(typeof p.content === 'string' ? p.content : '')}</textarea></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>提示词正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:220px;'>${escapeHtml(typeof p.content === 'string' ? p.content : '')}</textarea></div>
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='pm-save-content'>${ICONS.save} 应用到预设</button></div>
         </div>`;
@@ -241,7 +242,7 @@ export const presetsUiModule = {
               <div class='td-field'><label class='td-label'>深度 (Depth, @D有效)</label><input class='td-input' id='td-pm-p-depth' type='number' value='${escapeHtml(p.position?.depth ?? 4)}' /></div>
               <div class='td-field'><label class='td-label'>顺序 (Order, @D有效)</label><input class='td-input' id='td-pm-p-order' type='number' value='${escapeHtml(p.position?.order ?? 100)}' /></div>
             </div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>提示词正文 ${isPlaceholder ? '（占位符条目一般留空）' : '（支持撤销/重做）'}</label><textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:150px;'>${escapeHtml(typeof p.content === 'string' ? p.content : '')}</textarea></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>提示词正文 ${isPlaceholder ? '（占位符条目一般留空）' : '（支持撤销/重做）'}</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:150px;'>${escapeHtml(typeof p.content === 'string' ? p.content : '')}</textarea></div>
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='pm-save-prompt'>${ICONS.save} 确认</button></div>
         </div>`;
@@ -302,6 +303,24 @@ export const presetsUiModule = {
         uiCtx.renderModal();
       }
       catch (err) { logError('读取预设详情失败', err); notify('error', err.message || String(err)); }
+      return true;
+    }
+    if (action === 'pm-open-snapshots' && state.modal?.type === 'presetDetail') {
+      const targetPreset = state.modal.presetName;
+      confirmDiscardDirtyModal(() => {
+        state.modal = {
+          type: 'snapshots',
+          kind: 'preset',
+          targetBook: '',
+          createMode: 'state',
+          filter: (targetPreset === 'in_use' || targetPreset === state.presetName) ? 'current' : 'all',
+          search: '',
+          draftName: '',
+          draftNote: '',
+          createOpen: false,
+        };
+        uiCtx.renderModal();
+      });
       return true;
     }
     if (action === 'pm-back-list' && state.modal?.type === 'presetDetail') {

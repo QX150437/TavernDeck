@@ -1,9 +1,12 @@
 import {
-  escapeHtml, notify, computeSideLineDiffs, cloneWorldbookEntry,
+  escapeHtml, notify, genId, computeSideLineDiffs, cloneWorldbookEntry,
   formatKeysInput, parseKeysInput, keysSignature,
 } from './utils.js';
 import { state, saveMergeDraft, clearMergeDraft } from './store.js';
 import { WB_POSITION_OPTIONS, buildDefaultWorldbookEntry } from './worldbook-manager.js';
+import { renderQuickInsertHtml } from './ui-snippets.js';
+import { pushPresetSessionUndo, recomputePresetSessionDirty, computePresetGlobalDiff } from './preset-merge.js';
+import { pushWbSessionUndo, recomputeWbSessionDirty, computeWbGlobalDiff } from './worldbook-merge.js';
 
 const WB_STYPE_LABELS = { selective: '绿灯(关键词)', constant: '蓝灯(常驻)', vectorized: '向量化' };
 const WB_SEC_LOGIC_LABELS = { and_any: '任一包含', and_all: '全部包含', not_any: '全部不含', not_all: '非全含' };
@@ -227,7 +230,7 @@ function renderHlEditorHtml({ wrapClass, backdropId, textareaId, value, placehol
     </div>`;
 }
 
-function buildPresetAttrRows(oldP, newP) {
+export function buildPresetAttrRows(oldP, newP) {
   const sameName = (oldP?.name || '') === (newP?.name || '');
   const sameEn = !!oldP?.enabled === !!newP?.enabled;
   const sameRole = (oldP?.role || 'system') === (newP?.role || 'system');
@@ -241,7 +244,7 @@ function buildPresetAttrRows(oldP, newP) {
   ];
 }
 
-function buildWbAttrRows(oldE, newE) {
+export function buildWbAttrRows(oldE, newE) {
   const oldSt = oldE?.strategy || {};
   const newSt = newE?.strategy || {};
   const sameName = (oldE?.name || '') === (newE?.name || '');
@@ -270,19 +273,20 @@ function buildWbAttrRows(oldE, newE) {
   ];
 }
 
-function renderAttrDiffBoxHtml(rows, hasOld, hasNew) {
+export function renderAttrDiffBoxHtml(rows, hasOld, hasNew, opts = {}) {
+  const { showApply = true, oldLabel = '旧', newLabel = '新' } = opts;
   const diffCount = rows.filter((r) => r.isDiff).length;
   const rowsHtml = rows.map((r) => `
     <div class='td-attr-row ${r.isDiff ? 'is-diff' : ''}'>
       <div class='td-attr-key'>${escapeHtml(r.label)} ${r.isDiff ? "<span class='td-attr-diff-dot'>差异</span>" : ''}</div>
       <div class='td-attr-vals'>
-        <span class='td-attr-val is-old' title='${escapeHtml(r.oldText)}'>旧: ${escapeHtml(r.oldText)}</span>
-        <span class='td-attr-val is-new' title='${escapeHtml(r.newText)}'>新: ${escapeHtml(r.newText)}</span>
+        <span class='td-attr-val is-old' title='${escapeHtml(r.oldText)}'>${escapeHtml(oldLabel)}: ${escapeHtml(r.oldText)}</span>
+        <span class='td-attr-val is-new' title='${escapeHtml(r.newText)}'>${escapeHtml(newLabel)}: ${escapeHtml(r.newText)}</span>
       </div>
-      ${r.isDiff ? `
+      ${showApply && r.isDiff ? `
         <div class='td-attr-ops'>
-          ${r.hasOld ? `<button type='button' class='td-chip' data-action='merge-apply-attr-one' data-attr='${escapeHtml(r.key)}' data-side='old'>用旧</button>` : ''}
-          ${r.hasNew ? `<button type='button' class='td-chip' data-action='merge-apply-attr-one' data-attr='${escapeHtml(r.key)}' data-side='new'>用新</button>` : ''}
+          ${r.hasOld ? `<button type='button' class='td-chip' data-action='merge-apply-attr-one' data-attr='${escapeHtml(r.key)}' data-side='old'>用${escapeHtml(oldLabel)}</button>` : ''}
+          ${r.hasNew ? `<button type='button' class='td-chip' data-action='merge-apply-attr-one' data-attr='${escapeHtml(r.key)}' data-side='new'>用${escapeHtml(newLabel)}</button>` : ''}
         </div>` : ''}
     </div>`).join('');
 
@@ -290,10 +294,11 @@ function renderAttrDiffBoxHtml(rows, hasOld, hasNew) {
     <details class='td-attr-diff-box' ${diffCount > 0 ? 'open' : ''}>
       <summary class='td-attr-diff-head'>
         <span>属性对比（${diffCount > 0 ? `${diffCount} 项不同` : '属性完全一致'}）</span>
-        <span class='td-attr-head-btns' onclick='event.stopPropagation()'>
-          ${hasOld ? "<button type='button' class='td-chip' data-action='merge-apply-attrs' data-side='old'>属性全用旧版</button>" : ''}
-          ${hasNew ? "<button type='button' class='td-chip' data-action='merge-apply-attrs' data-side='new'>属性全用新版</button>" : ''}
-        </span>
+        ${showApply ? `
+          <span class='td-attr-head-btns' onclick='event.stopPropagation()'>
+            ${hasOld ? `<button type='button' class='td-chip' data-action='merge-apply-attrs' data-side='old'>属性全用${escapeHtml(oldLabel)}</button>` : ''}
+            ${hasNew ? `<button type='button' class='td-chip' data-action='merge-apply-attrs' data-side='new'>属性全用${escapeHtml(newLabel)}</button>` : ''}
+          </span>` : ''}
       </summary>
       <div class='td-attr-diff-list'>${rowsHtml}</div>
     </details>`;
@@ -316,12 +321,19 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
   const isInChat = d.posType === 'in_chat';
   const contentOnly = !!ctx.contentOnly;
   const syncScroll = !!ctx.syncScroll;
+  const isDual = !!ctx.isDualV3;
   const attrRows = buildPresetAttrRows(entry.oldPrompt, entry.newPrompt);
+  const oldTitle = isDual ? 'A 侧内容（可编辑 · 红底差异）' : '旧版内容（可编辑 · 红底差异）';
+  const newTitle = isDual ? 'B 侧内容（可编辑 · 绿底差异）' : '新版内容（可编辑 · 绿底差异）';
+  const attrBoxHtml = renderAttrDiffBoxHtml(attrRows, !!entry.oldPrompt, !!entry.newPrompt, isDual ? { oldLabel: 'A', newLabel: 'B' } : {});
+  const footHtml = isDual
+    ? `<button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn' data-action='save-merge-custom' data-target-side='source'>${icons.save} 写入 A</button><button class='td-btn primary' data-action='save-merge-custom' data-target-side='base'>${icons.save} 写入 B</button>`
+    : `<button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='save-merge-custom'>${icons.save} 保存缝合结果</button>`;
 
   const attrsSectionHtml = contentOnly
     ? renderContentOnlyAttrNoticeHtml(attrRows, !!entry.newPrompt)
     : `
-      ${renderAttrDiffBoxHtml(attrRows, !!entry.oldPrompt, !!entry.newPrompt)}
+      ${attrBoxHtml}
       <div style='display:flex;gap:8px;align-items:center;'>
         <div class='td-field' style='flex:1;'>
           <label class='td-label'>缝合后条目名称</label>
@@ -362,7 +374,7 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
       <div class='td-merge-refs'>
         <div class='td-field td-merge-pane'>
           <div style='display:flex;justify-content:space-between;align-items:center;gap:4px;'>
-            <label class='td-label'>旧版内容（可编辑 · 红底差异）</label>
+            <label class='td-label'>${oldTitle}</label>
             <button type='button' class='td-chip' data-action='merge-fill-text' data-side='old'>整段填入</button>
           </div>
           ${renderHlEditorHtml({
@@ -375,7 +387,7 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
         </div>
         <div class='td-field td-merge-pane'>
           <div style='display:flex;justify-content:space-between;align-items:center;gap:4px;'>
-            <label class='td-label'>新版内容（可编辑 · 绿底差异）</label>
+            <label class='td-label'>${newTitle}</label>
             <button type='button' class='td-chip' data-action='merge-fill-text' data-side='new'>整段填入</button>
           </div>
           ${renderHlEditorHtml({
@@ -389,6 +401,7 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
       </div>
       <div class='td-field td-merge-final-pane'>
         <label class='td-label'>缝合后正文（支持撤销/重做）</label>
+        ${renderQuickInsertHtml('td-merge-custom-content')}
         <textarea class='td-textarea td-scroll' id='td-merge-custom-content' style='flex:1;min-height:140px;'>${escapeHtml(d.content)}</textarea>
       </div>
     </div>`;
@@ -409,10 +422,7 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
       <div class='td-modal-body'>
         ${attrsSectionHtml}${contentEditorsHtml}
       </div>
-      <div class='td-modal-foot'>
-        <button class='td-btn' data-action='close-preview'>取消</button>
-        <button class='td-btn primary' data-action='save-merge-custom'>${icons.save} 保存缝合结果</button>
-      </div>
+      <div class='td-modal-foot'>${footHtml}</div>
     </div>`;
 
   applyMergeCustomSideDiffs(previewLayerEl);
@@ -425,14 +435,20 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
   const d = ctx.draft;
   const contentOnly = !!ctx.contentOnly;
   const syncScroll = !!ctx.syncScroll;
+  const isDual = !!ctx.isDualV3;
   const attrRows = buildWbAttrRows(entry.oldEntry, entry.newEntry);
   const advDiff = attrRows.some((r) => ['sec', 'scanDepth', 'recursion', 'effect'].includes(r.key) && r.isDiff);
   const posOpts = WB_POSITION_OPTIONS.map((o) => `<option value='${o.v}' ${d.posType === o.v ? 'selected' : ''}>${o.t}</option>`).join('');
+  const oldTitle = isDual ? 'A 侧内容（可编辑 · 红底差异）' : '旧版内容（可编辑 · 红底差异）';
+  const newTitle = isDual ? 'B 侧内容（可编辑 · 绿底差异）' : '新版内容（可编辑 · 绿底差异）';
+  const footHtml = isDual
+    ? `<button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn' data-action='wbm-save-merge-custom' data-target-side='source'>${icons.save} 写入 A</button><button class='td-btn primary' data-action='wbm-save-merge-custom' data-target-side='base'>${icons.save} 写入 B</button>`
+    : `<button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='wbm-save-merge-custom'>${icons.save} 保存缝合结果</button>`;
 
   const attrsSectionHtml = contentOnly
     ? renderContentOnlyAttrNoticeHtml(attrRows, !!entry.newEntry)
     : `
-      ${renderAttrDiffBoxHtml(attrRows, !!entry.oldEntry, !!entry.newEntry)}
+      ${renderAttrDiffBoxHtml(attrRows, !!entry.oldEntry, !!entry.newEntry, isDual ? { oldLabel: 'A', newLabel: 'B' } : {})}
       <div style='display:flex;gap:8px;align-items:center;'>
         <div class='td-field' style='flex:1;'>
           <label class='td-label'>缝合后条目标题</label>
@@ -522,7 +538,7 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
       <div class='td-merge-refs'>
         <div class='td-field td-merge-pane'>
           <div style='display:flex;justify-content:space-between;align-items:center;gap:4px;'>
-            <label class='td-label'>旧版内容（可编辑 · 红底差异）</label>
+            <label class='td-label'>${oldTitle}</label>
             <button type='button' class='td-chip' data-action='wbm-fill-text' data-side='old'>整段填入</button>
           </div>
           ${renderHlEditorHtml({
@@ -535,7 +551,7 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
         </div>
         <div class='td-field td-merge-pane'>
           <div style='display:flex;justify-content:space-between;align-items:center;gap:4px;'>
-            <label class='td-label'>新版内容（可编辑 · 绿底差异）</label>
+            <label class='td-label'>${newTitle}</label>
             <button type='button' class='td-chip' data-action='wbm-fill-text' data-side='new'>整段填入</button>
           </div>
           ${renderHlEditorHtml({
@@ -549,6 +565,7 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
       </div>
       <div class='td-field td-merge-final-pane'>
         <label class='td-label'>缝合后正文（支持撤销/重做）</label>
+        ${renderQuickInsertHtml('td-edit-content')}
         <textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:130px;'>${escapeHtml(d.content)}</textarea>
       </div>
     </div>`;
@@ -569,10 +586,7 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
       <div class='td-modal-body'>
         ${attrsSectionHtml}${contentEditorsHtml}
       </div>
-      <div class='td-modal-foot'>
-        <button class='td-btn' data-action='close-preview'>取消</button>
-        <button class='td-btn primary' data-action='wbm-save-merge-custom'>${icons.save} 保存缝合结果</button>
-      </div>
+      <div class='td-modal-foot'>${footHtml}</div>
     </div>`;
 
   applyMergeCustomSideDiffs(previewLayerEl);
@@ -633,11 +647,21 @@ export function flushActiveMergeDraft(previewLayerEl, force = false) {
     if (session) {
       if (isPreset) syncPresetMergeCustomDraft(previewLayerEl);
       else syncWbMergeCustomDraft(previewLayerEl);
-      session._pendingCustom = {
-        entryKey: ctx.entry.key,
-        contentOnly: !!ctx.contentOnly,
-        draft: JSON.parse(JSON.stringify(ctx.draft)),
-      };
+      session._pendingCustom = session.v === 3
+        ? {
+            targetSide: ctx.targetSide || 'base',
+            targetKey: ctx.targetKey || null,
+            srcRef: ctx.srcRef || null,
+            baseRef: ctx.baseRef || null,
+            entryName: ctx.entry?.name || '',
+            contentOnly: !!ctx.contentOnly,
+            draft: JSON.parse(JSON.stringify(ctx.draft)),
+          }
+        : {
+            entryKey: ctx.entry.key,
+            contentOnly: !!ctx.contentOnly,
+            draft: JSON.parse(JSON.stringify(ctx.draft)),
+          };
       saveMergeDraft(isPreset ? 'preset' : 'worldbook', session);
       return;
     }
@@ -740,7 +764,7 @@ function applyWbAttrSide(ctx, side, attrKey) {
   return true;
 }
 
-export function saveMergeCustomResult(previewLayerEl, hooks) {
+export function saveMergeCustomResult(previewLayerEl, hooks, explicitSide = null) {
   const ctx = state.previewCtx;
   if (!ctx) return false;
 
@@ -748,18 +772,23 @@ export function saveMergeCustomResult(previewLayerEl, hooks) {
     syncPresetMergeCustomDraft(previewLayerEl);
     const d = ctx.draft;
     const entry = ctx.entry;
+    const targetSide = explicitSide || ctx.targetSide || 'base';
+    const isTargetSource = targetSide === 'source';
 
     let base;
     if (ctx.contentOnly) {
+      const tpl = isTargetSource ? (entry.oldPrompt || entry.newPrompt) : (entry.newPrompt || entry.oldPrompt);
       base = JSON.parse(JSON.stringify(
-        entry.newPrompt || entry.customPrompt || entry.oldPrompt || { id: entry.id, name: entry.name, enabled: true, role: 'system', position: { type: 'relative' } },
+        tpl || entry.customPrompt || { id: entry.id, name: entry.name, enabled: true, role: 'system', position: { type: 'relative' } },
       ));
       base.content = d.content ?? '';
     } else {
+      const tpl = isTargetSource ? (entry.oldPrompt || entry.newPrompt) : (entry.newPrompt || entry.oldPrompt);
       base = JSON.parse(JSON.stringify(
-        entry.customPrompt || entry.newPrompt || entry.oldPrompt || { id: entry.id, role: 'system', position: { type: 'relative' } },
+        ctx.customPrompt || tpl || { id: entry.id, role: 'system', position: { type: 'relative' } },
       ));
-      if (entry.newPrompt) base.id = entry.newPrompt.id;
+      if (isTargetSource && entry.oldPrompt) base.id = entry.oldPrompt.id;
+      else if (!isTargetSource && entry.newPrompt) base.id = entry.newPrompt.id;
       base.name = (d.name || '').trim() || entry.name;
       base.enabled = !!d.enabled;
       base.role = ['system', 'user', 'assistant'].includes(d.role) ? d.role : 'system';
@@ -769,17 +798,37 @@ export function saveMergeCustomResult(previewLayerEl, hooks) {
       base.content = d.content ?? '';
     }
 
-    entry.customPrompt = base;
-    entry.choice = 'custom';
-    if (state.modal?.type === 'presetMerge' && state.modal.session) {
-      delete state.modal.session._pendingCustom;
-      state.modal.session.dirty = true;
-      saveMergeDraft('preset', state.modal.session);
+    const session = state.modal?.type === 'presetMerge' ? state.modal.session : null;
+    if (session?.v === 3) {
+      pushPresetSessionUndo(session);
+      const tgtList = isTargetSource ? session.sourceEntries : session.baseEntries;
+      const resolveKey = isTargetSource ? (ctx.srcKey || ctx.targetKey) : (ctx.baseKey || ctx.targetKey);
+      const tgtItem = resolveKey ? tgtList.find((x) => x._key === resolveKey) : null;
+      if (tgtItem) {
+        tgtItem.data = base;
+      } else {
+        const usedIds = new Set(tgtList.map((x) => x.data?.id).filter(Boolean));
+        if (!base.id || usedIds.has(base.id)) base.id = genId();
+        tgtList.push({ _key: genId(), origRef: ctx.srcRef || null, data: base });
+      }
+      delete session._pendingCustom;
+      recomputePresetSessionDirty(session);
+      if (session.diffMarks) session.diffMarks = computePresetGlobalDiff(session).markByKey;
+      if (session.dirty) saveMergeDraft('preset', session);
+      else clearMergeDraft('preset');
+    } else {
+      entry.customPrompt = base;
+      entry.choice = 'custom';
+      if (session) {
+        delete session._pendingCustom;
+        session.dirty = true;
+        saveMergeDraft('preset', session);
+      }
     }
     state.previewCtx = null;
     hooks.renderPreviewModal();
     hooks.updatePresetMergeBody();
-    notify('success', ctx.contentOnly ? '已暂存内容缝合结果（请点击底部「覆盖」或「另存为」写入预设）' : '已暂存该条目缝合结果（请点击底部「覆盖」或「另存为」写入预设）');
+    notify('success', `已将缝合结果写入 ${isTargetSource ? 'A 侧' : 'B 侧'}（请通过「保存」写入文件）`);
     return true;
   }
 
@@ -787,16 +836,21 @@ export function saveMergeCustomResult(previewLayerEl, hooks) {
     syncWbMergeCustomDraft(previewLayerEl);
     const d = ctx.draft;
     const entry = ctx.entry;
+    const targetSide = explicitSide || ctx.targetSide || 'base';
+    const isTargetSource = targetSide === 'source';
 
     let base;
     if (ctx.contentOnly) {
+      const tpl = isTargetSource ? (entry.oldEntry || entry.newEntry) : (entry.newEntry || entry.oldEntry);
       base = cloneWorldbookEntry(
-        entry.newEntry || entry.customEntry || entry.oldEntry || buildDefaultWorldbookEntry({ name: entry.name }),
+        tpl || entry.customEntry || buildDefaultWorldbookEntry({ name: entry.name }),
       );
       base.content = d.content ?? '';
     } else {
-      base = cloneWorldbookEntry(entry.customEntry || entry.newEntry || entry.oldEntry || buildDefaultWorldbookEntry({}));
-      if (entry.newEntry) base.uid = entry.newEntry.uid;
+      const tpl = isTargetSource ? (entry.oldEntry || entry.newEntry) : (entry.newEntry || entry.oldEntry);
+      base = cloneWorldbookEntry(entry.customEntry || tpl || buildDefaultWorldbookEntry({}));
+      if (isTargetSource && entry.oldEntry) base.uid = entry.oldEntry.uid;
+      else if (!isTargetSource && entry.newEntry) base.uid = entry.newEntry.uid;
       base.name = (d.name || '').trim() || entry.name;
       base.enabled = !!d.enabled;
       base.strategy = {
@@ -832,17 +886,39 @@ export function saveMergeCustomResult(previewLayerEl, hooks) {
       base.content = d.content ?? '';
     }
 
-    entry.customEntry = base;
-    entry.choice = 'custom';
-    if (state.modal?.type === 'wbMerge' && state.modal.session) {
-      delete state.modal.session._pendingCustom;
-      state.modal.session.dirty = true;
-      saveMergeDraft('worldbook', state.modal.session);
+    const session = state.modal?.type === 'wbMerge' ? state.modal.session : null;
+    if (session?.v === 3) {
+      pushWbSessionUndo(session);
+      const tgtList = isTargetSource ? session.sourceEntries : session.baseEntries;
+      const resolveKey = isTargetSource ? (ctx.srcKey || ctx.targetKey) : (ctx.baseKey || ctx.targetKey);
+      const tgtItem = resolveKey ? tgtList.find((x) => x._key === resolveKey) : null;
+      if (tgtItem) {
+        tgtItem.data = base;
+      } else {
+        const usedUids = new Set(tgtList.map((x) => Number(x.data?.uid)));
+        if (typeof base.uid !== 'number' || usedUids.has(Number(base.uid))) {
+          base.uid = tgtList.reduce((mx, x) => Math.max(mx, Number(x.data?.uid) || 0), 0) + 1;
+        }
+        tgtList.push({ _key: genId(), origRef: ctx.srcRef || null, data: base });
+      }
+      delete session._pendingCustom;
+      recomputeWbSessionDirty(session);
+      if (session.diffMarks) session.diffMarks = computeWbGlobalDiff(session).markByKey;
+      if (session.dirty) saveMergeDraft('worldbook', session);
+      else clearMergeDraft('worldbook');
+    } else {
+      entry.customEntry = base;
+      entry.choice = 'custom';
+      if (session) {
+        delete session._pendingCustom;
+        session.dirty = true;
+        saveMergeDraft('worldbook', session);
+      }
     }
     state.previewCtx = null;
     hooks.renderPreviewModal();
     hooks.updateWbMergeBody();
-    notify('success', ctx.contentOnly ? '已暂存内容缝合结果（请点击底部「覆盖」或「另存为」写入世界书）' : '已暂存缝合结果（请点击底部「覆盖」或「另存为」写入世界书）');
+    notify('success', `已将缝合结果写入 ${isTargetSource ? 'A 侧' : 'B 侧'}（请通过「保存」写入文件）`);
     return true;
   }
   return false;
@@ -913,12 +989,12 @@ export function handleMergeUiClick(e, actionEl, action, previewLayerEl, hooks) {
 
   if (action === 'save-merge-custom' && ctx.type === 'mergeCustom') {
     hooks.pushEditSnapshot(true);
-    return saveMergeCustomResult(previewLayerEl, hooks);
+    return saveMergeCustomResult(previewLayerEl, hooks, actionEl.getAttribute('data-target-side') || null);
   }
 
   if (action === 'wbm-save-merge-custom' && ctx.type === 'wbMergeCustom') {
     hooks.pushEditSnapshot(true);
-    return saveMergeCustomResult(previewLayerEl, hooks);
+    return saveMergeCustomResult(previewLayerEl, hooks, actionEl.getAttribute('data-target-side') || null);
   }
 
   return false;

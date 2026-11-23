@@ -136,10 +136,91 @@ function isOnlyEnabledDiff(baseObj, customObj) {
   return JSON.stringify(copy) === JSON.stringify(customObj);
 }
 
+function isSameExceptIdAndEnabled(origObj, curObj, idKey, isPreset) {
+  if (!origObj || !curObj) return null;
+  const normA = isPreset ? JSON.parse(JSON.stringify(origObj)) : serializeRegExpDeep(origObj);
+  const normB = isPreset ? JSON.parse(JSON.stringify(curObj)) : serializeRegExpDeep(curObj);
+  const idChanged = normA[idKey] !== normB[idKey];
+  const enChanged = !!normA.enabled !== !!normB.enabled;
+  normA[idKey] = normB[idKey];
+  normA.enabled = normB.enabled;
+  if (JSON.stringify(normA) !== JSON.stringify(normB)) return null;
+  return { idChanged, enChanged };
+}
+
 export function compactMergeDraft(kind, session) {
   if (!session || typeof session !== 'object') return null;
-  if (session.v === 2) return session;
+  if (session.v === 2 || (session.v === 3 && Array.isArray(session.sourceList) && Array.isArray(session.baseList))) {
+    return session;
+  }
   const isPreset = kind === 'preset';
+
+  if (session.v === 3 && Array.isArray(session.sourceEntries) && Array.isArray(session.baseEntries)) {
+    const origMap = session.origMap || {};
+    const idKey = isPreset ? 'id' : 'uid';
+    const encodeSide = (list) => list.map((item) => {
+      const ref = item.origRef;
+      const orig = ref ? origMap[ref] : null;
+      const mt = item._migTag || null;
+      if (orig && orig.data) {
+        const diffMeta = isSameExceptIdAndEnabled(orig.data, item.data, idKey, isPreset);
+        if (diffMeta) {
+          if (!diffMeta.idChanged && !diffMeta.enChanged && !mt) return ref;
+          const patch = { r: ref };
+          if (diffMeta.idChanged) patch[idKey] = item.data[idKey];
+          if (diffMeta.enChanged) patch.en = !!item.data.enabled;
+          if (mt) patch.mt = mt;
+          return patch;
+        }
+        return mt ? { r: ref, d: item.data, mt } : { r: ref, d: item.data };
+      }
+      if (ref) {
+        return mt ? { r: ref, d: item.data, mt } : { r: ref, d: item.data };
+      }
+      return mt ? { d: item.data, mt } : { d: item.data };
+    });
+
+    let pendingCustom = null;
+    if (session._pendingCustom && session._pendingCustom.draft) {
+      const pc = session._pendingCustom;
+      const dCopy = JSON.parse(JSON.stringify(pc.draft));
+      const srcOrig = pc.srcRef && origMap[pc.srcRef]?.data?.content;
+      const baseOrig = pc.baseRef && origMap[pc.baseRef]?.data?.content;
+      if (srcOrig !== undefined && dCopy.oldContent === srcOrig) delete dCopy.oldContent;
+      if (baseOrig !== undefined && dCopy.newContent === baseOrig) delete dCopy.newContent;
+      pendingCustom = {
+        targetSide: pc.targetSide || 'base',
+        targetKey: pc.targetKey || null,
+        srcRef: pc.srcRef || null,
+        baseRef: pc.baseRef || null,
+        entryName: pc.entryName || '',
+        contentOnly: !!pc.contentOnly,
+        draft: dCopy,
+      };
+    }
+
+    return {
+      v: 3,
+      kind,
+      sourceName: session.sourceName,
+      baseName: session.baseName,
+      savedAt: Date.now(),
+      sourceQuery: session.sourceQuery || '',
+      baseQuery: session.baseQuery || '',
+      activePane: session.activePane || 'both',
+      ...(isPreset ? {
+        migrateSettings: !!session.migrateSettings,
+        migrateSettingsDir: session.migrateSettingsDir || (session.migrateSettings ? 'a2b' : 'none'),
+      } : {}),
+      sourceDirty: !!session.sourceDirty,
+      baseDirty: !!session.baseDirty,
+      dirty: !!session.dirty,
+      sourceList: encodeSide(session.sourceEntries),
+      baseList: encodeSide(session.baseEntries),
+      ...(pendingCustom ? { _pendingCustom: pendingCustom } : {}),
+    };
+  }
+
   const entryOverrides = {};
   (session.entries || []).forEach((it) => {
     if (!it || !it.key) return;
@@ -879,7 +960,7 @@ export function getStorageDiagnostics(devLogCount = 0) {
   const orbImageBytes = getUtf8ByteLength(storeObj.settings?.orbImage || '');
   const snapshotsMetaBytes = getUtf8ByteLength(JSON.stringify(storeObj.snapshots || []));
   const mvuMap = storeObj.extensions?.mvuStarred || {};
-  const mvuBytes = getUtf8ByteLength(JSON.stringify(storeObj.extensions || {}));
+  const mvuBytes = getUtf8ByteLength(JSON.stringify(mvuMap));
 
   const mvuItems = Object.keys(mvuMap).map((chatKey) => {
     const list = Array.isArray(mvuMap[chatKey]) ? mvuMap[chatKey] : [];
@@ -993,11 +1074,11 @@ export function getStorageDiagnostics(devLogCount = 0) {
       draftsKey: MERGE_DRAFTS_STORAGE_KEY,
       draftsTotalBytes,
       presetDraft: drafts.preset ? {
-        title: `${drafts.preset.oldName} ⇄ ${drafts.preset.newName}`,
+        title: `${drafts.preset.sourceName || drafts.preset.oldName} ⇄ ${drafts.preset.baseName || drafts.preset.newName}`,
         bytes: presetDraftBytes,
       } : null,
       wbDraft: drafts.worldbook ? {
-        title: `${drafts.worldbook.oldName} ⇄ ${drafts.worldbook.newName}`,
+        title: `${drafts.worldbook.sourceName || drafts.worldbook.oldName} ⇄ ${drafts.worldbook.baseName || drafts.worldbook.newName}`,
         bytes: wbDraftBytes,
       } : null,
     },

@@ -14,9 +14,10 @@ import {
 } from './merge-ui.js';
 import {
   ICONS, ORB_STYLE_OPTIONS, editHistory, setUiContext,
-  getSuppressClickUntil, setSuppressClickUntil, confirmDiscardDirtyModal,
+  getSuppressClickUntil, setSuppressClickUntil, confirmDiscardDirtyModal, openConfirm,
   applyPreviewSnapshot, updatePreviewHistoryButtons, pushEditSnapshot, scheduleEditSnapshot,
 } from './ui-common.js';
+import { handleQuickInsertClick } from './ui-snippets.js';
 import {
   getViewportRect, getDefaultPanelSize, getPanelSize, syncOverlayBounds, repositionUI,
   wakeOrb, scheduleOrbIdle, applyOrbVisualState, updateStickyGroupHeaders, bindBodyStickyScroll,
@@ -27,7 +28,8 @@ import {
 } from './ui-views.js';
 import { groupsUiModule, renderGroupHtml, renderGroupItemsListHtml, updatePickerList } from './ui-groups.js';
 import { snapshotsUiModule, updateSnapshotList } from './ui-snapshots.js';
-import { mergePanelUiModule } from './ui-merge-panel.js';
+import { mergeDialogsUiModule } from './ui-merge-dialogs.js';
+import { mergePanelUiModule, updateDualMergeBody } from './ui-merge-panel.js';
 import { presetsUiModule } from './ui-presets.js';
 import { worldbooksUiModule } from './ui-worldbooks.js';
 import { aiAssistantUiModule } from './ui-ai-assistant.js';
@@ -36,6 +38,7 @@ import { settingsUiModule, renderSelectPopup } from './ui-settings.js';
 import { toolsUiModule } from './ui-tools.js';
 
 const UI_MODULES = [
+  mergeDialogsUiModule,
   mergePanelUiModule,
   groupsUiModule,
   snapshotsUiModule,
@@ -367,6 +370,8 @@ function renderPreservingFocus(targetLayer, renderFn) {
   }
   const prevBodyTop = targetLayer?.querySelector('.td-modal-body')?.scrollTop || 0;
   const prevListTop = targetLayer?.querySelector('.td-picker-list')?.scrollTop || 0;
+  const prevDualSrcTop = targetLayer?.querySelector("[data-role='dual-list-source']")?.scrollTop || 0;
+  const prevDualBaseTop = targetLayer?.querySelector("[data-role='dual-list-base']")?.scrollTop || 0;
 
   renderFn();
 
@@ -379,6 +384,20 @@ function renderPreservingFocus(targetLayer, renderFn) {
       if (prevListTop > 0) {
         const nextList = targetLayer.querySelector('.td-picker-list');
         if (nextList) nextList.scrollTop = prevListTop;
+      }
+      const nextDualSrc = targetLayer.querySelector("[data-role='dual-list-source']");
+      if (nextDualSrc && prevDualSrcTop > 0) {
+        nextDualSrc._tdIgnoreScroll = true;
+        nextDualSrc.scrollTop = prevDualSrcTop;
+        nextDualSrc._tdLastTop = nextDualSrc.scrollTop;
+        requestAnimationFrame(() => { nextDualSrc._tdIgnoreScroll = false; });
+      }
+      const nextDualBase = targetLayer.querySelector("[data-role='dual-list-base']");
+      if (nextDualBase && prevDualBaseTop > 0) {
+        nextDualBase._tdIgnoreScroll = true;
+        nextDualBase.scrollTop = prevDualBaseTop;
+        nextDualBase._tdLastTop = nextDualBase.scrollTop;
+        requestAnimationFrame(() => { nextDualBase._tdIgnoreScroll = false; });
       }
     };
     restoreScroll();
@@ -487,12 +506,18 @@ function handleRootClick(e) {
     return;
   }
   if (e.target === previewLayerEl) {
+    const prevType = state.previewCtx?.type;
     discardPendingCustomMergeDraft();
     state.previewKey = null;
     state.previewCtx = null;
     state.snapshotDetailId = null;
     state.snapshotDetailCtx = null;
     renderPreviewModal();
+    if ((prevType?.startsWith('merge') || prevType === 'wbMergeCustom')
+      && (state.modal?.type === 'presetMerge' || state.modal?.type === 'wbMerge')
+      && state.modal.session?.v === 3) {
+      updateDualMergeBody(state.modal.session.kind);
+    }
     return;
   }
 
@@ -593,12 +618,18 @@ function handleRootClick(e) {
     return;
   }
   if (action === 'close-preview') {
+    const prevType = state.previewCtx?.type;
     discardPendingCustomMergeDraft();
     state.previewKey = null;
     state.previewCtx = null;
     state.snapshotDetailId = null;
     state.snapshotDetailCtx = null;
     renderPreviewModal();
+    if ((prevType?.startsWith('merge') || prevType === 'wbMergeCustom')
+      && (state.modal?.type === 'presetMerge' || state.modal?.type === 'wbMerge')
+      && state.modal.session?.v === 3) {
+      updateDualMergeBody(state.modal.session.kind);
+    }
     return;
   }
   if (action === 'preview-undo') {
@@ -616,6 +647,13 @@ function handleRootClick(e) {
       applyPreviewSnapshot(editHistory.stack[editHistory.index]);
       updatePreviewHistoryButtons();
     }
+    return;
+  }
+  if (action.startsWith('qi-') && handleQuickInsertClick(e, actionEl, action, {
+    previewLayerEl,
+    onAfterInsert: () => pushEditSnapshot(true),
+    openConfirm,
+  })) {
     return;
   }
 
@@ -674,6 +712,9 @@ function handleRootKeydown(e) {
     else if (e.target.id === 'td-scheme-name-input') modalLayerEl.querySelector("[data-action='submit-scheme-form']")?.click();
     else if (e.target.id === 'td-snap-rename-input') modalLayerEl.querySelector("[data-action='submit-snap-rename']")?.click();
     else if (e.target.id === 'td-snap-name-input') modalLayerEl.querySelector("[data-action='create-snapshot']")?.click();
+    else if (e.target.id === 'td-mig-target-idx') {
+      selectLayerEl.querySelector("[data-action='confirm-merge-migrate']")?.click();
+    }
     else if (e.target.id === 'td-panel-width-input' || e.target.id === 'td-panel-height-input') {
       modalLayerEl.querySelector("[data-action='apply-panel-size']")?.click();
     }
