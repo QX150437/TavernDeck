@@ -238,7 +238,7 @@ export function analyzePresetVariables(presetData, preferredInitSpec) {
     if (!hasInit && hasAssign) v.status = 'uninit_def';
     else if (!hasInit && !hasAssign && hasRead) v.status = 'uninit_ref';
     else if (hasInit && !hasActiveInit && hasActiveUse) v.status = 'inactive_init';
-    else if (hasInit && !hasAssign && !hasRead) v.status = 'unused_init';
+    else if (hasInit && !hasRead) v.status = 'unused_init';
     else v.status = 'initialized';
 
     const activeInitIdxs = v.inits.filter((l) => l.listName === 'prompts' && l.enabled).map((l) => l.idx);
@@ -266,12 +266,18 @@ export function analyzePresetVariables(presetData, preferredInitSpec) {
     const usedVars = new Map();
     [...assignVars, ...readVars].forEach((v) => usedVars.set(v.key, v));
     const missingInitVars = Array.from(usedVars.values()).filter(isNeedsAttention);
+
+    const definedMap = new Map();
+    [...initVars, ...assignVars].forEach((v) => definedMap.set(v.key, v));
+    const unreferencedVars = Array.from(definedMap.values()).filter((v) => v.status === 'unused_init');
+
     return {
       ...em,
       initVars,
       assignVars,
       readVars,
       missingInitVars,
+      unreferencedVars,
     };
   });
 
@@ -338,6 +344,9 @@ export function analyzePresetVariables(presetData, preferredInitSpec) {
     unusedInit: unusedInitList.length,
     needInitList,
     unusedInitList,
+    entryNeedInit: entries.filter((em) => em.missingInitVars.length > 0).length,
+    entryReady: entries.filter((em) => em.missingInitVars.length === 0).length,
+    entryUnref: entries.filter((em) => em.unreferencedVars.length > 0).length,
   };
 
   return {
@@ -420,6 +429,63 @@ function formatLocBadges(locs, label) {
   return `<div class='td-var-loc'><strong>${escapeHtml(label)}：</strong><span class='td-var-loc-list'>${badges}</span></div>`;
 }
 
+function renderEntryCardHtml(em, needsInit, highlightUnrefOnly = false) {
+  const allChips = [];
+  if (highlightUnrefOnly) {
+    em.unreferencedVars.forEach((v) => {
+      const roleText = em.initKeys.has(v.key) ? '初始化' : '赋值';
+      allChips.push(`<span class='td-mode-tag single' title='已初始化但预设内暂无读取'>未引用(${roleText}): ${escapeHtml(v.name)}</span>`);
+    });
+  } else {
+    em.initVars.forEach((v) => {
+      const cls = v.status === 'unused_init' ? 'single' : 'ok';
+      const suffix = v.status === 'unused_init' ? ' (未引用)' : '';
+      allChips.push(`<span class='td-mode-tag ${cls}' title='在本条目初始化'>初始化: ${escapeHtml(v.name)}${suffix}</span>`);
+    });
+    em.assignVars.forEach((v) => {
+      const isMiss = needsInit(v);
+      const tagCls = v.status === 'inactive_init' || v.status === 'unused_init' ? 'single' : (isMiss ? 'del' : 'multi');
+      const tip = v.status === 'inactive_init'
+        ? '初始化条目未启用/在未添加池'
+        : (isMiss ? '未在初始化条目中初始化' : (v.status === 'unused_init' ? '已初始化但未引用' : '已初始化'));
+      const suffix = isMiss
+        ? (v.status === 'inactive_init' ? ' (未生效)' : ' (未初始化)')
+        : (v.status === 'unused_init' ? ' (未引用)' : '');
+      allChips.push(`<span class='td-mode-tag ${tagCls}' title='${tip}'>赋值: ${escapeHtml(v.name)}${suffix}</span>`);
+    });
+    em.readVars.forEach((v) => {
+      const isMiss = needsInit(v);
+      allChips.push(`<span class='td-mode-tag ${isMiss ? 'single' : 'multi'}' title='读取引用'>读取: ${escapeHtml(v.name)}${isMiss ? ' (未初始化)' : ''}</span>`);
+    });
+  }
+
+  return `
+    <div class='td-mgr-row ${em.missingInitVars.length > 0 ? 'is-active' : ''}'>
+      <div class='td-mgr-row-head'>
+        <div style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;'>
+          <span class='td-idx-badge'>${em.listName === 'prompts_unused' ? '池' : ''}#${em.idx + 1}</span>
+          <span class='td-mgr-row-title' title='${escapeHtml(em.name)}'>${escapeHtml(em.name)}</span>
+        </div>
+        <div style='display:flex;gap:4px;align-items:center;flex-shrink:0;'>
+          ${highlightUnrefOnly
+            ? `<span class='td-mode-tag single'>${em.unreferencedVars.length} 项未引用</span>`
+            : (em.missingInitVars.length > 0
+              ? `<span class='td-mode-tag del'>${em.missingInitVars.length} 项待初始化</span>`
+              : (em.unreferencedVars.length > 0
+                ? `<span class='td-mode-tag single'>${em.unreferencedVars.length} 项未引用</span>`
+                : `<span class='td-mode-tag ok'>已就绪</span>`))}
+          <span class='td-src-badge'>${em.enabled ? '开' : '关'}</span>
+        </div>
+      </div>
+      <div class='td-var-chips'>${allChips.join('')}</div>
+      <div class='td-mgr-row-actions'>
+        ${!highlightUnrefOnly && em.missingInitVars.length > 0 ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>一键初始化本条目 (${em.missingInitVars.length})</button>` : ''}
+        ${em.unreferencedVars.length > 0 && (highlightUnrefOnly || em.missingInitVars.length === 0) ? `<button type='button' class='td-btn sm primary' data-action='pv-ref-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>一键引用本条目 (${em.unreferencedVars.length})</button>` : ''}
+        <button type='button' class='td-btn sm' data-action='pv-jump-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>定位条目</button>
+      </div>
+    </div>`;
+}
+
 export const presetVarsUiModule = {
   renderPreview(previewLayerEl) {
     if (state.previewCtx?.type !== 'pmVarCheck' || state.modal?.type !== 'presetDetail') return false;
@@ -452,47 +518,16 @@ export const presetVarsUiModule = {
       const filteredEntries = report.entries.filter((em) => {
         if (filter === 'unregistered' && em.missingInitVars.length === 0) return false;
         if (filter === 'registered' && em.missingInitVars.length > 0) return false;
+        if (filter === 'unused' && em.unreferencedVars.length === 0) return false;
         if (!q) return true;
         const matchEntry = em.name.toLowerCase().includes(q) || `#${em.idx + 1}`.includes(q);
         const matchVar = [...em.initVars, ...em.assignVars, ...em.readVars].some((v) => v.name.toLowerCase().includes(q));
         return matchEntry || matchVar;
       });
 
-      listHtml = filteredEntries.map((em) => {
-        const allChips = [];
-        em.initVars.forEach((v) => allChips.push(`<span class='td-mode-tag ok' title='在本条目初始化'>初始化: ${escapeHtml(v.name)}</span>`));
-        em.assignVars.forEach((v) => {
-          const isMiss = needsInit(v);
-          const tagCls = v.status === 'inactive_init' ? 'single' : (isMiss ? 'del' : 'multi');
-          const tip = v.status === 'inactive_init' ? '初始化条目未启用/在未添加池' : (isMiss ? '未在初始化条目中初始化' : '已初始化');
-          allChips.push(`<span class='td-mode-tag ${tagCls}' title='${tip}'>赋值: ${escapeHtml(v.name)}${isMiss ? (v.status === 'inactive_init' ? ' (未生效)' : ' (未初始化)') : ''}</span>`);
-        });
-        em.readVars.forEach((v) => {
-          const isMiss = needsInit(v);
-          allChips.push(`<span class='td-mode-tag ${isMiss ? 'single' : 'multi'}' title='读取引用'>读取: ${escapeHtml(v.name)}${isMiss ? ' (未初始化)' : ''}</span>`);
-        });
-
-        return `
-          <div class='td-mgr-row ${em.missingInitVars.length > 0 ? 'is-active' : ''}'>
-            <div class='td-mgr-row-head'>
-              <div style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;'>
-                <span class='td-idx-badge'>${em.listName === 'prompts_unused' ? '池' : ''}#${em.idx + 1}</span>
-                <span class='td-mgr-row-title' title='${escapeHtml(em.name)}'>${escapeHtml(em.name)}</span>
-              </div>
-              <div style='display:flex;gap:4px;align-items:center;flex-shrink:0;'>
-                ${em.missingInitVars.length > 0
-                  ? `<span class='td-mode-tag del'>${em.missingInitVars.length} 项待初始化</span>`
-                  : `<span class='td-mode-tag ok'>已就绪</span>`}
-                <span class='td-src-badge'>${em.enabled ? '开' : '关'}</span>
-              </div>
-            </div>
-            <div class='td-var-chips'>${allChips.join('')}</div>
-            <div class='td-mgr-row-actions'>
-              ${em.missingInitVars.length > 0 ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>一键初始化本条目 (${em.missingInitVars.length})</button>` : ''}
-              <button type='button' class='td-btn sm' data-action='pv-jump-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>定位条目</button>
-            </div>
-          </div>`;
-      }).join('') || "<div class='td-group-empty'>没有匹配的含变量条目</div>";
+      listHtml = filteredEntries
+        .map((em) => renderEntryCardHtml(em, needsInit, filter === 'unused'))
+        .join('') || "<div class='td-group-empty'>没有匹配的含变量条目</div>";
     } else {
       const filteredVars = report.variables.filter((v) => {
         if (filter === 'unregistered' && !needsInit(v)) return false;
@@ -503,7 +538,7 @@ export const presetVarsUiModule = {
           || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q));
       });
 
-      listHtml = filteredVars.map((v) => {
+      const varsHtml = filteredVars.map((v) => {
         const badge = v.status === 'uninit_def'
           ? "<span class='td-mode-tag del'>赋值未初始化</span>"
           : (v.status === 'uninit_ref'
@@ -511,7 +546,7 @@ export const presetVarsUiModule = {
             : (v.status === 'inactive_init'
               ? "<span class='td-mode-tag del'>初始化未生效</span>"
               : (v.status === 'unused_init'
-                ? "<span class='td-mode-tag single'>已初始化未引用</span>"
+                ? "<span class='td-mode-tag single'>未引用</span>"
                 : "<span class='td-mode-tag ok'>已初始化</span>")));
         const needReg = needsInit(v);
         const isUnusedInit = v.status === 'unused_init';
@@ -544,12 +579,39 @@ export const presetVarsUiModule = {
               <button type='button' class='td-btn sm' data-action='pv-copy-macro' data-macro='${escapeHtml(readMacro)}'>复制读取宏</button>
             </div>
           </div>`;
-      }).join('') || "<div class='td-group-empty'>未检测到匹配的变量宏</div>";
+      }).join('');
+
+      let relatedEntriesHtml = '';
+      if (filter === 'unused') {
+        const unrefKeys = new Set(filteredVars.map((v) => v.key));
+        const relatedEntries = report.entries.filter((em) => {
+          if (em.unreferencedVars.length === 0) return false;
+          if (!q) return true;
+          return em.unreferencedVars.some((v) => unrefKeys.has(v.key))
+            || em.name.toLowerCase().includes(q)
+            || `#${em.idx + 1}`.includes(q);
+        });
+        if (relatedEntries.length > 0) {
+          relatedEntriesHtml = `
+            <div class='td-scope-head'>
+              <span>相关条目 (${relatedEntries.length})</span>
+            </div>
+            ${relatedEntries.map((em) => renderEntryCardHtml(em, needsInit, true)).join('')}`;
+        }
+      }
+
+      listHtml = (varsHtml || relatedEntriesHtml)
+        ? `${varsHtml}${relatedEntriesHtml}`
+        : "<div class='td-group-empty'>未检测到匹配的变量宏</div>";
     }
 
-    const showRefBar = tab === 'vars' && filter === 'unused';
+    const showRefBar = filter === 'unused';
     const unusedTargetCount = report.stats.unusedInitList.filter((v) => !q || v.name.toLowerCase().includes(q)
       || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q))).length;
+
+    const cntNeedInit = tab === 'entries' ? report.stats.entryNeedInit : report.stats.needInit;
+    const cntReady = tab === 'entries' ? report.stats.entryReady : report.stats.initialized;
+    const cntUnref = tab === 'entries' ? report.stats.entryUnref : report.stats.unusedInit;
 
     previewLayerEl.classList.add('is-open');
     previewLayerEl.innerHTML = `
@@ -581,9 +643,9 @@ export const presetVarsUiModule = {
 
           <div class='td-filter-bar td-snap-filter-bar'>
             <button type='button' class='td-chip ${filter === 'all' ? 'active' : ''}' data-action='pv-set-filter' data-filter='all'>全部</button>
-            <button type='button' class='td-chip ${filter === 'unregistered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unregistered'>需处理 (${report.stats.needInit})</button>
-            <button type='button' class='td-chip ${filter === 'registered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='registered'>已就绪 (${report.stats.initialized})</button>
-            ${tab === 'vars' ? `<button type='button' class='td-chip ${filter === 'unused' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unused'>仅初始化 (${report.stats.unusedInit})</button>` : ''}
+            <button type='button' class='td-chip ${filter === 'unregistered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unregistered'>需处理 (${cntNeedInit})</button>
+            <button type='button' class='td-chip ${filter === 'registered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='registered'>已就绪 (${cntReady})</button>
+            <button type='button' class='td-chip ${filter === 'unused' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unused'>未引用 (${cntUnref})</button>
           </div>
 
           ${showRefBar ? `
@@ -612,7 +674,6 @@ export const presetVarsUiModule = {
 
     if (action === 'pv-set-tab') {
       vc.tab = actionEl.getAttribute('data-tab') === 'entries' ? 'entries' : 'vars';
-      if (vc.tab === 'entries' && vc.filter === 'unused') vc.filter = 'all';
       uiCtx.renderPreviewModal();
       return true;
     }
@@ -670,13 +731,18 @@ export const presetVarsUiModule = {
       }
       return true;
     }
-    if (action === 'pv-ref-one' || action === 'pv-ref-all') {
+    if (action === 'pv-ref-one' || action === 'pv-ref-entry' || action === 'pv-ref-all') {
       const report = analyzePresetVariables(data, vc.targetSpec || undefined);
       const q = (vc.query || '').trim().toLowerCase();
       let specs = [];
       if (action === 'pv-ref-one') {
         const v = report.variables.find((x) => x.key === actionEl.getAttribute('data-vkey'));
         if (v) specs = [v];
+      } else if (action === 'pv-ref-entry') {
+        const ln = actionEl.getAttribute('data-list');
+        const idx = Number(actionEl.getAttribute('data-idx'));
+        const em = report.entries.find((x) => x.listName === ln && x.idx === idx);
+        if (em) specs = em.unreferencedVars;
       } else {
         specs = report.stats.unusedInitList.filter((v) => !q || v.name.toLowerCase().includes(q)
           || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q)));
