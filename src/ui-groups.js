@@ -340,7 +340,7 @@ export const groupsUiModule = {
     if (m.type === 'bindings') {
       const pool = ensureSchemesPool(), selectedSet = m.selectedIds;
       const rowsHtml = pool.map((s) => `<div class='td-picker-row ${selectedSet.has(s.id) ? 'checked' : ''}' data-action='toggle-bind-scheme' data-scheme-id='${escapeHtml(s.id)}'><div class='td-picker-left'><input class='td-checkbox' type='checkbox' ${selectedSet.has(s.id) ? 'checked' : ''} tabindex='-1' /><span class='td-item-name'>${escapeHtml(s.name)}</span></div><span class='td-count-tag'>${(s.groups || []).length} 个分组</span></div>`).join('');
-      modalLayerEl.innerHTML = `<div class='td-modal'><div class='td-modal-head'><div class='td-modal-title'>预设方案绑定 · ${escapeHtml(state.presetName)}</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div><div class='td-modal-body'><div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>勾选要绑定到当前预设的方案（支持多选，同一方案也可被多个预设共用）。若全部不选，则控制台默认列出全部方案。</div><div style='display:flex;flex-direction:column;gap:6px;'>${rowsHtml}</div></div><div class='td-modal-foot'><button class='td-btn' style='margin-right:auto;' data-action='clear-bindings'>全部不选(显示全部)</button><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='save-bindings'>保存绑定</button></div></div>`;
+      modalLayerEl.innerHTML = `<div class='td-modal'><div class='td-modal-head'><div class='td-modal-title'>预设方案绑定 · ${escapeHtml(state.presetName)}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='bindings' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div><div class='td-modal-body'><div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>勾选要绑定到当前预设的方案（支持多选，同一方案也可被多个预设共用）。若全部不选，则控制台默认列出全部方案。</div><div style='display:flex;flex-direction:column;gap:6px;'>${rowsHtml}</div></div><div class='td-modal-foot'><button class='td-btn' style='margin-right:auto;' data-action='clear-bindings'>全部不选(显示全部)</button><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='save-bindings'>保存绑定</button></div></div>`;
       uiCtx.syncOverlayBounds();
       return true;
     }
@@ -349,7 +349,7 @@ export const groupsUiModule = {
       const isEdit = !!m.groupId, title = isEdit ? '编辑分组' : (m.parentId ? `新建子分组 · ${m.parentName || ''}` : '新建分组');
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-sm'>
-          <div class='td-modal-head'><div class='td-modal-title'>${escapeHtml(title)}</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>${escapeHtml(title)}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='groupForm' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
           <div class='td-modal-body'>
             <div class='td-field'><label class='td-label'>分组名称</label><input class='td-input' id='td-group-name-input' type='text' placeholder='例如：破限预设、文风切换、功能开关...' value='${escapeHtml(m.name || '')}' /></div>
             <div class='td-field'><label class='td-label'>分组模式</label><div class='td-seg-grid'><button type='button' class='td-seg-card ${m.mode === 'multi' ? 'active' : ''}' data-action='set-modal-mode' data-mode='multi'><div class='td-seg-title'>多选分组</div><div class='td-seg-desc'>条目自由开关，支持一键全开 / 全关</div></button><button type='button' class='td-seg-card single-card ${m.mode === 'single' ? 'active' : ''}' data-action='set-modal-mode' data-mode='single'><div class='td-seg-title'>单选分组</div><div class='td-seg-desc'>组内条目互斥，开启一项自动关闭其余</div></button></div></div>
@@ -377,7 +377,7 @@ export const groupsUiModule = {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
             <div class='td-modal-title'>添加 · ${escapeHtml(group ? group.name : '')}</div>
-            <div style='display:flex;gap:4px;align-items:center;'><button class='td-btn' data-action='toggle-picker-controls'>${ICONS.sliders} 筛选与来源</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+            <div class='td-modal-head-actions'><button class='td-btn' data-action='toggle-picker-controls'>${ICONS.sliders} 筛选与来源</button><button class='td-icon-btn' data-action='open-help' data-help-key='picker' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body td-picker-body'>
             <div class='td-picker-summary'><span data-role='picker-summary-text' style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'></span><button class='td-chip' data-action='toggle-picker-select-mode'>单选点选</button></div>

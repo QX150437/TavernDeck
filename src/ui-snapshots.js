@@ -301,8 +301,9 @@ export const snapshotsUiModule = {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
             <div class='td-modal-title'>${ICONS.camera} 快照中心</div>
-            <div style='display:flex;gap:4px;align-items:center;'>
+            <div class='td-modal-head-actions'>
               <button type='button' class='td-btn sm ${createOpen ? 'primary' : ''}' data-action='toggle-snap-create-box'>${createOpen ? '收起新建' : `${ICONS.plus} 新建快照`}</button>
+              <button class='td-icon-btn' data-action='open-help' data-help-key='snapshots' title='功能说明'>${ICONS.help}</button>
               <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
             </div>
           </div>
@@ -462,7 +463,10 @@ export const snapshotsUiModule = {
       <div class='td-modal td-modal-tall'>
         <div class='td-modal-head'>
           <div class='td-modal-title'>${isCompare ? `快照对比 · ${escapeHtml(baseSnap.name)} ⇄ ${escapeHtml(snap.name)}` : `快照差异与局部恢复 · ${escapeHtml(snap.name)}`}</div>
-          <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+          <div class='td-modal-head-actions'>
+            <button class='td-icon-btn' data-action='open-help' data-help-key='snapshotDetail' title='功能说明'>${ICONS.help}</button>
+            <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+          </div>
         </div>
         <div class='td-modal-body'>
           <div class='td-preview-meta'>

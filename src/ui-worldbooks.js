@@ -16,6 +16,7 @@ import {
   editHistory, readPreviewSnapshot, updatePreviewHistoryButtons, pushEditSnapshot,
 } from './ui-common.js';
 import { renderQuickInsertHtml } from './ui-snippets.js';
+import { renderSearchableTextareaHtml, bindEditorSearchEvents } from './ui-editor-search.js';
 
 function serializeWbEntries(entries) {
   return JSON.stringify(serializeRegExpDeep(entries || []));
@@ -105,7 +106,7 @@ export const worldbooksUiModule = {
 
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
-          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.layers} 世界书管理 (${snap.allBooks.length})</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.layers} 世界书管理 (${snap.allBooks.length})</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='worldbookManager' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
           <div class='td-modal-body td-picker-body'>
             <div class='td-mgr-topbar'>
               <input class='td-input' id='td-wbm-search' type='text' placeholder='搜索世界书名称...' value='${escapeHtml(m.query || '')}' />
@@ -155,6 +156,7 @@ export const worldbooksUiModule = {
               <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
                 ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='wbd-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
                 <span class='td-idx-badge'>#${idx + 1}</span>
+                ${e.extra?.tdAiTag ? `<span class='td-mode-tag ok'>${escapeHtml(e.extra.tdAiTag)}</span>` : ''}
                 <span class='td-mgr-row-title' title='${escapeHtml(e.name || `条目 #${e.uid}`)}'>${escapeHtml(e.name || `条目 #${e.uid}`)}</span>
               </div>
               <div style='display:flex;align-items:center;gap:7px;flex-shrink:0;'>
@@ -174,29 +176,32 @@ export const worldbooksUiModule = {
       }).join('');
 
       const isDirty = syncWbDetailDirty(m);
+      const wbDetailTitle = `世界书条目 · ${m.bookName} (${entries.length})`;
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
-            <div class='td-modal-title'>世界书条目 · ${escapeHtml(m.bookName)} (${entries.length})</div>
-            <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='wbd-open-snapshots'>${ICONS.camera} 快照</button><button class='td-btn sm' data-action='wbd-back-list'>返回</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+            <div class='td-modal-title' title='${escapeHtml(wbDetailTitle)}'>${escapeHtml(wbDetailTitle)}</div>
+            <div class='td-modal-head-actions'><button class='td-btn sm' data-action='wbd-open-snapshots'>${ICONS.camera} 快照</button><button class='td-btn sm' data-action='wbd-back-list'>返回</button><button class='td-icon-btn' data-action='open-help' data-help-key='worldbookDetail' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body td-picker-body'>
-            <div class='td-mgr-topbar'>
-              <input class='td-input' id='td-wbd-search' type='text' placeholder='搜索序号、条目标题、关键词或正文...' value='${escapeHtml(m.query || '')}' />
-              <button class='td-btn sm primary' data-action='wbd-add-entry'>${ICONS.plus} 新增</button>
-              <button class='td-icon-btn ${m.toolsOpen || batchMode ? 'is-active' : ''}' data-action='wbd-toggle-tools' title='跳转、批量移动与 AI 编辑'>${ICONS.more}</button>
-            </div>
-            <div class='td-mgr-subtools ${m.toolsOpen || batchMode ? 'is-open' : ''}'>
-              <div style='display:inline-flex;align-items:center;gap:4px;'>
-                <input class='td-input' id='td-wbd-jump-idx' type='number' min='1' max='${Math.max(1, entries.length)}' placeholder='序号' value='${escapeHtml(m.jumpVal || '')}' style='width:68px;height:27px;padding:0 6px;font-size:12px;text-align:center;' />
-                <button class='td-btn sm' data-action='wbd-jump-idx' title='跳转到指定序号'>跳转</button>
+            <div class='td-compact-bar'>
+              <div class='td-search-input-wrap' style='flex:1;min-width:105px;'>
+                <input class='td-input' id='td-wbd-search' type='text' placeholder='搜索序号/标题/关键词...' value='${escapeHtml(m.query || '')}' style='height:30px;font-size:12.5px;padding:0 ${m.query ? '24px' : '9px'} 0 9px;border-radius:8px;' />
+                ${m.query ? `<button type='button' class='td-search-clear' data-action='wbd-clear-search' title='清空搜索' style='width:22px;height:22px;right:3px;'>${ICONS.close}</button>` : ''}
               </div>
-              <button class='td-btn sm ${batchMode ? 'primary' : ''}' data-action='wbd-toggle-batch'>${batchMode ? `退出批量 (已选 ${selectedSet.size})` : '批量选择移动'}</button>
-              ${batchMode ? `<button class='td-btn sm warn' data-action='wbd-batch-move'>批量移动到...</button>` : ''}
-              <button class='td-btn sm' data-action='wbd-batch-enable' data-val='1'>全开可见</button>
-              <button class='td-btn sm' data-action='wbd-batch-enable' data-val='0'>全关可见</button>
-              <button class='td-btn sm warn' data-action='wbd-disable-recursion'>一键禁止递归</button>
-              <button class='td-btn sm warn' data-action='wbd-open-ai-edit'>${ICONS.sliders} AI 智能编辑</button>
+              <div class='td-jump-group'>
+                <input class='td-input' id='td-wbd-jump-idx' type='number' min='1' max='${Math.max(1, entries.length)}' placeholder='#序号' value='${escapeHtml(m.jumpVal || '')}' />
+                <button type='button' class='td-btn xs' data-action='wbd-jump-idx' title='跳转到指定序号'>跳转</button>
+              </div>
+              <button type='button' class='td-btn sm primary' data-action='wbd-add-entry' style='min-height:30px;'>${ICONS.plus} 新增</button>
+            </div>
+            <div class='td-compact-actions'>
+              <button type='button' class='td-btn xs ${batchMode ? 'primary' : ''}' data-action='wbd-toggle-batch'>${batchMode ? `退出批量 (${selectedSet.size})` : '批量移动'}</button>
+              ${batchMode ? `<button type='button' class='td-btn xs warn' data-action='wbd-batch-move'>移动所选</button>` : ''}
+              <button type='button' class='td-btn xs' data-action='wbd-batch-enable' data-val='1' title='开启当前筛选可见条目'>全开</button>
+              <button type='button' class='td-btn xs' data-action='wbd-batch-enable' data-val='0' title='关闭当前筛选可见条目'>全关</button>
+              <button type='button' class='td-btn xs warn' data-action='wbd-disable-recursion' title='一键禁止全部条目递归'>禁递归</button>
+              <button type='button' class='td-btn xs warn' data-action='wbd-open-ai-edit'>${ICONS.sliders} AI 编辑</button>
             </div>
             <div class='td-picker-list td-scroll'>${rows || "<div class='td-group-empty'>暂无匹配的世界书条目</div>"}</div>
           </div>
@@ -221,10 +226,11 @@ export const worldbooksUiModule = {
           </div>
           <div class='td-modal-body'>
             <div class='td-field'><label class='td-label'>条目标题</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(e.name || '')}' /></div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:220px;'>${escapeHtml(e.content || '')}</textarea></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:0;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: e.content || '', minHeight: '200px' })}</div>
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='wb-save-content'>${ICONS.save} 应用到世界书</button></div>
         </div>`;
+      bindEditorSearchEvents(previewLayerEl);
       editHistory.stack = [readPreviewSnapshot()];
       editHistory.index = 0;
       updatePreviewHistoryButtons();
@@ -242,7 +248,7 @@ export const worldbooksUiModule = {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
             <div class='td-modal-title'>${state.previewCtx.isNew ? '新增世界书条目' : `编辑世界书条目 · ${escapeHtml(e.name || `#${e.uid}`)}`}</div>
-            <div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+            <div class='td-modal-head-actions'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='open-help' data-help-key='wbEntryEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body'>
             <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>条目标题</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(e.name || '')}' /></div><label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-wbe-enabled' ${e.enabled ? 'checked' : ''} /><span>启用</span></label></div>
@@ -267,10 +273,11 @@ export const worldbooksUiModule = {
               <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-previn' ${e.recursion?.prevent_incoming ? 'checked' : ''} /> 禁止被递归激活</label>
               <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-prevout' ${e.recursion?.prevent_outgoing ? 'checked' : ''} /> 禁止递归激活其他</label>
             </div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:130px;'>${escapeHtml(e.content || '')}</textarea></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:180px;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: e.content || '', minHeight: '140px' })}</div>
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='wb-save-entry'>${ICONS.save} 确认</button></div>
         </div>`;
+      bindEditorSearchEvents(previewLayerEl);
       editHistory.stack = [readPreviewSnapshot()];
       editHistory.index = 0;
       updatePreviewHistoryButtons();
@@ -363,7 +370,7 @@ export const worldbooksUiModule = {
       }).catch((err) => { logError(`读取世界书「${name}」失败`, err); notify('error', err.message || String(err)); });
       return true;
     }
-    if (action === 'wbd-toggle-tools' && state.modal?.type === 'worldbookDetail') { state.modal.toolsOpen = !state.modal.toolsOpen; uiCtx.renderModal(); return true; }
+    if (action === 'wbd-clear-search' && state.modal?.type === 'worldbookDetail') { state.modal.query = ''; uiCtx.renderModal(); return true; }
     if (action === 'wbd-jump-idx' && state.modal?.type === 'worldbookDetail') {
       const list = state.modal.entries || [];
       const num = Number(modalLayerEl?.querySelector('#td-wbd-jump-idx')?.value);
@@ -540,7 +547,7 @@ export const worldbooksUiModule = {
     }
     if (action === 'wbd-open-ai-edit' && state.modal?.type === 'worldbookDetail') {
       state.previewKey = null; state.snapshotDetailId = null;
-      state.previewCtx = { type: 'wbAiEdit', step: 'setup', selectedKeys: new Set(), instruction: '', search: '', loading: false, results: [] };
+      state.previewCtx = { type: 'wbAiEdit', step: 'setup', selectedKeys: new Set(), refSelectedKeys: new Set(), refExpanded: false, refSearch: '', instruction: '', search: '', loading: false, results: [] };
       uiCtx.renderPreviewModal();
       return true;
     }

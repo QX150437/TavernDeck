@@ -95,7 +95,7 @@ export const mergeDialogsUiModule = {
         <div class='td-modal-head'>
           <div class='td-modal-title'>迁移 · 已选 ${sp.selectedKeys.length} 项 (${escapeHtml(fromLabel)})</div>
           <div style='display:flex;gap:4px;align-items:center;'>
-            <button type='button' class='td-icon-btn ${sp.showHelp ? 'is-active' : ''}' data-action='mig-toggle-help' title='查看操作说明' style='font-weight:800;font-size:13.5px;'>?</button>
+            <button type='button' class='td-icon-btn ${sp.showHelp ? 'is-active' : ''}' data-action='mig-toggle-help' title='查看操作说明'>${ICONS.help}</button>
             <button class='td-icon-btn' data-action='close-select-popup'>${ICONS.close}</button>
           </div>
         </div>
@@ -263,8 +263,9 @@ export const mergeDialogsUiModule = {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
             <div class='td-modal-title'>双向 Diff 比对（A vs B）</div>
-            <div style='display:flex;gap:4px;align-items:center;'>
+            <div class='td-modal-head-actions'>
               <button type='button' class='td-btn sm' data-action='merge-diff-back'>返回</button>
+              <button type='button' class='td-icon-btn' data-action='open-help' data-help-key='mergeEntryDiff' title='功能说明'>${ICONS.help}</button>
               <button class='td-icon-btn' data-action='close-preview' title='关闭'>${ICONS.close}</button>
             </div>
           </div>
@@ -328,7 +329,10 @@ export const mergeDialogsUiModule = {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
             <div class='td-modal-title'>全局 Diff 比对报告</div>
-            <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+            <div class='td-modal-head-actions'>
+              <button type='button' class='td-icon-btn' data-action='open-help' data-help-key='mergeGlobalDiff' title='功能说明'>${ICONS.help}</button>
+              <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+            </div>
           </div>
           <div class='td-modal-body td-picker-body'>
             <div class='td-filter-bar'>

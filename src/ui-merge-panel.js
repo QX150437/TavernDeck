@@ -114,6 +114,7 @@ function renderDualMidBarHtml(session) {
         <button type='button' class='td-icon-btn' data-action='dual-undo' title='撤销' ${session.undoStack?.length ? '' : 'disabled'}>${ICONS.undo}</button>
         <button type='button' class='td-icon-btn' data-action='dual-redo' title='重做' ${session.redoStack?.length ? '' : 'disabled'}>${ICONS.redo}</button>
         <button type='button' class='td-btn sm ${session.dirty ? 'primary' : (saveOpen ? 'warn' : '')}' data-action='dual-toggle-save-menu' style='margin-left:auto;'>保存${session.dirty ? '*' : ''}</button>
+        <button type='button' class='td-icon-btn' data-action='open-help' data-help-key='dualMerge' title='功能说明'>${ICONS.help}</button>
         <button type='button' class='td-icon-btn' data-action='close-modal' title='关闭'>${ICONS.close}</button>
       </div>
       ${pairMode ? `
@@ -456,7 +457,7 @@ export const mergePanelUiModule = {
       const optsHtml = (sel) => list.map((n) => `<option value='${escapeHtml(n)}' ${n === sel ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
       modalLayerEl.innerHTML = `
         <div class='td-modal'>
-          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.gitMerge} 预设对比缝合</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.gitMerge} 预设对比缝合</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='mergeSelect' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
           <div class='td-modal-body'>
             ${draftHtml}
             <div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>选择要进行双向对比与缝合的两个预设（A 与 B 均可独立编辑、互迁条目及保存）。</div>
@@ -507,7 +508,7 @@ export const mergePanelUiModule = {
       const optsHtml = (sel) => books.map((n) => `<option value='${escapeHtml(n)}' ${n === sel ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
       modalLayerEl.innerHTML = `
         <div class='td-modal'>
-          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.gitMerge} 世界书对比缝合</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.gitMerge} 世界书对比缝合</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='mergeSelect' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
           <div class='td-modal-body'>
             ${draftHtml}
             ${books.length < 2

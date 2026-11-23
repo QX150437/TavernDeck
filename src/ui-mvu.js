@@ -500,9 +500,10 @@ export const mvuUiModule = {
       <div class='td-modal td-modal-tall'>
         <div class='td-modal-head'>
           <div class='td-modal-title'>${ICONS.eye} MVU 楼层变量 · ${escapeHtml(info.charName)}</div>
-          <div style='display:flex;gap:4px;'>
+          <div class='td-modal-head-actions'>
             <button class='td-icon-btn' data-action='mvu-refresh' title='刷新变量'>${ICONS.refresh}</button>
             <button class='td-icon-btn' data-action='mvu-copy-json' title='复制当前 JSON'>${ICONS.copy}</button>
+            <button class='td-icon-btn' data-action='open-help' data-help-key='mvuViewer' title='功能说明'>${ICONS.help}</button>
             <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
           </div>
         </div>
@@ -607,7 +608,7 @@ export const mvuUiModule = {
       previewLayerEl.classList.add('is-open');
       previewLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
-          <div class='td-modal-head'><div class='td-modal-title'>MVU 命令补全/执行 · 楼层 #${c.floorId}</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>MVU 命令补全/执行 · 楼层 #${c.floorId}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='mvuCmdEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
           <div class='td-modal-body'>
             ${c.detectedTruncated ? `<div class='td-attr-warn-banner'>已自动提取当前楼层消息中的更新命令片段，可直接补全缺失行后解析写回。</div>` : ''}
             <div class='td-field' style='flex:1;display:flex;flex-direction:column;'>
@@ -637,7 +638,7 @@ export const mvuUiModule = {
         previewLayerEl.classList.add('is-open');
         previewLayerEl.innerHTML = `
           <div class='td-modal td-modal-tall'>
-            <div class='td-modal-head'><div class='td-modal-title'>检视 AI 变量更新 · 目标楼层 #${ai.targetFloor}</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+            <div class='td-modal-head'><div class='td-modal-title'>检视 AI 变量更新 · 目标楼层 #${ai.targetFloor}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='mvuAiUpdate' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
             <div class='td-modal-body'>
               <div class='td-field'>
                 <div style='display:flex;justify-content:space-between;align-items:center;'>
@@ -663,7 +664,7 @@ export const mvuUiModule = {
       previewLayerEl.classList.add('is-open');
       previewLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
-          <div class='td-modal-head'><div class='td-modal-title'>AI 更新/补全 MVU · 楼层 #${ai.targetFloor}</div><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>AI 更新/补全 MVU · 楼层 #${ai.targetFloor}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='mvuAiUpdate' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
           <div class='td-modal-body'>
             ${renderCollapsibleAiApiBoxHtml(ai)}
             <div class='td-field'>

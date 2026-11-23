@@ -151,6 +151,7 @@ export function syncOverlayBounds() {
     uiCtx.getPreviewLayer(),
     uiCtx.getSelectLayer(),
     uiCtx.getConfirmLayer(),
+    uiCtx.getHelpLayer(),
   ].forEach((layer) => {
     if (!layer) return;
     layer.style.left = `${Math.round(vp.x)}px`;

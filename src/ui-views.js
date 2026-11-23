@@ -4,6 +4,7 @@ import {
   ICONS, uiCtx, editHistory, readPreviewSnapshot, updatePreviewHistoryButtons,
 } from './ui-common.js';
 import { renderQuickInsertHtml } from './ui-snippets.js';
+import { renderSearchableTextareaHtml, bindEditorSearchEvents } from './ui-editor-search.js';
 import { updatePickerList } from './ui-groups.js';
 import { updateSnapshotList } from './ui-snapshots.js';
 
@@ -99,11 +100,16 @@ export function renderPreviewModal() {
     fieldsHtml += `<div class='td-field'><label class='td-label'>查找正则 (Find Regex)</label><input class='td-input' id='td-edit-find-regex' type='text' value='${escapeHtml(raw.find_regex || '')}' /></div><div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>替换为 (Replace String)</label>${renderQuickInsertHtml('td-edit-replace-string')}<textarea class='td-textarea td-scroll' id='td-edit-replace-string' style='flex:1;'>${escapeHtml(raw.replace_string || '')}</textarea></div>`;
   } else {
     const isPlaceholder = ref.type === 'preset' && typeof raw.content !== 'string', contentVal = typeof raw.content === 'string' ? raw.content : '';
-    fieldsHtml += `<div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>条目内容 ${isPlaceholder ? '（此条为酒馆内置占位符，一般无正文）' : ''}</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;' ${isPlaceholder ? "placeholder='该条目为内置占位符'" : ''}>${escapeHtml(contentVal)}</textarea></div>`;
+    const isPresetOrWb = ref.type === 'preset' || ref.type === 'worldbook';
+    const editorHtml = isPresetOrWb
+      ? renderSearchableTextareaHtml({ id: 'td-edit-content', value: contentVal, placeholder: isPlaceholder ? '该条目为内置占位符' : '', minHeight: '160px' })
+      : `<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;'>${escapeHtml(contentVal)}</textarea>`;
+    fieldsHtml += `<div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:0;'><label class='td-label'>条目内容 ${isPlaceholder ? '（此条为酒馆内置占位符，一般无正文）' : ''}</label>${renderQuickInsertHtml('td-edit-content')}${editorHtml}</div>`;
   }
 
   previewLayerEl.classList.add('is-open');
-  previewLayerEl.innerHTML = `<div class='td-modal td-modal-tall'><div class='td-modal-head'><div class='td-modal-title' title='${escapeHtml(item.name)}'>编辑与预览 · ${escapeHtml(item.name)}</div><div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='copy-preview' title='复制内容'>${ICONS.copy}</button><button class='td-icon-btn' data-action='close-preview' title='关闭'>${ICONS.close}</button></div></div><div class='td-modal-body'><div class='td-preview-meta'>${metaHtml}</div>${fieldsHtml}</div><div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='save-preview-edit'>${ICONS.save} 保存更改</button></div></div>`;
+  previewLayerEl.innerHTML = `<div class='td-modal td-modal-tall'><div class='td-modal-head'><div class='td-modal-title' title='编辑与预览 · ${escapeHtml(item.name)}'>编辑与预览 · ${escapeHtml(item.name)}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='copy-preview' title='复制内容'>${ICONS.copy}</button><button class='td-icon-btn' data-action='open-help' data-help-key='entryPreview' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview' title='关闭'>${ICONS.close}</button></div></div><div class='td-modal-body'><div class='td-preview-meta'>${metaHtml}</div>${fieldsHtml}</div><div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='save-preview-edit'>${ICONS.save} 保存更改</button></div></div>`;
+  bindEditorSearchEvents(previewLayerEl);
   editHistory.stack = [readPreviewSnapshot()];
   editHistory.index = 0;
   updatePreviewHistoryButtons();

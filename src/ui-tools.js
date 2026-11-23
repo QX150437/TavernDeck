@@ -74,8 +74,9 @@ export const toolsUiModule = {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
             <div class='td-modal-title'>${ICONS.database} 存储空间管理</div>
-            <div style='display:flex;gap:4px;'>
+            <div class='td-modal-head-actions'>
               <button class='td-icon-btn' data-action='storage-refresh' title='刷新统计'>${ICONS.refresh}</button>
+              <button class='td-icon-btn' data-action='open-help' data-help-key='storageManager' title='功能说明'>${ICONS.help}</button>
               <button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button>
             </div>
           </div>
@@ -223,7 +224,7 @@ export const toolsUiModule = {
 
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
-          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.code} 运行日志 (${allLogs.length})</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.code} 运行日志 (${allLogs.length})</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='logs' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
           <div class='td-modal-body td-picker-body'>
             <div class='td-filter-bar'>
               <button class='td-chip ${levelFilter === 'ALL' ? 'active' : ''}' data-action='logs-set-filter' data-filter='ALL'>全部 (${allLogs.length})</button>
@@ -273,7 +274,7 @@ export const toolsUiModule = {
 
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
-          <div class='td-modal-head'><div class='td-modal-title'>导入与导出中心</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>导入与导出中心</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='ioCenter' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
           <div class='td-modal-body'>
             <div class='td-field' style='padding:11px;border-radius:12px;background:var(--td-surface);border:1px solid var(--td-border-strong);'>
               <label class='td-label'>导出备份（全部或局部勾选）</label>

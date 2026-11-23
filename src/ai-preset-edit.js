@@ -301,16 +301,18 @@ export function extractJsonFromAiReply(rawText) {
   return Array.isArray(parsed) ? parsed : (Array.isArray(parsed.entries) ? parsed.entries : null);
 }
 
-export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
-  if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
-    throw new Error('请至少选择一个需要由 AI 编辑的条目');
+export async function runAiPresetEdit({ selectedItems = [], referenceItems = [], instruction, apiCfg }) {
+  const hasTargets = Array.isArray(selectedItems) && selectedItems.length > 0;
+  const hasRefs = Array.isArray(referenceItems) && referenceItems.length > 0;
+  if (!hasTargets && !hasRefs) {
+    throw new Error('请至少勾选一个待编辑条目或参考条目');
   }
   const cleanInstruction = String(instruction || '').trim();
   if (!cleanInstruction) {
-    throw new Error('请输入对这些条目的修改指令');
+    throw new Error('请输入对条目的修改或生成指令');
   }
 
-  const inputPayload = selectedItems.map((it) => ({
+  const inputPayload = (selectedItems || []).map((it) => ({
     uidKey: it.uidKey,
     index: it.index + 1,
     id: it.prompt.id,
@@ -320,20 +322,35 @@ export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
     content: typeof it.prompt.content === 'string' ? it.prompt.content : '',
   }));
 
+  const refPayload = (referenceItems || []).map((it) => ({
+    index: it.index + 1,
+    listName: it.listName,
+    name: it.prompt.name || it.prompt.id,
+    role: it.prompt.role || 'system',
+    enabled: !!it.prompt.enabled,
+    content: typeof it.prompt.content === 'string' ? it.prompt.content : '',
+  }));
+
   const systemPrompt = [
     '你是一个专业的 SillyTavern (酒馆) 预设提示词工程助手。',
-    '用户会提供若干个预设提示词条目（JSON 数组）以及一段修改要求。',
-    '请严格按照用户要求修改对应条目的内容（如有需要也可修改名称或 role/enabled）。',
+    '用户会提供修改/编写指令、待编辑条目（可选）以及供上下文参考的条目（可选）。',
+    '你可以修改待编辑条目（action: "update"），也可以根据用户指令新增条目（action: "add"）。',
     '输出要求：',
     '1. 必须仅输出一个合法的 JSON 对象，不要包含额外解释文字。',
-    '2. 格式为：{"entries": [{"uidKey": "原样的uidKey", "name": "条目名", "role": "system|user|assistant", "enabled": true, "content": "修改后的完整正文", "note": "简短修改说明"}]}',
-    '3. 必须完整保留每个条目的 uidKey，不得遗漏或擅自改写 uidKey；未要求修改的条目请保持原文或不要破坏占位符结构。',
+    '2. 格式为：{"entries": [{"action": "update"|"add", "uidKey": "修改时填原样uidKey；新增时留空", "listName": "prompts"|"prompts_unused", "name": "条目名", "role": "system|user|assistant", "enabled": true, "content": "完整正文", "note": "简短说明"}]}',
+    '3. 修改原条目时必须完整保留 uidKey，不得遗漏或篡改；不要把只读参考条目当作原条目输出为 update（除非需求明确要求新增条目）。',
   ].join('\n');
 
-  const userPrompt = [
-    `【修改需求】\n${cleanInstruction}`,
-    `【待编辑条目列表 JSON】\n${JSON.stringify(inputPayload, null, 2)}`,
-  ].join('\n\n');
+  const blocks = [`【指令需求】\n${cleanInstruction}`];
+  if (refPayload.length > 0) {
+    blocks.push(`【参考条目（仅作上下文/风格/结构参考，请勿直接修改）】\n${JSON.stringify(refPayload, null, 2)}`);
+  }
+  if (inputPayload.length > 0) {
+    blocks.push(`【待编辑条目列表 JSON】\n${JSON.stringify(inputPayload, null, 2)}`);
+  } else {
+    blocks.push('【待编辑条目列表 JSON】\n[]（未勾选待修改的原条目，请根据指令需求与参考条目生成 action: "add" 的新条目）');
+  }
+  const userPrompt = blocks.join('\n\n');
 
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
   const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
@@ -342,16 +359,41 @@ export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
     throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
   }
 
-  const byUidKey = new Map(selectedItems.map((it) => [it.uidKey, it]));
+  const byUidKey = new Map((selectedItems || []).map((it) => [it.uidKey, it]));
   const results = [];
   list.forEach((out) => {
     if (!out || typeof out !== 'object') return;
-    const match = byUidKey.get(out.uidKey)
-      || selectedItems.find((x) => x.prompt.id === out.id && (x.index + 1) === Number(out.index))
-      || selectedItems.find((x) => x.prompt.id === out.id);
-    if (!match) return;
+    const explicitAdd = out.action === 'add' || out.isNew === true;
+    const match = !explicitAdd
+      ? (byUidKey.get(out.uidKey)
+        || (selectedItems || []).find((x) => out.id && x.prompt.id === out.id && (x.index + 1) === Number(out.index))
+        || (selectedItems || []).find((x) => out.id && x.prompt.id === out.id))
+      : null;
+
+    if (!match) {
+      results.push({
+        uidKey: `ai_new::${results.length}`,
+        isAiNew: true,
+        writeMode: 'add',
+        targetList: out.listName === 'prompts_unused' ? 'prompts_unused' : 'prompts',
+        listName: out.listName === 'prompts_unused' ? 'prompts_unused' : 'prompts',
+        index: -1,
+        oldPrompt: null,
+        newName: typeof out.name === 'string' && out.name.trim() ? out.name.trim() : `AI 新增条目 #${results.length + 1}`,
+        newRole: ['system', 'user', 'assistant'].includes(out.role) ? out.role : 'system',
+        newEnabled: typeof out.enabled === 'boolean' ? out.enabled : true,
+        newContent: typeof out.content === 'string' ? out.content : '',
+        note: typeof out.note === 'string' ? out.note : '',
+        accepted: true,
+      });
+      return;
+    }
+
     results.push({
       uidKey: match.uidKey,
+      isAiNew: false,
+      writeMode: 'overwrite',
+      targetList: match.listName,
       listName: match.listName,
       index: match.index,
       oldPrompt: JSON.parse(JSON.stringify(match.prompt)),
@@ -365,21 +407,23 @@ export async function runAiPresetEdit({ selectedItems, instruction, apiCfg }) {
   });
 
   if (results.length === 0) {
-    throw new Error('无法将 AI 返回的条目匹配回原始条目，请重试');
+    throw new Error('AI 未返回有效条目结果，请重试');
   }
   return { rawReply: replyText, results };
 }
 
-export async function runAiWorldbookEdit({ selectedItems, instruction, apiCfg }) {
-  if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
-    throw new Error('请至少选择一个需要由 AI 编辑的世界书条目');
+export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = [], instruction, apiCfg }) {
+  const hasTargets = Array.isArray(selectedItems) && selectedItems.length > 0;
+  const hasRefs = Array.isArray(referenceItems) && referenceItems.length > 0;
+  if (!hasTargets && !hasRefs) {
+    throw new Error('请至少勾选一个待编辑世界书条目或参考条目');
   }
   const cleanInstruction = String(instruction || '').trim();
   if (!cleanInstruction) {
-    throw new Error('请输入对这些世界书条目的修改指令');
+    throw new Error('请输入对世界书条目的修改或生成指令');
   }
 
-  const inputPayload = selectedItems.map((it) => ({
+  const inputPayload = (selectedItems || []).map((it) => ({
     index: it.index,
     uid: it.entry.uid,
     name: it.entry.name || `条目 #${it.entry.uid}`,
@@ -388,20 +432,33 @@ export async function runAiWorldbookEdit({ selectedItems, instruction, apiCfg })
     content: typeof it.entry.content === 'string' ? it.entry.content : '',
   }));
 
+  const refPayload = (referenceItems || []).map((it) => ({
+    index: it.index,
+    name: it.entry.name || `条目 #${it.entry.uid}`,
+    keys: formatKeysInput(it.entry.strategy?.keys),
+    content: typeof it.entry.content === 'string' ? it.entry.content : '',
+  }));
+
   const systemPrompt = [
     '你是一个专业的 SillyTavern (酒馆) 世界书 (Lorebook / World Info) 编写与编辑助手。',
-    '用户会提供若干个世界书条目（JSON 数组）以及一段修改要求。',
-    '请严格按照用户要求修改对应条目的内容（如有需要也可修改 name、keys 或 enabled）。',
+    '用户会提供修改/编写指令、待编辑世界书条目（可选）以及参考条目（可选）。',
+    '你可以修改待编辑条目（action: "update"），也可以根据需求新增世界书条目（action: "add"）。',
     '输出要求：',
     '1. 必须仅输出一个合法的 JSON 对象，不要包含额外解释文字。',
-    '2. 格式为：{"entries": [{"index": 原样数字index, "uid": 原样数字uid, "name": "条目标题", "enabled": true, "keys": "逗号分隔的关键词字符串", "content": "修改后的完整正文", "note": "简短修改说明"}]}',
-    '3. 必须完整保留每个条目的 index 与 uid，不得遗漏；若不需更改关键词，请原样保留 keys 字段。',
+    '2. 格式为：{"entries": [{"action": "update"|"add", "index": 原样数字index(新增填-1), "uid": 原样数字uid(新增填-1), "name": "条目标题", "enabled": true, "keys": "逗号分隔的关键词字符串", "content": "完整正文", "note": "简短说明"}]}',
+    '3. 修改原条目时必须完整保留 index 与 uid；若不需更改关键词，请原样保留 keys 字段。',
   ].join('\n');
 
-  const userPrompt = [
-    `【修改需求】\n${cleanInstruction}`,
-    `【待编辑世界书条目 JSON】\n${JSON.stringify(inputPayload, null, 2)}`,
-  ].join('\n\n');
+  const blocks = [`【指令需求】\n${cleanInstruction}`];
+  if (refPayload.length > 0) {
+    blocks.push(`【参考条目（仅作上下文/世界观/格式参考，请勿直接修改）】\n${JSON.stringify(refPayload, null, 2)}`);
+  }
+  if (inputPayload.length > 0) {
+    blocks.push(`【待编辑世界书条目 JSON】\n${JSON.stringify(inputPayload, null, 2)}`);
+  } else {
+    blocks.push('【待编辑世界书条目 JSON】\n[]（未勾选待修改的原条目，请根据指令需求与参考条目生成 action: "add" 的新条目）');
+  }
+  const userPrompt = blocks.join('\n\n');
 
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
   const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
@@ -410,16 +467,39 @@ export async function runAiWorldbookEdit({ selectedItems, instruction, apiCfg })
     throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
   }
 
-  const byIndex = new Map(selectedItems.map((it) => [it.index, it]));
-  const byUid = new Map(selectedItems.map((it) => [it.entry.uid, it]));
+  const byIndex = new Map((selectedItems || []).map((it) => [it.index, it]));
+  const byUid = new Map((selectedItems || []).map((it) => [it.entry.uid, it]));
   const results = [];
   list.forEach((out) => {
     if (!out || typeof out !== 'object') return;
-    const match = byIndex.get(Number(out.index)) || byUid.get(Number(out.uid));
-    if (!match) return;
+    const explicitAdd = out.action === 'add' || out.isNew === true;
+    const match = !explicitAdd
+      ? (byIndex.get(Number(out.index)) || byUid.get(Number(out.uid)))
+      : null;
+
+    if (!match) {
+      results.push({
+        index: -1,
+        uid: -1,
+        isAiNew: true,
+        writeMode: 'add',
+        oldContent: '',
+        oldKeys: '',
+        newName: typeof out.name === 'string' && out.name.trim() ? out.name.trim() : `AI 新增世界书条目 #${results.length + 1}`,
+        newEnabled: typeof out.enabled === 'boolean' ? out.enabled : true,
+        newKeys: typeof out.keys === 'string' ? out.keys : '',
+        newContent: typeof out.content === 'string' ? out.content : '',
+        note: typeof out.note === 'string' ? out.note : '',
+        accepted: true,
+      });
+      return;
+    }
+
     results.push({
       index: match.index,
       uid: match.entry.uid,
+      isAiNew: false,
+      writeMode: 'overwrite',
       oldContent: match.entry.content || '',
       oldKeys: formatKeysInput(match.entry.strategy?.keys),
       newName: typeof out.name === 'string' && out.name.trim() ? out.name.trim() : (match.entry.name || `条目 #${match.entry.uid}`),
@@ -432,7 +512,7 @@ export async function runAiWorldbookEdit({ selectedItems, instruction, apiCfg })
   });
 
   if (results.length === 0) {
-    throw new Error('无法将 AI 返回的世界书条目匹配回原条目，请重试');
+    throw new Error('AI 未返回有效世界书条目结果，请重试');
   }
   return { rawReply: replyText, results };
 }

@@ -38,6 +38,18 @@
 5. **同步更新索引铁律**
    - 每次新增、删除、拆分模块，或新增 `modal.type` / `previewCtx.type` / `data-action` 前缀时，**必须在同一次修改中同步更新本文档下方的「模块索引表」**，保证新开对话时 AI 可以“先看索引、按需读取”。
 
+6. **增量补丁输出格式规范（严格校验语法）**
+   - **修改已有文件**：使用指令 `FILE:`（后接路径），配合成对的 `<<<<<<< SEARCH`、`=======`、`>>>>>>> REPLACE` 块；严禁对不存在的文件使用 `FILE:`。
+   - **新建文件**：必须使用指令 `CREATE:`（后接路径），正文以 `<<<<<<< CONTENT` 起始、以 `>>>>>>> END` 结束（不可写成 `>>>>>>> CONTENT` 或省略标记）。
+   - **整文件重写 / 删除**：分别使用指令 `REWRITE:` / `DELETE:`，避免使用空 `SEARCH` 块代替新建或删除。
+
+7. **版本号与变更日志自动管理规则（SemVer 同步铁律）**
+   - **默认自增规则**：遵循 `MAJOR.MINOR.PATCH`。当开发者提需求且**未明确指定目标版本号**时，凡涉及代码功能新增、交互优化或 Bug 修复，完成修改后**自动将最小版本号 `PATCH + 1`**（例如 `1.2.5` → `1.2.6`）；若属跨模块大型架构升级，可在答复中建议开发者确认是否提升 `MINOR`。
+   - **双端同步更新**：每次升级版本号时，**必须同步修改以下两处**（缺一不可）：
+     1. `manifest.json` 中的 `"version": "x.y.z"`
+     2. `src/utils.js` 中的 `export const APP_VERSION = 'vx.y.z';`
+   - **精简变更说明**：在根目录 `CHANGELOG.md` 顶部追加一行简明的版本说明（`- **vx.y.z** (YYYY-MM-DD)` + 1~3 条核心改动要点），并在本次答复末尾附上版本升级摘要；严禁将冗长历史日志直接堆积进 `AI_GUIDE.md`，以保持架构索引精简。
+
 ---
 
 ## 二、 完整模块索引表
@@ -47,6 +59,7 @@
 | 文件路径 | 约行数 | 职责定位 | 关键导出 | 负责的 `modal` / `previewCtx` / `data-action` |
 | :--- | :--- | :--- | :--- | :--- |
 | `manifest.json` | ~10 | 酒馆扩展清单元数据 | — | — |
+| `CHANGELOG.md` | ~20 | 版本号与精简变更记录 | — | 随每次版本递增同步追加 |
 | `index.js` | ~117 | 扩展启动入口、绑定 SillyTavern 事件并定时同步目录 | `bootstrap`（内部） | 监听 `PRESET_CHANGED` / `WORLDINFO_UPDATED` / `mag_variable_update_ended` 等事件 |
 | `style.css` | ~680 | 全部组件样式与 5 套面板主题、6 套通知主题变量 | — | `#tavern-deck-root` 及 `.td-*` 样式体系 |
 | `src/utils.js` | ~405 | 全局常量、日志工具、ST/TH 桥接、Toast 渲染器、LCS 行/词 Diff、世界书克隆与关键词解析 | `APP_NAME`, `hasTH`, `callTH`, `getST`, `notify`, `showToastElement`, `computeLineDiff`, `computeSideLineDiffs`, `cloneWorldbookEntry`, `formatKeysInput`, `parseKeysInput` | — |
@@ -72,7 +85,10 @@
 | 文件路径 | 约行数 | 职责定位 | 关键导出 | 负责的 `modal` / `previewCtx` / `data-action` |
 | :--- | :--- | :--- | :--- | :--- |
 | `src/ui-snippets.js` | ~210 | 常用酒馆宏/标签快捷插入与自定义模板管理（默认折叠，持久化于全局扩展字段） | `renderQuickInsertHtml`, `handleQuickInsertClick` | `data-action`: `qi-tab`, `qi-insert`, `qi-toggle-add`, `qi-fill-from-editor`, `qi-save-tpl`, `qi-del-tpl` |
-| `src/ui-common.js` | ~255 | 公共 `ICONS`、主题/颜色常量、`editHistory`（撤销/重做栈）、`uiCtx` 上下文桥接、通用确认弹窗与脏检查协调器 | `ICONS`, `THEME_OPTIONS`, `ORB_STYLE_OPTIONS`, `editHistory`, `uiCtx`, `setUiContext`, `openConfirm`, `confirmDiscardDirtyModal`, `readPreviewSnapshot`, `applyPreviewSnapshot`, `pushEditSnapshot` | — |
+| `src/ui-editor-search.js` | ~185 | 预设与世界书条目编辑正文的下方搜索框与背景同步高亮 | `renderSearchableTextareaHtml`, `syncEditorSearchHighlights`, `bindEditorSearchEvents`, `handleEditorSearchClick`, `handleEditorSearchInput`, `handleEditorSearchKeydown` | `data-action`: `es-prev`, `es-next`, `es-case`, `es-clear` |
+| `src/ui-preset-vars.js` | ~360 | 预设条目变量初始化检测（初始化/赋值/读取/生效与顺序分析、一键初始化与跳转） | `presetVarsUiModule`, `analyzePresetVariables` | `previewCtx.type`: `pmVarCheck`<br>`data-action`: `pm-open-var-check`, `pv-set-tab`, `pv-set-filter`, `pv-clear-search`, `pv-reg-one`, `pv-reg-entry`, `pv-reg-all`, `pv-copy-macro`, `pv-copy-missing`, `pv-jump-entry` |
+| `src/ui-common.js` | ~260 | 公共 `ICONS`、主题/颜色常量、`editHistory`（撤销/重做栈）、`uiCtx` 上下文桥接、通用确认弹窗与脏检查协调器 | `ICONS`, `THEME_OPTIONS`, `ORB_STYLE_OPTIONS`, `editHistory`, `uiCtx`, `setUiContext`, `openConfirm`, `confirmDiscardDirtyModal`, `readPreviewSnapshot`, `applyPreviewSnapshot`, `pushEditSnapshot` | — |
+| `src/ui-help.js` | ~175 | 全局 `?` 功能帮助字典与独立帮助弹窗渲染层 | `helpUiModule`, `renderHelpModal` | `state.helpTopic` · `data-action`: `open-help`, `close-help` |
 | `src/ui-drag.js` | ~325 | 视口与面板尺寸/位置计算、悬浮球贴边休眠与拖拽、面板移动/缩放、列表拖拽排序与嵌套、分组 Sticky 吸顶监听 | `getViewportRect`, `repositionUI`, `syncOverlayBounds`, `wakeOrb`, `scheduleOrbIdle`, `applyOrbVisualState`, `updateStickyGroupHeaders`, `bindDragListeners`, `unbindDragListeners` | `.td-orb`, `.td-panel`, `.td-drag-grip`, `.td-resize-handle` |
 | `src/ui-views.js` | ~115 | 通用确认窗渲染、`renderModal` / `renderPreviewModal` 注册表外壳、主面板单条目通用预览编辑壳 | `renderConfirmModal`, `renderModal`, `renderPreviewModal`, `syncPreviewStatusUi`, `updatePickerList`, `updateSnapshotList` | `previewKey`（主面板单条预览/编辑） |
 | `src/ui-groups.js` | ~460 | 主分组/条目树渲染、方案新建/复制/重命名/删除/预设绑定、分组表单、条目选择器（含范围选区） | `groupsUiModule`, `renderGroupHtml`, `renderGroupItemsListHtml`, `getPickerSections`, `updatePickerList` | `modal.type`: `schemeForm`, `bindings`, `groupForm`, `picker`<br>`data-action`: `toggle-group-menu`, `clear-group-search`, `toggle-item-drawer`, `*-scheme`, `*-bindings`, `*-group`, `toggle-collapse`, `toggle-multi-group`, `open-picker`, `toggle-entry`, `remove-entry`, `preview-entry`, `save-preview-edit`, `copy-preview`, `toggle-picker-*`, `set-picker-*`, `toggle-pick`, `picker-*`, `save-picker` |

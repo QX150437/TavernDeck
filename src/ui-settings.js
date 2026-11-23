@@ -442,7 +442,7 @@ export const settingsUiModule = {
 
     modalLayerEl.innerHTML = `
       <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'><div class='td-modal-title'>设置 · ${APP_NAME} (${APP_CN}) ${APP_VERSION}</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+        <div class='td-modal-head'><div class='td-modal-title'>设置 · ${APP_NAME} (${APP_CN}) ${APP_VERSION}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='settings' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
         <div class='td-modal-body' style='overflow-anchor:none;'>
           <div class='td-field'>
             <label class='td-label'>外观与文字颜色</label>

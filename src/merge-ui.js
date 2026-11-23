@@ -416,6 +416,7 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
           <button type='button' class='td-btn sm ${contentOnly ? 'primary' : ''}' data-action='toggle-merge-content-only'>${contentOnly ? '完整缝合' : '只缝合内容'}</button>
           <button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${icons.undo}</button>
           <button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${icons.redo}</button>
+          <button type='button' class='td-icon-btn' data-action='open-help' data-help-key='mergeCustom' title='功能说明'>${icons.help}</button>
           <button class='td-icon-btn' data-action='close-preview' title='关闭'>${icons.close}</button>
         </div>
       </div>
@@ -580,6 +581,7 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
           <button type='button' class='td-btn sm ${contentOnly ? 'primary' : ''}' data-action='toggle-merge-content-only'>${contentOnly ? '完整缝合' : '只缝合内容'}</button>
           <button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${icons.undo}</button>
           <button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${icons.redo}</button>
+          <button type='button' class='td-icon-btn' data-action='open-help' data-help-key='mergeCustom' title='功能说明'>${icons.help}</button>
           <button class='td-icon-btn' data-action='close-preview'>${icons.close}</button>
         </div>
       </div>

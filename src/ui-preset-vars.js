@@ -1,0 +1,556 @@
+import { escapeHtml, notify, copyToClipboard } from './utils.js';
+import { state } from './store.js';
+import { buildNewPromptEntry } from './preset-manager.js';
+import { ICONS, uiCtx } from './ui-common.js';
+
+const GLOBAL_MACRO_OPS = new Set(['setglobalvar', 'getglobalvar', 'addglobalvar', 'incglobalvar', 'decglobalvar', 'hasglobalvar']);
+const MUTATE_MACRO_OPS = new Set(['addvar', 'addglobalvar', 'incvar', 'incglobalvar', 'decvar', 'decglobalvar']);
+
+function scanBalancedMacros(text, onMacro) {
+  const s = String(text || '');
+  let i = 0;
+  while (i < s.length - 3) {
+    if (s[i] === '{' && s[i + 1] === '{') {
+      let depth = 1;
+      let j = i + 2;
+      while (j < s.length && depth > 0) {
+        if (s[j] === '{' && s[j + 1] === '{') {
+          depth++;
+          j += 2;
+        } else if (s[j] === '}' && s[j + 1] === '}') {
+          depth--;
+          j += 2;
+        } else {
+          j++;
+        }
+      }
+      if (depth === 0) {
+        const inner = s.slice(i + 2, j - 2);
+        onMacro(inner);
+        scanBalancedMacros(inner, onMacro);
+        i = j;
+        continue;
+      }
+    }
+    i++;
+  }
+}
+
+function parseEntryMacros(content) {
+  const inits = [];
+  const assigns = [];
+  const reads = [];
+  scanBalancedMacros(content, (inner) => {
+    const m = inner.match(/^\s*(setvar|setglobalvar|getvar|getglobalvar|addvar|addglobalvar|incvar|incglobalvar|decvar|decglobalvar|hasvar|hasglobalvar)\s*::\s*([\s\S]*)$/i);
+    if (!m) return;
+    const op = m[1].toLowerCase();
+    const rest = m[2];
+    const isGlobal = GLOBAL_MACRO_OPS.has(op);
+
+    if (op === 'setvar' || op === 'setglobalvar') {
+      const sepIdx = rest.indexOf('::');
+      if (sepIdx < 0) return;
+      const name = rest.slice(0, sepIdx).trim();
+      const val = rest.slice(sepIdx + 2);
+      if (!name || name.includes('{{') || name.includes('}}')) return;
+      if (val.trim() === '') inits.push({ name, isGlobal, op });
+      else assigns.push({ name, isGlobal, op });
+    } else if (MUTATE_MACRO_OPS.has(op)) {
+      const name = rest.split('::')[0].trim();
+      if (!name || name.includes('{{') || name.includes('}}')) return;
+      assigns.push({ name, isGlobal, op });
+    } else {
+      const name = rest.split('::')[0].trim();
+      if (!name || name.includes('{{') || name.includes('}}')) return;
+      reads.push({ name, isGlobal, op });
+    }
+  });
+  return { inits, assigns, reads };
+}
+
+function buildInitMacroListText(varSpecs) {
+  const lines = [];
+  const seen = new Set();
+  (varSpecs || []).forEach((v) => {
+    const key = `${v.isGlobal ? 'g' : 'l'}::${v.name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    lines.push(v.isGlobal ? `{{setglobalvar::${v.name}::}}` : `{{setvar::${v.name}::}}`);
+  });
+  return lines.join('\n');
+}
+
+export function analyzePresetVariables(presetData) {
+  const varMap = new Map();
+  const entryList = [];
+
+  const ensureVar = (name, isGlobal) => {
+    const key = `${isGlobal ? 'g' : 'l'}::${name}`;
+    let item = varMap.get(key);
+    if (!item) {
+      item = {
+        key,
+        name,
+        isGlobal,
+        inits: [],
+        assigns: [],
+        reads: [],
+        status: 'initialized',
+        orderIssue: null,
+      };
+      varMap.set(key, item);
+    }
+    return item;
+  };
+
+  ['prompts', 'prompts_unused'].forEach((listName) => {
+    const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
+    list.forEach((p, idx) => {
+      if (!p || typeof p.content !== 'string' || !p.content) return;
+      const parsed = parseEntryMacros(p.content);
+      if (parsed.inits.length === 0 && parsed.assigns.length === 0 && parsed.reads.length === 0) return;
+
+      const entryMeta = {
+        listName,
+        idx,
+        id: p.id,
+        name: p.name || p.id,
+        enabled: !!p.enabled,
+        initKeys: new Set(),
+        assignKeys: new Set(),
+        readKeys: new Set(),
+      };
+
+      const pushLoc = (arr, keySet, macroObj) => {
+        const v = ensureVar(macroObj.name, macroObj.isGlobal);
+        if (!arr.some((l) => l.listName === listName && l.idx === idx && l.op === macroObj.op)) {
+          arr.push({ listName, idx, name: entryMeta.name, enabled: entryMeta.enabled, op: macroObj.op });
+        }
+        keySet.add(v.key);
+      };
+
+      parsed.inits.forEach((r) => pushLoc(ensureVar(r.name, r.isGlobal).inits, entryMeta.initKeys, r));
+      parsed.assigns.forEach((d) => pushLoc(ensureVar(d.name, d.isGlobal).assigns, entryMeta.assignKeys, d));
+      parsed.reads.forEach((rf) => pushLoc(ensureVar(rf.name, rf.isGlobal).reads, entryMeta.readKeys, rf));
+
+      entryList.push(entryMeta);
+    });
+  });
+
+  const variables = Array.from(varMap.values()).map((v) => {
+    const hasInit = v.inits.length > 0;
+    const hasActiveInit = v.inits.some((l) => l.listName === 'prompts' && l.enabled);
+    const hasAssign = v.assigns.length > 0;
+    const hasRead = v.reads.length > 0;
+    const hasActiveUse = [...v.assigns, ...v.reads].some((l) => l.listName === 'prompts' && l.enabled);
+
+    if (!hasInit && hasAssign) v.status = 'uninit_def';
+    else if (!hasInit && !hasAssign && hasRead) v.status = 'uninit_ref';
+    else if (hasInit && !hasActiveInit && hasActiveUse) v.status = 'inactive_init';
+    else if (hasInit && !hasAssign && !hasRead) v.status = 'unused_init';
+    else v.status = 'initialized';
+
+    const activeInitIdxs = v.inits.filter((l) => l.listName === 'prompts' && l.enabled).map((l) => l.idx);
+    const activeUseIdxs = [...v.assigns, ...v.reads].filter((l) => l.listName === 'prompts' && l.enabled).map((l) => l.idx);
+    if (activeInitIdxs.length > 0 && activeUseIdxs.length > 0) {
+      const firstInitIdx = Math.min(...activeInitIdxs);
+      const firstUseIdx = Math.min(...activeUseIdxs);
+      if (firstUseIdx < firstInitIdx) {
+        v.orderIssue = { firstUseIdx, firstInitIdx };
+      }
+    }
+    return v;
+  });
+
+  const orderWeight = { uninit_def: 0, uninit_ref: 1, inactive_init: 2, unused_init: 3, initialized: 4 };
+  variables.sort((a, b) => (orderWeight[a.status] - orderWeight[b.status]) || a.name.localeCompare(b.name));
+
+  const varByKey = new Map(variables.map((v) => [v.key, v]));
+  const isNeedsAttention = (v) => v.status === 'uninit_def' || v.status === 'uninit_ref' || v.status === 'inactive_init';
+
+  const entries = entryList.map((em) => {
+    const initVars = Array.from(em.initKeys).map((k) => varByKey.get(k)).filter(Boolean);
+    const assignVars = Array.from(em.assignKeys).map((k) => varByKey.get(k)).filter(Boolean);
+    const readVars = Array.from(em.readKeys).map((k) => varByKey.get(k)).filter(Boolean);
+    const usedVars = new Map();
+    [...assignVars, ...readVars].forEach((v) => usedVars.set(v.key, v));
+    const missingInitVars = Array.from(usedVars.values()).filter(isNeedsAttention);
+    return {
+      ...em,
+      initVars,
+      assignVars,
+      readVars,
+      missingInitVars,
+    };
+  });
+
+  const candidateTargets = [];
+  const seenTargets = new Set();
+  const pushCandidate = (listName, idx, p, tag) => {
+    const spec = `${listName}::${idx}`;
+    if (seenTargets.has(spec)) return;
+    seenTargets.add(spec);
+    candidateTargets.push({
+      spec,
+      label: `[${listName === 'prompts_unused' ? '未添加' : '主'}#${idx + 1}${p.enabled ? '' : '·关'}] ${p.name || p.id}${tag ? ` (${tag})` : ''}`,
+    });
+  };
+
+  const initCountByEntry = new Map();
+  entryList.forEach((em) => {
+    if (em.initKeys.size > 0) initCountByEntry.set(`${em.listName}::${em.idx}`, em.initKeys.size);
+  });
+
+  ['prompts', 'prompts_unused'].forEach((listName) => {
+    const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
+    list.forEach((p, idx) => {
+      if (!p || typeof p.content !== 'string') return;
+      const cnt = initCountByEntry.get(`${listName}::${idx}`) || 0;
+      if (cnt > 0) pushCandidate(listName, idx, p, `含${cnt}项初始化`);
+    });
+  });
+  ['prompts', 'prompts_unused'].forEach((listName) => {
+    const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
+    list.forEach((p, idx) => {
+      if (!p) return;
+      if (/初始化|变量|init|var|registry/i.test(p.name || '')) pushCandidate(listName, idx, p, '推荐');
+    });
+  });
+  ['prompts', 'prompts_unused'].forEach((listName) => {
+    const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
+    list.forEach((p, idx) => {
+      if (!p || typeof p.content !== 'string') return;
+      pushCandidate(listName, idx, p, '');
+    });
+  });
+
+  const needInitList = variables.filter(isNeedsAttention);
+  const stats = {
+    total: variables.length,
+    initialized: variables.filter((v) => v.status === 'initialized').length,
+    needInit: needInitList.length,
+    unusedInit: variables.filter((v) => v.status === 'unused_init').length,
+    needInitList,
+  };
+
+  return { variables, entries, candidateTargets, stats };
+}
+
+function initializeVariablesToTarget(presetData, varSpecs, targetSpec) {
+  if (!Array.isArray(varSpecs) || varSpecs.length === 0) return 0;
+  const macrosText = buildInitMacroListText(varSpecs);
+  const macrosToAdd = macrosText ? macrosText.split('\n') : [];
+  if (macrosToAdd.length === 0) return 0;
+
+  if (!targetSpec || targetSpec === '__new__') {
+    const entry = buildNewPromptEntry({
+      name: '变量初始化 (Variable Init)',
+      enabled: true,
+      role: 'system',
+      content: macrosToAdd.join('\n'),
+    });
+    presetData.prompts = presetData.prompts || [];
+    presetData.prompts.unshift(entry);
+    return macrosToAdd.length;
+  }
+
+  const [listName, idxStr] = String(targetSpec).split('::');
+  const target = presetData?.[listName]?.[Number(idxStr)];
+  if (!target) throw new Error('未找到目标初始化条目，请重新选择');
+
+  const existingText = typeof target.content === 'string' ? target.content : '';
+  const appendLines = macrosToAdd.filter((m) => !existingText.includes(m));
+  if (appendLines.length === 0) return 0;
+
+  target.content = existingText.trimEnd()
+    ? `${existingText.replace(/\s+$/, '')}\n${appendLines.join('\n')}`
+    : appendLines.join('\n');
+  return appendLines.length;
+}
+
+function formatLocBadges(locs, label) {
+  if (!locs || locs.length === 0) return '';
+  const badges = locs.map((l) => {
+    const prefix = l.listName === 'prompts_unused' ? '池' : '主';
+    const stateTag = l.enabled ? '' : '·关';
+    const opTag = l.op && MUTATE_MACRO_OPS.has(l.op) ? `(${l.op})` : '';
+    const title = `${l.listName === 'prompts_unused' ? '未添加池' : '主列表'} #${l.idx + 1}「${l.name}」${l.enabled ? '' : '（未启用）'}`;
+    return `<button type='button' class='td-var-loc-btn ${l.enabled && l.listName === 'prompts' ? '' : 'is-dim'}' data-action='pv-jump-entry' data-list='${escapeHtml(l.listName)}' data-idx='${l.idx}' title='${escapeHtml(title)}'>${prefix}#${l.idx + 1} ${escapeHtml(l.name)}${escapeHtml(opTag)}${stateTag}</button>`;
+  }).join('');
+  return `<div class='td-var-loc'><strong>${escapeHtml(label)}：</strong><span class='td-var-loc-list'>${badges}</span></div>`;
+}
+
+export const presetVarsUiModule = {
+  renderPreview(previewLayerEl) {
+    if (state.previewCtx?.type !== 'pmVarCheck' || state.modal?.type !== 'presetDetail') return false;
+    const vc = state.previewCtx;
+    const report = analyzePresetVariables(state.modal.data);
+    if (!vc.targetSpec) {
+      vc.targetSpec = report.candidateTargets[0]?.spec || '__new__';
+    }
+
+    const tab = vc.tab || 'vars';
+    const filter = vc.filter || 'all';
+    const q = (vc.query || '').trim().toLowerCase();
+
+    const targetOpts = [
+      ...report.candidateTargets.map((t) => `<option value='${escapeHtml(t.spec)}' ${t.spec === vc.targetSpec ? 'selected' : ''}>${escapeHtml(t.label)}</option>`),
+      `<option value='__new__' ${vc.targetSpec === '__new__' ? 'selected' : ''}>+ 新建「变量初始化 (Variable Init)」到主列表顶部</option>`,
+    ].join('');
+
+    const needsInit = (v) => v.status === 'uninit_def' || v.status === 'uninit_ref' || v.status === 'inactive_init';
+
+    let listHtml = '';
+    if (tab === 'entries') {
+      const filteredEntries = report.entries.filter((em) => {
+        if (filter === 'unregistered' && em.missingInitVars.length === 0) return false;
+        if (filter === 'registered' && em.missingInitVars.length > 0) return false;
+        if (!q) return true;
+        const matchEntry = em.name.toLowerCase().includes(q) || `#${em.idx + 1}`.includes(q);
+        const matchVar = [...em.initVars, ...em.assignVars, ...em.readVars].some((v) => v.name.toLowerCase().includes(q));
+        return matchEntry || matchVar;
+      });
+
+      listHtml = filteredEntries.map((em) => {
+        const allChips = [];
+        em.initVars.forEach((v) => allChips.push(`<span class='td-mode-tag ok' title='在本条目空值初始化'>初始化: ${escapeHtml(v.name)}</span>`));
+        em.assignVars.forEach((v) => {
+          const isMiss = needsInit(v);
+          const tagCls = v.status === 'inactive_init' ? 'single' : (isMiss ? 'del' : 'multi');
+          const tip = v.status === 'inactive_init' ? '初始化条目未启用/在未添加池' : (isMiss ? '未初始化' : '已初始化');
+          allChips.push(`<span class='td-mode-tag ${tagCls}' title='${tip}'>赋值: ${escapeHtml(v.name)}${isMiss ? (v.status === 'inactive_init' ? ' (未生效)' : ' (未初始化)') : ''}</span>`);
+        });
+        em.readVars.forEach((v) => {
+          const isMiss = needsInit(v);
+          allChips.push(`<span class='td-mode-tag ${isMiss ? 'single' : 'multi'}' title='读取引用'>读取: ${escapeHtml(v.name)}${isMiss ? ' (未初始化)' : ''}</span>`);
+        });
+
+        return `
+          <div class='td-mgr-row ${em.missingInitVars.length > 0 ? 'is-active' : ''}'>
+            <div class='td-mgr-row-head'>
+              <div style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;'>
+                <span class='td-idx-badge'>${em.listName === 'prompts_unused' ? '池' : ''}#${em.idx + 1}</span>
+                <span class='td-mgr-row-title' title='${escapeHtml(em.name)}'>${escapeHtml(em.name)}</span>
+              </div>
+              <div style='display:flex;gap:4px;align-items:center;flex-shrink:0;'>
+                ${em.missingInitVars.length > 0
+                  ? `<span class='td-mode-tag del'>${em.missingInitVars.length} 项待初始化</span>`
+                  : `<span class='td-mode-tag ok'>已就绪</span>`}
+                <span class='td-src-badge'>${em.enabled ? '开' : '关'}</span>
+              </div>
+            </div>
+            <div class='td-var-chips'>${allChips.join('')}</div>
+            <div class='td-mgr-row-actions'>
+              ${em.missingInitVars.length > 0 ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>一键初始化本条目 (${em.missingInitVars.length})</button>` : ''}
+              <button type='button' class='td-btn sm' data-action='pv-jump-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>定位条目</button>
+            </div>
+          </div>`;
+      }).join('') || "<div class='td-group-empty'>没有匹配的含变量条目</div>";
+    } else {
+      const filteredVars = report.variables.filter((v) => {
+        if (filter === 'unregistered' && !needsInit(v)) return false;
+        if (filter === 'registered' && v.status !== 'initialized') return false;
+        if (filter === 'unused' && v.status !== 'unused_init') return false;
+        if (!q) return true;
+        return v.name.toLowerCase().includes(q)
+          || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q));
+      });
+
+      listHtml = filteredVars.map((v) => {
+        const badge = v.status === 'uninit_def'
+          ? "<span class='td-mode-tag del'>赋值未初始化</span>"
+          : (v.status === 'uninit_ref'
+            ? "<span class='td-mode-tag single'>仅引用未初始化</span>"
+            : (v.status === 'inactive_init'
+              ? "<span class='td-mode-tag del'>初始化未生效</span>"
+              : (v.status === 'unused_init'
+                ? "<span class='td-mode-tag single'>已初始化未引用</span>"
+                : "<span class='td-mode-tag ok'>已初始化</span>")));
+        const needReg = needsInit(v);
+        const initMacro = v.isGlobal ? `{{setglobalvar::${v.name}::}}` : `{{setvar::${v.name}::}}`;
+        const readMacro = v.isGlobal ? `{{getglobalvar::${v.name}}}` : `{{getvar::${v.name}}}`;
+        const orderWarn = v.orderIssue
+          ? `<span class='td-mode-tag single' title='主列表 #${v.orderIssue.firstUseIdx + 1} 先于初始化条目 #${v.orderIssue.firstInitIdx + 1}'>顺序靠后(#${v.orderIssue.firstUseIdx + 1}先用)</span>`
+          : '';
+
+        return `
+          <div class='td-mgr-row ${needReg ? 'is-active' : ''}'>
+            <div class='td-mgr-row-head'>
+              <div style='display:flex;align-items:center;gap:5px;min-width:0;flex:1;flex-wrap:wrap;'>
+                ${badge}
+                ${v.isGlobal ? "<span class='td-src-badge'>全局</span>" : ''}
+                ${orderWarn}
+                <span class='td-mgr-row-title' style='font-family:ui-monospace,monospace;' title='${escapeHtml(v.name)}'>${escapeHtml(v.name)}</span>
+              </div>
+              <span class='td-src-badge'>读 ${v.reads.length} · 改 ${v.assigns.length}</span>
+            </div>
+            <div class='td-var-locs'>
+              ${formatLocBadges(v.inits, '初始化于') || `<div class='td-var-loc is-miss'><strong>初始化状态：</strong>尚未初始化（缺少 ${escapeHtml(initMacro)}）</div>`}
+              ${formatLocBadges(v.assigns, '赋值/修改')}
+              ${formatLocBadges(v.reads, '读取引用') || "<div class='td-var-loc'><strong>读取引用：</strong>预设内暂无读取（可能由世界书或正则读取）</div>"}
+            </div>
+            <div class='td-mgr-row-actions'>
+              ${needReg ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-one' data-vkey='${escapeHtml(v.key)}'>一键初始化</button>` : ''}
+              <button type='button' class='td-btn sm' data-action='pv-copy-macro' data-macro='${escapeHtml(initMacro)}'>复制初始化宏</button>
+              <button type='button' class='td-btn sm' data-action='pv-copy-macro' data-macro='${escapeHtml(readMacro)}'>复制读取宏</button>
+            </div>
+          </div>`;
+      }).join('') || "<div class='td-group-empty'>未检测到匹配的变量宏</div>";
+    }
+
+    previewLayerEl.classList.add('is-open');
+    previewLayerEl.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>变量初始化检测 · ${escapeHtml(state.modal.presetName === 'in_use' ? state.presetName : state.modal.presetName)}</div>
+          <div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='pmVarCheck' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+        </div>
+        <div class='td-modal-body td-picker-body' style='gap:7px;'>
+          <div class='td-pv-target-bar'>
+            <span class='td-bar-label' style='width:auto;font-size:11.5px;'>写入</span>
+            <select class='td-select' id='td-pv-target-sel' style='height:30px;font-size:12px;'>${targetOpts}</select>
+            ${report.stats.needInit > 0
+              ? `<button type='button' class='td-btn sm warn' data-action='pv-reg-all'>一键初始化 (${report.stats.needInit})</button>
+                 <button type='button' class='td-icon-btn' data-action='pv-copy-missing' title='复制全部缺失初始化宏' style='width:28px;height:28px;'>${ICONS.copy}</button>`
+              : "<span class='td-mode-tag ok'>✓ 均已初始化</span>"}
+          </div>
+
+          <div class='td-ai-sec-row' style='gap:6px;'>
+            <div class='td-pv-seg'>
+              <button type='button' class='td-pv-seg-btn ${tab === 'vars' ? 'active' : ''}' data-action='pv-set-tab' data-tab='vars'>变量 (${report.stats.total})</button>
+              <button type='button' class='td-pv-seg-btn ${tab === 'entries' ? 'active' : ''}' data-action='pv-set-tab' data-tab='entries'>条目 (${report.entries.length})</button>
+            </div>
+            <div class='td-search-input-wrap' style='flex:1;min-width:100px;'>
+              <input class='td-input' id='td-pv-search' type='text' placeholder='搜索变量或条目...' value='${escapeHtml(vc.query || '')}' style='height:30px;font-size:12.5px;padding:0 ${vc.query ? '26px' : '9px'} 0 9px;border-radius:8px;' />
+              ${vc.query ? `<button type='button' class='td-search-clear' data-action='pv-clear-search' title='清空' style='width:22px;height:22px;right:4px;'>${ICONS.close}</button>` : ''}
+            </div>
+          </div>
+
+          <div class='td-filter-bar td-snap-filter-bar'>
+            <button type='button' class='td-chip ${filter === 'all' ? 'active' : ''}' data-action='pv-set-filter' data-filter='all'>全部</button>
+            <button type='button' class='td-chip ${filter === 'unregistered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unregistered'>需处理 (${report.stats.needInit})</button>
+            <button type='button' class='td-chip ${filter === 'registered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='registered'>已就绪 (${report.stats.initialized})</button>
+            ${tab === 'vars' ? `<button type='button' class='td-chip ${filter === 'unused' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unused'>仅初始化 (${report.stats.unusedInit})</button>` : ''}
+          </div>
+
+          <div class='td-picker-list td-scroll'>${listHtml}</div>
+        </div>
+        <div class='td-modal-foot'>
+          <button type='button' class='td-btn primary' data-action='close-preview'>完成</button>
+        </div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+    return true;
+  },
+
+  handleClick(e, actionEl, action) {
+    if (state.previewCtx?.type !== 'pmVarCheck' || state.modal?.type !== 'presetDetail') return false;
+    const vc = state.previewCtx;
+    const data = state.modal.data;
+
+    if (action === 'pv-set-tab') {
+      vc.tab = actionEl.getAttribute('data-tab') === 'entries' ? 'entries' : 'vars';
+      if (vc.tab === 'entries' && vc.filter === 'unused') vc.filter = 'all';
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'pv-set-filter') {
+      vc.filter = actionEl.getAttribute('data-filter') || 'all';
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'pv-clear-search') {
+      vc.query = '';
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'pv-copy-macro') {
+      const macro = actionEl.getAttribute('data-macro') || '';
+      copyToClipboard(macro).then(() => notify('success', `已复制：${macro}`)).catch(() => notify('error', '复制失败'));
+      return true;
+    }
+    if (action === 'pv-copy-missing') {
+      const report = analyzePresetVariables(data);
+      const text = buildInitMacroListText(report.stats.needInitList);
+      if (!text) { notify('info', '没有缺失初始化的变量'); return true; }
+      copyToClipboard(text).then(() => notify('success', `已复制 ${report.stats.needInitList.length} 个初始化宏`)).catch(() => notify('error', '复制失败'));
+      return true;
+    }
+    if (action === 'pv-reg-one' || action === 'pv-reg-entry' || action === 'pv-reg-all') {
+      const report = analyzePresetVariables(data);
+      let specs = [];
+      if (action === 'pv-reg-one') {
+        const v = report.variables.find((x) => x.key === actionEl.getAttribute('data-vkey'));
+        if (v) specs = [v];
+      } else if (action === 'pv-reg-entry') {
+        const ln = actionEl.getAttribute('data-list');
+        const idx = Number(actionEl.getAttribute('data-idx'));
+        const em = report.entries.find((x) => x.listName === ln && x.idx === idx);
+        if (em) specs = em.missingInitVars;
+      } else {
+        specs = report.stats.needInitList;
+      }
+      if (specs.length === 0) { notify('info', '没有需要初始化的变量'); return true; }
+
+      try {
+        const added = initializeVariablesToTarget(data, specs, vc.targetSpec);
+        if (added > 0) {
+          state.modal.dirty = true;
+          if (vc.targetSpec === '__new__') vc.targetSpec = 'prompts::0';
+          uiCtx.renderPreviewModal();
+          uiCtx.renderModal();
+          notify('success', `已一键初始化 ${added} 个变量（请记得点击「保存预设」持久化）`);
+        } else {
+          notify('info', '目标条目已包含所选变量的初始化宏');
+        }
+      } catch (err) {
+        notify('error', err.message || String(err));
+      }
+      return true;
+    }
+    if (action === 'pv-jump-entry') {
+      const ln = actionEl.getAttribute('data-list') || 'prompts';
+      const idx = Number(actionEl.getAttribute('data-idx'));
+      state.previewCtx = null;
+      state.modal.tab = ln === 'prompts_unused' ? 'unused' : 'prompts';
+      state.modal.query = '';
+      uiCtx.renderPreviewModal();
+      uiCtx.renderModal();
+      requestAnimationFrame(() => {
+        const modalLayerEl = uiCtx.getModalLayer();
+        const box = modalLayerEl?.querySelector('.td-picker-list');
+        const row = box?.querySelector(`.td-mgr-row[data-idx='${idx}']`);
+        if (box && row) {
+          const boxRect = box.getBoundingClientRect();
+          const rowRect = row.getBoundingClientRect();
+          box.scrollTo({ top: box.scrollTop + (rowRect.top - boxRect.top) - 8, behavior: 'smooth' });
+          row.style.transition = 'box-shadow 0.25s ease';
+          row.style.boxShadow = '0 0 0 2px var(--td-accent)';
+          setTimeout(() => { if (row.isConnected) row.style.boxShadow = ''; }, 1600);
+        }
+      });
+      return true;
+    }
+
+    return false;
+  },
+
+  handleInput(e) {
+    if (state.previewCtx?.type !== 'pmVarCheck') return false;
+    if (e.target?.id === 'td-pv-search') {
+      state.previewCtx.query = e.target.value;
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    return false;
+  },
+
+  handleChange(e) {
+    if (state.previewCtx?.type !== 'pmVarCheck') return false;
+    if (e.target?.id === 'td-pv-target-sel') {
+      state.previewCtx.targetSpec = e.target.value;
+      return true;
+    }
+    return false;
+  },
+};

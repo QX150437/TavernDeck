@@ -19,6 +19,11 @@ import {
 } from './ui-common.js';
 import { handleQuickInsertClick } from './ui-snippets.js';
 import {
+  syncEditorSearchHighlights, handleEditorSearchClick,
+  handleEditorSearchInput, handleEditorSearchKeydown,
+} from './ui-editor-search.js';
+import { presetVarsUiModule } from './ui-preset-vars.js';
+import {
   getViewportRect, getDefaultPanelSize, getPanelSize, syncOverlayBounds, repositionUI,
   wakeOrb, scheduleOrbIdle, applyOrbVisualState, updateStickyGroupHeaders, bindBodyStickyScroll,
   bindDragListeners, unbindDragListeners,
@@ -36,13 +41,16 @@ import { aiAssistantUiModule } from './ui-ai-assistant.js';
 import { mvuUiModule } from './ui-mvu.js';
 import { settingsUiModule, renderSelectPopup } from './ui-settings.js';
 import { toolsUiModule } from './ui-tools.js';
+import { helpUiModule, renderHelpModal } from './ui-help.js';
 
 const UI_MODULES = [
+  helpUiModule,
   mergeDialogsUiModule,
   mergePanelUiModule,
   groupsUiModule,
   snapshotsUiModule,
   presetsUiModule,
+  presetVarsUiModule,
   worldbooksUiModule,
   aiAssistantUiModule,
   mvuUiModule,
@@ -59,6 +67,7 @@ let modalLayerEl = null;
 let previewLayerEl = null;
 let selectLayerEl = null;
 let confirmLayerEl = null;
+let helpLayerEl = null;
 
 export function syncTopBarUI() {
   syncTopBarButton(ICONS.deck, () => setPanelOpen(!state.panelOpen), state.panelOpen);
@@ -316,6 +325,7 @@ export function renderMain() {
         <button class='td-icon-btn ${showCtrl ? 'is-active' : ''}' data-action='toggle-control-bar' title='方案与预设栏'>${ICONS.sliders}</button>
         <button class='td-icon-btn' data-action='toggle-fullscreen' title='${isFs ? '退出全屏' : '全屏显示'}'>${isFs ? ICONS.minimize : ICONS.maximize}</button>
         <button class='td-icon-btn' data-action='open-settings' title='设置与主题'>${ICONS.settings}</button>
+        <button class='td-icon-btn' data-action='open-help' data-help-key='main' title='功能说明'>${ICONS.help}</button>
         <button class='td-icon-btn' data-action='close-panel' title='收起面板'>${ICONS.close}</button>
       </div>
     </div>
@@ -446,6 +456,7 @@ export function setPanelOpen(open, force = false) {
     state.snapshotDetailCtx = null;
     state.selectPopup = null;
     state.confirmModal = null;
+    state.helpTopic = null;
     state.activeItemDrawerId = null;
     panelEl.classList.remove('is-open');
     renderMain();
@@ -453,6 +464,7 @@ export function setPanelOpen(open, force = false) {
     renderPreviewModal();
     renderSelectPopup();
     renderConfirmModal();
+    renderHelpModal();
     renderOrb();
     syncTopBarUI();
   }
@@ -490,6 +502,11 @@ function handleRootClickCapture(e) {
 
 function handleRootClick(e) {
   if (Date.now() < getSuppressClickUntil()) { e.preventDefault(); e.stopPropagation(); return; }
+  if (e.target === helpLayerEl) {
+    state.helpTopic = null;
+    renderHelpModal();
+    return;
+  }
   if (e.target === confirmLayerEl) {
     const cancelFn = state.confirmModal?.onCancel;
     state.confirmModal = null;
@@ -522,7 +539,14 @@ function handleRootClick(e) {
   }
 
   const actionEl = e.target.closest('[data-action]');
-  if (!actionEl) return;
+  if (!actionEl) {
+    const titleEl = e.target.closest('.td-modal-title, .td-dual-pane-title');
+    if (titleEl && (titleEl.scrollHeight > titleEl.clientHeight + 2 || titleEl.scrollWidth > titleEl.clientWidth + 2)) {
+      const fullText = (titleEl.getAttribute('title') || titleEl.textContent || '').trim();
+      if (fullText) notify('info', fullText, { title: '完整标题', forceShow: true, duration: 4500 });
+    }
+    return;
+  }
   const action = actionEl.getAttribute('data-action');
 
   if (actionEl.closest('[data-stop-collapse]') && action === 'toggle-collapse') return;
@@ -638,6 +662,7 @@ function handleRootClick(e) {
       editHistory.index--;
       applyPreviewSnapshot(editHistory.stack[editHistory.index]);
       updatePreviewHistoryButtons();
+      syncEditorSearchHighlights('td-edit-content', previewLayerEl, false);
     }
     return;
   }
@@ -646,7 +671,11 @@ function handleRootClick(e) {
       editHistory.index++;
       applyPreviewSnapshot(editHistory.stack[editHistory.index]);
       updatePreviewHistoryButtons();
+      syncEditorSearchHighlights('td-edit-content', previewLayerEl, false);
     }
+    return;
+  }
+  if (action.startsWith('es-') && handleEditorSearchClick(e, actionEl, action, previewLayerEl)) {
     return;
   }
   if (action.startsWith('qi-') && handleQuickInsertClick(e, actionEl, action, {
@@ -667,9 +696,11 @@ function handleRootClick(e) {
 
 function handleRootInput(e) {
   if (!e.target) return;
-  if (previewLayerEl && previewLayerEl.contains(e.target)
-    && (state.previewCtx?.type === 'mergeCustom' || state.previewCtx?.type === 'wbMergeCustom')) {
-    scheduleActiveMergeDraftSave(previewLayerEl);
+  if (previewLayerEl && previewLayerEl.contains(e.target)) {
+    if (handleEditorSearchInput(e, previewLayerEl)) return;
+    if (state.previewCtx?.type === 'mergeCustom' || state.previewCtx?.type === 'wbMergeCustom') {
+      scheduleActiveMergeDraftSave(previewLayerEl);
+    }
   }
 
   for (let i = 0; i < UI_MODULES.length; i++) {
@@ -703,6 +734,7 @@ function handleRootChange(e) {
 }
 
 function handleRootKeydown(e) {
+  if (previewLayerEl && handleEditorSearchKeydown(e, previewLayerEl)) return;
   if (e.key === 'Enter' && !e.isComposing && e.target) {
     if (e.target.id === 'td-sp-color-input') selectLayerEl.querySelector("[data-action='select-popup-apply-color']")?.click();
     else if (e.target.id === 'td-move-idx-input') selectLayerEl.querySelector("[data-action='move-by-number']")?.click();
@@ -748,8 +780,10 @@ export function mountUI() {
   previewLayerEl = document.createElement('div'); previewLayerEl.className = 'td-preview-layer';
   selectLayerEl = document.createElement('div'); selectLayerEl.className = 'td-select-layer';
   confirmLayerEl = document.createElement('div'); confirmLayerEl.className = 'td-confirm-layer';
+  helpLayerEl = document.createElement('div'); helpLayerEl.className = 'td-help-layer';
   rootEl.appendChild(orbEl); rootEl.appendChild(panelEl); rootEl.appendChild(modalLayerEl);
   rootEl.appendChild(previewLayerEl); rootEl.appendChild(selectLayerEl); rootEl.appendChild(confirmLayerEl);
+  rootEl.appendChild(helpLayerEl);
   document.body.appendChild(rootEl);
 
   setUiContext({
@@ -762,6 +796,7 @@ export function mountUI() {
     getPreviewLayer: () => previewLayerEl,
     getSelectLayer: () => selectLayerEl,
     getConfirmLayer: () => confirmLayerEl,
+    getHelpLayer: () => helpLayerEl,
     getModules: () => UI_MODULES,
     getViewportRect,
     getPanelSize,
@@ -778,6 +813,7 @@ export function mountUI() {
     renderPreviewModal: () => renderPreservingFocus(previewLayerEl, renderPreviewModal),
     renderSelectPopup,
     renderConfirmModal,
+    renderHelpModal,
     syncTopBarUI,
     syncExtensionButton,
     applyThemeAttributes,
@@ -808,5 +844,5 @@ export function cleanupDOM() {
   document.getElementById(EXT_SETTINGS_ID)?.remove();
   document.getElementById('tavern-deck-top-bar-btn')?.remove();
   document.getElementById(ROOT_ID)?.remove();
-  rootEl = orbEl = panelEl = panelMainEl = resizeHandleEl = modalLayerEl = previewLayerEl = selectLayerEl = confirmLayerEl = null;
+  rootEl = orbEl = panelEl = panelMainEl = resizeHandleEl = modalLayerEl = previewLayerEl = selectLayerEl = confirmLayerEl = helpLayerEl = null;
 }

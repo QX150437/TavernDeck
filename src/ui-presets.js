@@ -12,6 +12,7 @@ import {
   editHistory, readPreviewSnapshot, updatePreviewHistoryButtons, pushEditSnapshot,
 } from './ui-common.js';
 import { renderQuickInsertHtml } from './ui-snippets.js';
+import { renderSearchableTextareaHtml, bindEditorSearchEvents } from './ui-editor-search.js';
 
 function syncPresetDetailDirty(m) {
   if (!m || m.type !== 'presetDetail') return false;
@@ -85,7 +86,7 @@ export const presetsUiModule = {
 
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
-          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.layers} 预设管理 (${info.list.length})</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+          <div class='td-modal-head'><div class='td-modal-title'>${ICONS.layers} 预设管理 (${info.list.length})</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='presetManager' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
           <div class='td-modal-body td-picker-body'>
             <div class='td-mgr-topbar'>
               <input class='td-input' id='td-pm-search' type='text' placeholder='搜索预设名称...' value='${escapeHtml(m.query || '')}' />
@@ -144,6 +145,7 @@ export const presetsUiModule = {
                 <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
                   ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='pm-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
                   <span class='td-idx-badge'>#${idx + 1}</span>
+                  ${p.extra?.tdAiTag ? `<span class='td-mode-tag ok'>${escapeHtml(p.extra.tdAiTag)}</span>` : ''}
                   <span class='td-mgr-row-title' title='${escapeHtml(p.name || p.id)}'>${escapeHtml(p.name || p.id)}</span>
                 </div>
                 <div style='display:flex;align-items:center;gap:7px;flex-shrink:0;'>
@@ -161,30 +163,34 @@ export const presetsUiModule = {
             </div>`;
         }).join('');
         bodyHtml = `
-          <div class='td-mgr-topbar'>
-            <input class='td-input' id='td-pm-detail-search' type='text' placeholder='搜索序号、名称、ID 或正文...' value='${escapeHtml(m.query || '')}' />
-            <button class='td-btn sm primary' data-action='pm-add-prompt' data-list='${listName}'>${ICONS.plus} 新增</button>
-            <button class='td-icon-btn ${m.toolsOpen || batchMode ? 'is-active' : ''}' data-action='pm-detail-toggle-tools' title='跳转、批量移动与 AI 编辑'>${ICONS.more}</button>
-          </div>
-          <div class='td-mgr-subtools ${m.toolsOpen || batchMode ? 'is-open' : ''}'>
-            <div style='display:inline-flex;align-items:center;gap:4px;'>
-              <input class='td-input' id='td-pm-jump-idx' type='number' min='1' max='${Math.max(1, list.length)}' placeholder='序号' value='${escapeHtml(m.jumpVal || '')}' style='width:68px;height:27px;padding:0 6px;font-size:12px;text-align:center;' />
-              <button class='td-btn sm' data-action='pm-jump-idx' title='跳转到指定序号'>跳转</button>
+          <div class='td-compact-bar'>
+            <div class='td-search-input-wrap' style='flex:1;min-width:105px;'>
+              <input class='td-input' id='td-pm-detail-search' type='text' placeholder='搜索序号/名称/正文...' value='${escapeHtml(m.query || '')}' style='height:30px;font-size:12.5px;padding:0 ${m.query ? '24px' : '9px'} 0 9px;border-radius:8px;' />
+              ${m.query ? `<button type='button' class='td-search-clear' data-action='pm-clear-detail-search' title='清空搜索' style='width:22px;height:22px;right:3px;'>${ICONS.close}</button>` : ''}
             </div>
-            <button class='td-btn sm ${batchMode ? 'primary' : ''}' data-action='pm-toggle-batch'>${batchMode ? `退出批量 (已选 ${selectedSet.size})` : '批量选择移动'}</button>
-            ${batchMode ? `<button class='td-btn sm warn' data-action='pm-batch-move'>批量移动到...</button>` : ''}
-            ${batchMode && tab === 'unused' ? `<button class='td-btn sm primary' data-action='pm-batch-join'>批量加入主列表</button>` : ''}
-            <button class='td-btn sm warn' data-action='pm-open-ai-edit'>${ICONS.sliders} AI 智能编辑</button>
+            <div class='td-jump-group'>
+              <input class='td-input' id='td-pm-jump-idx' type='number' min='1' max='${Math.max(1, list.length)}' placeholder='#序号' value='${escapeHtml(m.jumpVal || '')}' />
+              <button type='button' class='td-btn xs' data-action='pm-jump-idx' title='跳转到指定序号'>跳转</button>
+            </div>
+            <button type='button' class='td-btn sm primary' data-action='pm-add-prompt' data-list='${listName}' style='min-height:30px;'>${ICONS.plus} 新增</button>
+          </div>
+          <div class='td-compact-actions'>
+            <button type='button' class='td-btn xs ${batchMode ? 'primary' : ''}' data-action='pm-toggle-batch'>${batchMode ? `退出批量 (${selectedSet.size})` : '批量移动'}</button>
+            ${batchMode ? `<button type='button' class='td-btn xs warn' data-action='pm-batch-move'>移动所选</button>` : ''}
+            ${batchMode && tab === 'unused' ? `<button type='button' class='td-btn xs primary' data-action='pm-batch-join'>加入主列表</button>` : ''}
+            <button type='button' class='td-btn xs' data-action='pm-open-var-check'>${ICONS.code} 变量检测</button>
+            <button type='button' class='td-btn xs warn' data-action='pm-open-ai-edit'>${ICONS.sliders} AI 编辑</button>
           </div>
           <div class='td-picker-list td-scroll'>${rows || "<div class='td-group-empty'>暂无匹配条目</div>"}</div>`;
       }
 
       const isDirty = syncPresetDetailDirty(m);
+      const detailTitle = `预设编辑 · ${m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName}`;
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
-            <div class='td-modal-title'>预设编辑 · ${escapeHtml(m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName)}</div>
-            <div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='pm-open-snapshots'>${ICONS.camera} 快照</button><button class='td-btn sm' data-action='pm-back-list'>返回</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
+            <div class='td-modal-title' title='${escapeHtml(detailTitle)}'>${escapeHtml(detailTitle)}</div>
+            <div class='td-modal-head-actions'><button class='td-btn sm' data-action='pm-open-snapshots'>${ICONS.camera} 快照</button><button class='td-btn sm' data-action='pm-back-list'>返回</button><button class='td-icon-btn' data-action='open-help' data-help-key='presetDetail' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body td-picker-body'>
             <div class='td-source-tabs cols-3'>
@@ -215,10 +221,11 @@ export const presetsUiModule = {
           </div>
           <div class='td-modal-body'>
             <div class='td-field'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(p.name || '')}' /></div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>提示词正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:220px;'>${escapeHtml(typeof p.content === 'string' ? p.content : '')}</textarea></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:0;'><label class='td-label'>提示词正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: typeof p.content === 'string' ? p.content : '', minHeight: '200px' })}</div>
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='pm-save-content'>${ICONS.save} 应用到预设</button></div>
         </div>`;
+      bindEditorSearchEvents(previewLayerEl);
       editHistory.stack = [readPreviewSnapshot()];
       editHistory.index = 0;
       updatePreviewHistoryButtons();
@@ -234,7 +241,7 @@ export const presetsUiModule = {
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
             <div class='td-modal-title'>${state.previewCtx.isNew ? '新增预设条目' : `条目属性 · ${escapeHtml(p.name || p.id)}`}</div>
-            <div style='display:flex;gap:4px;'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+            <div class='td-modal-head-actions'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='open-help' data-help-key='pmPromptEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body'>
             <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(p.name || '')}' /></div><label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-pm-p-enabled' ${p.enabled ? 'checked' : ''} /><span>启用</span></label></div>
@@ -244,10 +251,11 @@ export const presetsUiModule = {
               <div class='td-field'><label class='td-label'>深度 (Depth, @D有效)</label><input class='td-input' id='td-pm-p-depth' type='number' value='${escapeHtml(p.position?.depth ?? 4)}' /></div>
               <div class='td-field'><label class='td-label'>顺序 (Order, @D有效)</label><input class='td-input' id='td-pm-p-order' type='number' value='${escapeHtml(p.position?.order ?? 100)}' /></div>
             </div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;'><label class='td-label'>提示词正文 ${isPlaceholder ? '（占位符条目一般留空）' : '（支持撤销/重做）'}</label>${renderQuickInsertHtml('td-edit-content')}<textarea class='td-textarea td-scroll' id='td-edit-content' style='flex:1;min-height:150px;'>${escapeHtml(typeof p.content === 'string' ? p.content : '')}</textarea></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:180px;'><label class='td-label'>提示词正文 ${isPlaceholder ? '（占位符条目一般留空）' : '（支持撤销/重做）'}</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: typeof p.content === 'string' ? p.content : '', minHeight: '150px' })}</div>
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='pm-save-prompt'>${ICONS.save} 确认</button></div>
         </div>`;
+      bindEditorSearchEvents(previewLayerEl);
       editHistory.stack = [readPreviewSnapshot()];
       editHistory.index = 0;
       updatePreviewHistoryButtons();
@@ -328,7 +336,7 @@ export const presetsUiModule = {
       return true;
     }
     if (action === 'pm-detail-tab' && state.modal?.type === 'presetDetail') { state.modal.tab = actionEl.getAttribute('data-tab') || 'prompts'; state.modal.selectedIdx = new Set(); uiCtx.renderModal(); return true; }
-    if (action === 'pm-detail-toggle-tools' && state.modal?.type === 'presetDetail') { state.modal.toolsOpen = !state.modal.toolsOpen; uiCtx.renderModal(); return true; }
+    if (action === 'pm-clear-detail-search' && state.modal?.type === 'presetDetail') { state.modal.query = ''; uiCtx.renderModal(); return true; }
     if (action === 'pm-jump-idx' && state.modal?.type === 'presetDetail') {
       const listName = state.modal.tab === 'unused' ? 'prompts_unused' : 'prompts';
       const list = state.modal.data[listName] || [];
@@ -487,9 +495,15 @@ export const presetsUiModule = {
       }).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('保存预设详情失败', err); notify('error', `保存失败: ${err.message || err}`); });
       return true;
     }
+    if (action === 'pm-open-var-check' && state.modal?.type === 'presetDetail') {
+      state.previewKey = null; state.snapshotDetailId = null;
+      state.previewCtx = { type: 'pmVarCheck', tab: 'vars', filter: 'all', query: '', targetSpec: '' };
+      uiCtx.renderPreviewModal();
+      return true;
+    }
     if (action === 'pm-open-ai-edit' && state.modal?.type === 'presetDetail') {
       state.previewKey = null; state.snapshotDetailId = null;
-      state.previewCtx = { type: 'pmAiEdit', step: 'setup', selectedKeys: new Set(), instruction: '', search: '', loading: false, results: [] };
+      state.previewCtx = { type: 'pmAiEdit', step: 'setup', selectedKeys: new Set(), refSelectedKeys: new Set(), refExpanded: false, refSearch: '', instruction: '', search: '', loading: false, results: [] };
       uiCtx.renderPreviewModal();
       return true;
     }

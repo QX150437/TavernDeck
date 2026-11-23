@@ -33,6 +33,7 @@ export const ICONS = {
   gripDots: "<svg viewBox='0 0 24 24' fill='currentColor'><circle cx='9' cy='6' r='1.7'/><circle cx='15' cy='6' r='1.7'/><circle cx='9' cy='12' r='1.7'/><circle cx='15' cy='12' r='1.7'/><circle cx='9' cy='18' r='1.7'/><circle cx='15' cy='18' r='1.7'/></svg>",
   save: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z'/><polyline points='17 21 17 13 7 13 7 21'/><polyline points='7 3 7 8 15 8'/></svg>",
   database: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><ellipse cx='12' cy='5' rx='9' ry='3'/><path d='M21 12c0 1.66-4 3-9 3s-9-1.34-9-3'/><path d='M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5'/></svg>",
+  help: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><line x1='12' y1='17' x2='12.01' y2='17'/></svg>",
 };
 
 export const THEME_OPTIONS = [
@@ -110,6 +111,7 @@ export const uiCtx = {
   getPreviewLayer: () => null,
   getSelectLayer: () => null,
   getConfirmLayer: () => null,
+  getHelpLayer: () => null,
   getModules: () => [],
   getViewportRect: () => ({ x: 0, y: 0, w: window.innerWidth || 1200, h: window.innerHeight || 800 }),
   getPanelSize: () => ({ w: 420, h: 560 }),
@@ -126,6 +128,7 @@ export const uiCtx = {
   renderPreviewModal: () => {},
   renderSelectPopup: () => {},
   renderConfirmModal: () => {},
+  renderHelpModal: () => {},
   openConfirm: () => {},
   syncTopBarUI: () => {},
   syncExtensionButton: () => {},
