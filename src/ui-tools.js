@@ -10,7 +10,7 @@ import {
   migrateLocalSnapshotsToBackend,
 } from './store.js';
 import { syncNativePresetCollapse, syncNativeToastHook } from './native-ui.js';
-import { getDevLogs, clearDevLogs, formatLogsReport } from './dev-tools.js';
+import { getDevLogs, clearDevLogs, formatLogsReport, formatSingleLogReport } from './dev-tools.js';
 import { ICONS, uiCtx, formatByteSize, openConfirm } from './ui-common.js';
 
 export const toolsUiModule = {
@@ -241,9 +241,23 @@ export const toolsUiModule = {
             <div class='td-picker-list td-scroll'>
               ${logs.length === 0
                 ? "<div class='td-group-empty'>当前筛选下暂无日志记录</div>"
-                : logs.map((l) => {
+                : logs.map((l, idx) => {
                     const cls = l.level === 'ERR' ? 'is-err' : (l.level === 'WARN' ? 'is-warn' : 'is-info');
-                    return `<div class='td-log-row ${cls}'><span class='td-log-badge'>${escapeHtml(l.level)}</span><span>[${escapeHtml(l.time)}] ${escapeHtml(l.message)}</span></div>`;
+                    const hasExtra = !!(l.step || l.uiContext || l.trail || l.stack);
+                    return `
+                      <div class='td-log-row ${cls}'>
+                        <div class='td-log-head'>
+                          <span class='td-log-badge'>${escapeHtml(l.level)}</span>
+                          <span class='td-log-main'>[${escapeHtml(l.time)}] ${escapeHtml(l.message)}</span>
+                          <button type='button' class='td-btn xs' data-action='logs-copy-one' data-lidx='${idx}' title='复制本条日志'>复制</button>
+                        </div>
+                        ${(l.uiContext || l.step) ? `<div class='td-log-meta'>${l.uiContext ? `界面：${escapeHtml(l.uiContext)}` : ''}${l.uiContext && l.step ? ' · ' : ''}${l.step ? `步骤：${escapeHtml(l.step)}` : ''}</div>` : ''}
+                        ${hasExtra && (l.trail || l.stack) ? `
+                          <details class='td-log-details'>
+                            <summary>查看操作轨迹与堆栈</summary>
+                            <div class='td-log-detail-body'>${l.trail ? `<div><strong>近期步骤：</strong>\n${escapeHtml(l.trail)}</div>` : ''}${l.stack ? `<div style='margin-top:4px;'><strong>调用位置：</strong>\n${escapeHtml(l.stack)}</div>` : ''}</div>
+                          </details>` : ''}
+                      </div>`;
                   }).join('')}
             </div>
           </div>
@@ -464,6 +478,13 @@ export const toolsUiModule = {
     if (action === 'logs-clear' && state.modal?.type === 'logs') { clearDevLogs(); uiCtx.renderModal(); return true; }
     if (action === 'logs-copy' && state.modal?.type === 'logs') {
       copyToClipboard(formatLogsReport(state.modal.filter || 'ALL')).then(() => notify('success', '日志已复制到剪贴板')).catch((err) => { logError('复制日志失败', err); notify('error', '复制失败'); });
+      return true;
+    }
+    if (action === 'logs-copy-one' && state.modal?.type === 'logs') {
+      const list = getDevLogs(state.modal.filter || 'ALL');
+      const item = list[Number(actionEl.getAttribute('data-lidx'))];
+      if (!item) return true;
+      copyToClipboard(formatSingleLogReport(item)).then(() => notify('success', '该条日志已复制')).catch((err) => { logError('复制单条日志失败', err); notify('error', '复制失败'); });
       return true;
     }
     if (action === 'logs-export' && state.modal?.type === 'logs') {

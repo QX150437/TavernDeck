@@ -121,6 +121,120 @@ export function exportPresetFile(name) {
   notify('success', `已导出预设「${name}」`);
 }
 
+async function withAutoConfirmPresetImport(taskFn) {
+  const st = getST();
+  const PopupClass = st?.Popup;
+  const origShow = PopupClass?.prototype?.show;
+  const origGeneric = !origShow && typeof st?.callGenericPopup === 'function' ? st.callGenericPopup : null;
+  const origWinConfirm = typeof window !== 'undefined' ? window.confirm : null;
+  const affirmative = st?.POPUP_RESULT?.AFFIRMATIVE ?? 1;
+  let active = true;
+
+  const isImportConfirmPopup = (text, dlg) => {
+    if (!active) return false;
+    const t = String(text || '');
+    if (/正则|脚本|regex|script|预设|preset|导入|import|替换|覆盖|overwrite/i.test(t)) return true;
+    return !!dlg?.querySelector?.('.popup-button-cancel');
+  };
+
+  const ensureCheckboxesChecked = (container) => {
+    if (!container) return;
+    container.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      if (cb.disabled || cb.checked) return;
+      const lbl = (cb.closest('label')?.textContent || cb.parentElement?.textContent || '').trim();
+      if (!/不再|别再|don't|never|skip|忽略|取消/i.test(lbl)) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+  };
+
+  if (PopupClass?.prototype && typeof origShow === 'function') {
+    PopupClass.prototype.show = function (...args) {
+      const resPromise = origShow.apply(this, args);
+      try {
+        const dlg = this?.dlg;
+        if (isImportConfirmPopup(dlg?.textContent || '', dlg)) {
+          if (dlg) dlg.style.visibility = 'hidden';
+          ensureCheckboxesChecked(dlg);
+          setTimeout(() => {
+            try {
+              ensureCheckboxesChecked(dlg);
+              if (typeof this.completeAffirmative === 'function') {
+                this.completeAffirmative();
+              } else if (typeof this.complete === 'function') {
+                this.complete(affirmative);
+              } else {
+                dlg?.querySelector?.('.popup-button-ok')?.click();
+              }
+            } catch (e) {}
+          }, 0);
+        }
+      } catch (e) {}
+      return resPromise;
+    };
+  } else if (origGeneric && st) {
+    try {
+      st.callGenericPopup = async function (content, ...rest) {
+        const txt = typeof content === 'string' ? content : (content?.textContent || '');
+        if (active && isImportConfirmPopup(txt, null)) return affirmative;
+        return origGeneric.call(this, content, ...rest);
+      };
+    } catch (e) {}
+  }
+
+  let observer = null;
+  if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.body) {
+    observer = new MutationObserver((mutations) => {
+      if (!active) return;
+      mutations.forEach((m) => {
+        m.addedNodes.forEach((node) => {
+          if (!(node instanceof HTMLElement)) return;
+          const dlg = node.matches?.('dialog.popup, .popup') ? node : node.querySelector?.('dialog.popup, .popup');
+          if (!dlg || !isImportConfirmPopup(dlg.textContent || '', dlg)) return;
+          dlg.style.visibility = 'hidden';
+          ensureCheckboxesChecked(dlg);
+          setTimeout(() => {
+            try {
+              ensureCheckboxesChecked(dlg);
+              const okBtn = dlg.querySelector('.popup-button-ok, [data-result="1"], button.menu_button[data-ok]');
+              if (okBtn) okBtn.click();
+            } catch (e) {}
+          }, 0);
+        });
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  if (typeof window !== 'undefined' && typeof origWinConfirm === 'function') {
+    window.confirm = function (msg) {
+      if (active && /正则|脚本|regex|script|预设|preset|导入|import/i.test(String(msg || ''))) {
+        return true;
+      }
+      return origWinConfirm.apply(this, arguments);
+    };
+  }
+
+  try {
+    const result = await taskFn();
+    await new Promise((r) => setTimeout(r, 350));
+    return result;
+  } finally {
+    active = false;
+    if (observer) observer.disconnect();
+    if (PopupClass?.prototype && typeof origShow === 'function') {
+      PopupClass.prototype.show = origShow;
+    }
+    if (origGeneric && st) {
+      try { st.callGenericPopup = origGeneric; } catch (e) {}
+    }
+    if (typeof window !== 'undefined' && typeof origWinConfirm === 'function') {
+      window.confirm = origWinConfirm;
+    }
+  }
+}
+
 export async function importPresetFromFile(file) {
   const text = await file.text();
   const parsed = JSON.parse(text);
@@ -128,7 +242,7 @@ export async function importPresetFromFile(file) {
   if (parsed && typeof parsed === 'object' && parsed.settings && Array.isArray(parsed.prompts) && !parsed.prompt_order) {
     await callTH('createOrReplacePreset', baseName, parsed, { render: 'debounced' });
   } else if (hasTH('importRawPreset')) {
-    const ok = await callTH('importRawPreset', file.name, text);
+    const ok = await withAutoConfirmPresetImport(() => callTH('importRawPreset', file.name, text));
     if (!ok) throw new Error('导入预设失败，请检查文件格式是否为酒馆 OpenAI/对话补全预设');
   } else {
     throw new Error('当前酒馆助手版本不支持 importRawPreset');

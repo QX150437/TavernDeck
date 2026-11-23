@@ -706,6 +706,7 @@ export const aiAssistantUiModule = {
       let updated = 0;
       let added = 0;
       if (state.previewCtx.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
+        const addedByList = { prompts: [], prompts_unused: [] };
         (state.previewCtx.results || []).forEach((r) => {
           if (!r.accepted) return;
           if (r.writeMode === 'add') {
@@ -717,8 +718,7 @@ export const aiAssistantUiModule = {
               content: r.newContent,
             });
             newPrompt.extra = { tdAiTag: 'AI新增' };
-            state.modal.data[targetList] = state.modal.data[targetList] || [];
-            state.modal.data[targetList].push(newPrompt);
+            addedByList[targetList].push(newPrompt);
             added++;
           } else {
             const target = state.modal.data[r.listName]?.[r.index]; if (!target) return;
@@ -727,13 +727,20 @@ export const aiAssistantUiModule = {
             updated++;
           }
         });
+        ['prompts', 'prompts_unused'].forEach((ln) => {
+          if (addedByList[ln].length > 0) {
+            state.modal.data[ln] = state.modal.data[ln] || [];
+            state.modal.data[ln].unshift(...addedByList[ln]);
+          }
+        });
         if (updated + added > 0) state.modal.dirty = true;
         state.previewCtx = null; uiCtx.renderPreviewModal(); uiCtx.renderModal();
-        notify('success', `已写回预设草稿（修改 ${updated} 项，新增 ${added} 项，请点击「保存预设」持久化）`);
+        notify('success', `已写回预设草稿（修改 ${updated} 项，新增 ${added} 项置于顶部，请点击「保存预设」持久化）`);
         return true;
       }
       if (state.previewCtx.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
         let nextUid = (state.modal.entries || []).reduce((mx, x) => Math.max(mx, Number(x.uid) || 0), 0) + 1;
+        const addedEntries = [];
         (state.previewCtx.results || []).forEach((r) => {
           if (!r.accepted) return;
           if (r.writeMode === 'add') {
@@ -745,7 +752,7 @@ export const aiAssistantUiModule = {
             });
             newEntry.uid = nextUid++;
             newEntry.extra = { tdAiTag: 'AI新增' };
-            state.modal.entries.push(newEntry);
+            addedEntries.push(newEntry);
             added++;
           } else {
             const target = state.modal.entries?.[r.index]; if (!target) return;
@@ -755,9 +762,12 @@ export const aiAssistantUiModule = {
             updated++;
           }
         });
+        if (addedEntries.length > 0) {
+          state.modal.entries.unshift(...addedEntries);
+        }
         if (updated + added > 0) state.modal.dirty = true;
         state.previewCtx = null; uiCtx.renderPreviewModal(); uiCtx.renderModal();
-        notify('success', `已写回世界书草稿（修改 ${updated} 项，新增 ${added} 项，请点击「保存世界书」持久化）`);
+        notify('success', `已写回世界书草稿（修改 ${updated} 项，新增 ${added} 项置于顶部，请点击「保存世界书」持久化）`);
         return true;
       }
     }

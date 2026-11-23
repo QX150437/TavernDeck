@@ -3,6 +3,7 @@ import {
   hasTH, callTH, notify, escapeHtml, cssEscape, makeItemKey,
   logWarn, logError, syncNotifyRuntimeConfig,
 } from './utils.js';
+import { setDevUiContext, recordOpStep } from './dev-tools.js';
 import {
   state, saveStore, ensureSchemesPool, getVisibleSchemes, getActiveScheme, findGroupNode,
 } from './store.js';
@@ -424,11 +425,49 @@ function renderPreservingFocus(targetLayer, renderFn) {
   }
 }
 
+function describeCurrentUiLocation() {
+  if (!state.panelOpen) return '悬浮球/后台';
+  const parts = ['主面板'];
+  const m = state.modal;
+  if (m) {
+    const modalLabelMap = {
+      presetManager: '预设管理',
+      presetDetail: `预设编辑(${m.presetName || ''})`,
+      worldbookManager: '世界书管理',
+      worldbookDetail: `世界书条目(${m.bookName || ''})`,
+      snapshots: '快照中心',
+      snapshotRename: '重命名快照',
+      presetMergeSelect: '预设缝合选择',
+      presetMerge: '预设对比缝合',
+      wbMergeSelect: '世界书缝合选择',
+      wbMerge: '世界书对比缝合',
+      mvuViewer: 'MVU变量查看',
+      settings: '设置',
+      storageManager: '存储空间',
+      logs: '运行日志',
+      ioCenter: '导入导出中心',
+      picker: '条目选择器',
+      bindings: '方案绑定',
+      groupForm: '分组表单',
+      schemeForm: '方案表单',
+    };
+    parts.push(modalLabelMap[m.type] || m.type);
+  }
+  if (state.snapshotDetailId) parts.push('快照差异详情');
+  else if (state.previewCtx?.type) parts.push(state.previewCtx.type);
+  else if (state.previewKey) parts.push('条目预览编辑');
+  if (state.selectPopup?.type) parts.push(`二级弹窗:${state.selectPopup.type}`);
+  if (state.confirmModal) parts.push('确认弹窗');
+  if (state.helpTopic) parts.push(`帮助:${state.helpTopic}`);
+  return parts.join(' > ');
+}
+
 export function setPanelOpen(open, force = false) {
   if (!open && state.panelOpen && !force) {
     confirmDiscardDirtyModal(() => setPanelOpen(false, true));
     return;
   }
+  recordOpStep(open ? '打开总控台面板' : '关闭总控台面板');
   state.panelOpen = !!open;
   if (state.panelOpen) {
     wakeOrb();
@@ -540,14 +579,22 @@ function handleRootClick(e) {
 
   const actionEl = e.target.closest('[data-action]');
   if (!actionEl) {
-    const titleEl = e.target.closest('.td-modal-title, .td-dual-pane-title');
-    if (titleEl && (titleEl.scrollHeight > titleEl.clientHeight + 2 || titleEl.scrollWidth > titleEl.clientWidth + 2)) {
-      const fullText = (titleEl.getAttribute('title') || titleEl.textContent || '').trim();
+    const titleEl = e.target.closest('.td-modal-title, .td-dual-pane-title, .td-brand-title');
+    if (titleEl && (titleEl.scrollWidth > titleEl.clientWidth || titleEl.scrollHeight > titleEl.clientHeight + 1)) {
+      const fullText = (titleEl.getAttribute('data-full-title') || titleEl.getAttribute('title') || titleEl.textContent || '').replace(/\s+/g, ' ').trim();
       if (fullText) notify('info', fullText, { title: '完整标题', forceShow: true, duration: 4500 });
     }
     return;
   }
   const action = actionEl.getAttribute('data-action');
+  setDevUiContext(describeCurrentUiLocation());
+  const btnLabel = (actionEl.getAttribute('title') || actionEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 32);
+  const targetHint = actionEl.getAttribute('data-name')
+    || actionEl.getAttribute('data-snap-id')
+    || actionEl.getAttribute('data-item-key')
+    || actionEl.getAttribute('data-group-id')
+    || '';
+  recordOpStep(`点击${btnLabel ? `「${btnLabel}」` : ''} [${action}]`, targetHint);
 
   if (actionEl.closest('[data-stop-collapse]') && action === 'toggle-collapse') return;
   if (action === 'confirm-cancel') {
@@ -580,8 +627,8 @@ function handleRootClick(e) {
     return;
   }
   if (action === 'show-full-title') {
-    const fullTitle = actionEl.getAttribute('data-full-title') || actionEl.textContent || '';
-    if (fullTitle) notify('info', `完整对比标题：${fullTitle}`);
+    const fullTitle = (actionEl.getAttribute('data-full-title') || actionEl.textContent || '').replace(/\s+/g, ' ').trim();
+    if (fullTitle) notify('info', fullTitle, { title: '完整标题', forceShow: true, duration: 4500 });
     return;
   }
 
@@ -720,6 +767,9 @@ function handleRootInput(e) {
 
 function handleRootChange(e) {
   if (!e.target) return;
+  setDevUiContext(describeCurrentUiLocation());
+  const ctrlId = e.target.id || e.target.getAttribute('data-action') || e.target.tagName;
+  recordOpStep(`修改控件 (${ctrlId})`);
   if (previewLayerEl && previewLayerEl.contains(e.target)
     && (state.previewCtx?.type === 'mergeCustom' || state.previewCtx?.type === 'wbMergeCustom')) {
     scheduleActiveMergeDraftSave(previewLayerEl);

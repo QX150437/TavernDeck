@@ -1,4 +1,5 @@
 import { callTH, hasTH, getST, logWarn, formatKeysInput } from './utils.js';
+import { recordOpStep } from './dev-tools.js';
 
 const SOURCE_SELECT_IDS = {
   openai: 'model_openai_select',
@@ -122,6 +123,7 @@ function collectDomModels(source) {
 export async function fetchModelsForApiTarget(apiValue) {
   const st = getST();
   const normalized = normalizeApiTargetValue(apiValue);
+  recordOpStep('拉取 AI 模型列表', normalized || '跟随当前连接');
   const { profiles, proxies } = getAvailableApiTargets();
   const models = [];
   const addModels = (list) => {
@@ -352,6 +354,7 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
   }
   const userPrompt = blocks.join('\n\n');
 
+  recordOpStep('发送 AI 预设编辑请求', `待编辑 ${inputPayload.length} 项 / 参考 ${refPayload.length} 项`);
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
   const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
   const list = extractJsonFromAiReply(replyText);
@@ -460,6 +463,7 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
   }
   const userPrompt = blocks.join('\n\n');
 
+  recordOpStep('发送 AI 世界书编辑请求', `待编辑 ${inputPayload.length} 项 / 参考 ${refPayload.length} 项`);
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
   const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
   const list = extractJsonFromAiReply(replyText);
@@ -567,6 +571,7 @@ export async function runAiMvuUpdate({
     blocks.push(`【用户补充要求】\n${instruction.trim()}`);
   }
 
+  recordOpStep('发送 AI MVU 更新请求', `消息 ${messages?.length || 0} 条 / 规则 ${ruleEntries?.length || 0} 条`);
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
   const replyText = await runConfiguredAiRequest({
     jbPrompts,

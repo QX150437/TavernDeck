@@ -2,6 +2,7 @@ import {
   SCOPE_LABELS,
   getST, hasTH, callTH, notify, makeItemKey, logInfo, logWarn, logError,
 } from './utils.js';
+import { recordOpStep } from './dev-tools.js';
 import { state, saveStore, getActiveScheme, findGroupPath } from './store.js';
 
 let mutationQueue = Promise.resolve();
@@ -393,6 +394,7 @@ export function applyItemMutations(mutations) {
     return Promise.resolve(true);
   }
 
+  recordOpStep('提交条目开关队列', `变更 ${changedCount} 项`);
   pendingMutationOps++;
 
   const task = mutationQueue.then(async () => {
@@ -598,6 +600,7 @@ export function toggleMultiGroupAll(groupId) {
 export async function saveEditedEntry(itemKey, fields) {
   const item = state.catalog.byKey.get(itemKey);
   if (!item || state.isBusy) return false;
+  recordOpStep('持久化保存条目编辑', fields?.name || item.name);
   state.isBusy = true;
   try {
     const ref = item.ref;

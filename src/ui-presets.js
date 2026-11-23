@@ -1,4 +1,4 @@
-import { escapeHtml, notify, logError } from './utils.js';
+import { escapeHtml, notify, computeLineDiff, logError } from './utils.js';
 import { state } from './store.js';
 import { refreshAllCatalogs } from './catalog.js';
 import { saveInUseToPreset } from './preset-merge.js';
@@ -178,6 +178,7 @@ export const presetsUiModule = {
             <button type='button' class='td-btn xs ${batchMode ? 'primary' : ''}' data-action='pm-toggle-batch'>${batchMode ? `退出批量 (${selectedSet.size})` : '批量移动'}</button>
             ${batchMode ? `<button type='button' class='td-btn xs warn' data-action='pm-batch-move'>移动所选</button>` : ''}
             ${batchMode && tab === 'unused' ? `<button type='button' class='td-btn xs primary' data-action='pm-batch-join'>加入主列表</button>` : ''}
+            <button type='button' class='td-btn xs' data-action='pm-open-diff-compare'>${ICONS.gitMerge} Diff 比对${batchMode && selectedSet.size >= 2 ? ` (${selectedSet.size})` : ''}</button>
             <button type='button' class='td-btn xs' data-action='pm-open-var-check'>${ICONS.code} 变量检测</button>
             <button type='button' class='td-btn xs warn' data-action='pm-open-ai-edit'>${ICONS.sliders} AI 编辑</button>
           </div>
@@ -259,6 +260,196 @@ export const presetsUiModule = {
       editHistory.stack = [readPreviewSnapshot()];
       editHistory.index = 0;
       updatePreviewHistoryButtons();
+      uiCtx.syncOverlayBounds();
+      return true;
+    }
+
+    if (state.previewCtx?.type === 'pmDiffCompare' && state.modal?.type === 'presetDetail') {
+      const dc = state.previewCtx;
+      const allEntries = [];
+      ['prompts', 'prompts_unused'].forEach((ln) => {
+        (state.modal.data[ln] || []).forEach((p, idx) => {
+          const key = `${ln}::${idx}`;
+          const prefix = ln === 'prompts_unused' ? '池' : '主';
+          allEntries.push({
+            key,
+            listName: ln,
+            idx,
+            prompt: p,
+            badge: `${prefix}#${idx + 1}`,
+            name: p.name || p.id || `条目 #${idx + 1}`,
+            label: `[${prefix}#${idx + 1}] ${p.name || p.id || `条目 #${idx + 1}`}`,
+            content: typeof p.content === 'string' ? p.content : '',
+          });
+        });
+      });
+      const entryByKey = new Map(allEntries.map((x) => [x.key, x]));
+      dc.selectedKeys = (dc.selectedKeys || []).filter((k) => entryByKey.has(k));
+      const selectedSet = new Set(dc.selectedKeys);
+
+      if (dc.step === 'compare' && dc.selectedKeys.length >= 2) {
+        const selectedItems = dc.selectedKeys.map((k) => entryByKey.get(k)).filter(Boolean);
+        if (!selectedSet.has(dc.baseKey)) dc.baseKey = selectedItems[0].key;
+        if (!selectedSet.has(dc.pairKeyA)) dc.pairKeyA = selectedItems[0].key;
+        if (!selectedSet.has(dc.pairKeyB) || dc.pairKeyB === dc.pairKeyA) {
+          dc.pairKeyB = (selectedItems.find((x) => x.key !== dc.pairKeyA) || selectedItems[1]).key;
+        }
+        const compareMode = selectedItems.length > 2 && dc.compareMode === 'pair' ? 'pair' : 'base';
+        const onlyDiff = !!dc.onlyDiffLines;
+        if (!(dc.collapsedKeys instanceof Set)) dc.collapsedKeys = new Set();
+
+        let pairs = [];
+        let topBarHtml = '';
+        if (selectedItems.length === 2) {
+          const baseItem = entryByKey.get(dc.baseKey) || selectedItems[0];
+          const targetItem = selectedItems.find((x) => x.key !== baseItem.key) || selectedItems[1];
+          pairs = [{ base: baseItem, target: targetItem }];
+          const opts = selectedItems.map((it) => `<option value='${escapeHtml(it.key)}' ${it.key === baseItem.key ? 'selected' : ''}>${escapeHtml(it.label)}</option>`).join('');
+          topBarHtml = `
+            <div class='td-diff-ctl-row'>
+              <span class='td-bar-label' style='width:auto;'>基准(A)</span>
+              <select class='td-select' id='td-pm-diff-base-sel' style='height:30px;font-size:12px;'>${opts}</select>
+              <button type='button' class='td-btn sm' data-action='pm-diff-swap-ab'>${ICONS.swap} 互换 A/B</button>
+            </div>`;
+        } else if (compareMode === 'pair') {
+          const itemA = entryByKey.get(dc.pairKeyA) || selectedItems[0];
+          const itemB = entryByKey.get(dc.pairKeyB) || selectedItems[1];
+          pairs = [{ base: itemA, target: itemB }];
+          const optsA = selectedItems.map((it) => `<option value='${escapeHtml(it.key)}' ${it.key === itemA.key ? 'selected' : ''}>${escapeHtml(it.label)}</option>`).join('');
+          const optsB = selectedItems.map((it) => `<option value='${escapeHtml(it.key)}' ${it.key === itemB.key ? 'selected' : ''}>${escapeHtml(it.label)}</option>`).join('');
+          topBarHtml = `
+            <div class='td-form-grid' style='gap:6px;'>
+              <div class='td-field' style='gap:3px;'><span class='td-label' style='font-size:11px;'>基准条目 (A · -)</span><select class='td-select' id='td-pm-diff-pair-a' style='height:30px;font-size:12px;'>${optsA}</select></div>
+              <div class='td-field' style='gap:3px;'><span class='td-label' style='font-size:11px;'>对比条目 (B · +)</span><select class='td-select' id='td-pm-diff-pair-b' style='height:30px;font-size:12px;'>${optsB}</select></div>
+            </div>`;
+        } else {
+          const baseItem = entryByKey.get(dc.baseKey) || selectedItems[0];
+          pairs = selectedItems.filter((x) => x.key !== baseItem.key).map((target) => ({ base: baseItem, target }));
+          const opts = selectedItems.map((it) => `<option value='${escapeHtml(it.key)}' ${it.key === baseItem.key ? 'selected' : ''}>${escapeHtml(it.label)}</option>`).join('');
+          topBarHtml = `
+            <div class='td-diff-ctl-row'>
+              <span class='td-bar-label' style='width:auto;'>基准(-)</span>
+              <select class='td-select' id='td-pm-diff-base-sel' style='height:30px;font-size:12px;'>${opts}</select>
+            </div>`;
+        }
+
+        const cardsHtml = pairs.map(({ base, target }) => {
+          const isSame = base.content === target.content;
+          const allLines = isSame ? [] : computeLineDiff(base.content, target.content);
+          const delCnt = allLines.filter((l) => l.type === 'del').length;
+          const addCnt = allLines.filter((l) => l.type === 'add').length;
+          const showLines = onlyDiff ? allLines.filter((l) => l.type !== 'ctx') : allLines;
+          const isCollapsed = pairs.length > 1 && dc.collapsedKeys.has(target.key);
+          return `
+            <div class='td-merge-card'>
+              <div class='td-merge-head' data-action='pm-diff-toggle-card' data-key='${escapeHtml(target.key)}'>
+                <span class='td-idx-badge'>${escapeHtml(target.badge)}</span>
+                <span class='td-merge-title' title='${escapeHtml(target.name)}'>${escapeHtml(target.name)}</span>
+                ${isSame
+                  ? "<span class='td-mode-tag ok'>正文一致</span>"
+                  : `<span class='td-mode-tag single'>-${delCnt} / +${addCnt}</span>`}
+                ${selectedItems.length > 2 && compareMode === 'base'
+                  ? `<button type='button' class='td-btn xs' data-action='pm-diff-set-base' data-key='${escapeHtml(target.key)}' title='以此条目作为基准'>设为基准</button>`
+                  : ''}
+              </div>
+              ${!isCollapsed ? `
+                <div class='td-merge-body'>
+                  <div style='font-size:11px;color:var(--td-text-muted);'>对比基准：${escapeHtml(base.label)} → ${escapeHtml(target.label)}（仅正文）</div>
+                  ${isSame
+                    ? "<div class='td-group-empty' style='padding:10px;'>两条目提示词正文完全一致</div>"
+                    : `<div class='td-diff-box td-scroll' style='max-height:${pairs.length === 1 ? 'none' : '240px'};flex:1;'>${showLines.map((l) => `<div class='td-diff-line ${l.type}'>${l.type === 'add' ? '+ ' : (l.type === 'del' ? '- ' : '  ')}${escapeHtml(l.text)}</div>`).join('')}</div>`}
+                </div>` : ''}
+            </div>`;
+        }).join('');
+
+        previewLayerEl.classList.add('is-open');
+        previewLayerEl.innerHTML = `
+          <div class='td-modal td-modal-tall'>
+            <div class='td-modal-head'>
+              <div class='td-modal-title'>正文 Diff 比对 (已选 ${selectedItems.length} 项)</div>
+              <div class='td-modal-head-actions'>
+                <button type='button' class='td-icon-btn' data-action='open-help' data-help-key='pmDiffCompare' title='功能说明'>${ICONS.help}</button>
+                <button type='button' class='td-icon-btn' data-action='close-preview' title='关闭'>${ICONS.close}</button>
+              </div>
+            </div>
+            <div class='td-modal-body td-picker-body' style='gap:7px;'>
+              <div style='font-size:11.5px;color:var(--td-text-muted);flex-shrink:0;'>仅比对提示词正文（<span style='color:#f87171;'>- 基准条目</span> / <span style='color:#34d399;'>+ 对比条目</span>）</div>
+              ${topBarHtml}
+              <div class='td-filter-bar'>
+                ${selectedItems.length > 2 ? `
+                  <button type='button' class='td-chip ${compareMode === 'base' ? 'active' : ''}' data-action='pm-diff-set-mode' data-mode='base'>基准对照全部 (${selectedItems.length - 1})</button>
+                  <button type='button' class='td-chip ${compareMode === 'pair' ? 'active' : ''}' data-action='pm-diff-set-mode' data-mode='pair'>任意两条互比</button>` : ''}
+                <button type='button' class='td-chip ${onlyDiff ? 'active' : ''}' data-action='pm-diff-toggle-only-diff'>${onlyDiff ? '✓ 仅看差异行' : '仅看差异行'}</button>
+                <button type='button' class='td-chip' data-action='pm-diff-back-select'>重选条目 (${selectedItems.length})</button>
+              </div>
+              <div class='td-picker-list td-scroll'>${cardsHtml}</div>
+            </div>
+            <div class='td-modal-foot'>
+              <button type='button' class='td-btn' data-action='pm-diff-back-select'>修改选择</button>
+              <button type='button' class='td-btn primary' data-action='close-preview'>完成</button>
+            </div>
+          </div>`;
+        uiCtx.syncOverlayBounds();
+        return true;
+      }
+
+      dc.step = 'select';
+      const scope = dc.scopeFilter || 'all';
+      const q = (dc.search || '').trim().toLowerCase();
+      const visible = allEntries.filter((it) => {
+        if (scope === 'prompts' && it.listName !== 'prompts') return false;
+        if (scope === 'unused' && it.listName !== 'prompts_unused') return false;
+        if (scope === 'selected' && !selectedSet.has(it.key)) return false;
+        if (!q) return true;
+        return it.badge.toLowerCase().includes(q) || it.name.toLowerCase().includes(q) || it.content.toLowerCase().includes(q);
+      });
+
+      const rowsHtml = visible.map((it) => {
+        const checked = selectedSet.has(it.key);
+        const orderIdx = checked ? dc.selectedKeys.indexOf(it.key) + 1 : 0;
+        const isBase = checked && (dc.baseKey ? dc.baseKey === it.key : orderIdx === 1);
+        return `
+          <div class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:40px;padding:7px 10px;' data-action='pm-diff-toggle-key' data-key='${escapeHtml(it.key)}'>
+            <div class='td-picker-left'>
+              <input type='checkbox' class='td-checkbox' ${checked ? 'checked' : ''} tabindex='-1' />
+              <span class='td-idx-badge'>${escapeHtml(it.badge)}</span>
+              <span class='td-item-name' style='font-size:13px;' title='${escapeHtml(it.name)}'>${escapeHtml(it.name)}</span>
+            </div>
+            <div style='display:flex;align-items:center;gap:5px;flex-shrink:0;'>
+              ${isBase ? "<span class='td-mode-tag single'>基准</span>" : (checked ? `<button type='button' class='td-btn xs' data-action='pm-diff-set-base' data-key='${escapeHtml(it.key)}'>设为基准</button>` : '')}
+              <span class='td-src-badge'>${it.prompt.enabled ? '开' : '关'} · ${it.content.length}字</span>
+            </div>
+          </div>`;
+      }).join('') || "<div class='td-group-empty'>无匹配条目</div>";
+
+      previewLayerEl.classList.add('is-open');
+      previewLayerEl.innerHTML = `
+        <div class='td-modal td-modal-tall'>
+          <div class='td-modal-head'>
+            <div class='td-modal-title'>自由 Diff 比对 · 选择条目（仅正文）</div>
+            <div class='td-modal-head-actions'>
+              <button type='button' class='td-icon-btn' data-action='open-help' data-help-key='pmDiffCompare' title='功能说明'>${ICONS.help}</button>
+              <button type='button' class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+            </div>
+          </div>
+          <div class='td-modal-body td-picker-body' style='gap:7px;'>
+            <div style='font-size:12px;color:var(--td-text-muted);flex-shrink:0;'>自由勾选 2 个或更多条目（可跨主列表与未添加池），仅比对条目提示词正文。</div>
+            <input class='td-input' id='td-pm-diff-search' type='text' placeholder='搜索序号、条目名称或正文内容...' value='${escapeHtml(dc.search || '')}' style='height:34px;font-size:13px;' />
+            <div class='td-filter-bar'>
+              <button type='button' class='td-chip ${scope === 'all' ? 'active' : ''}' data-action='pm-diff-set-scope' data-scope='all'>全部</button>
+              <button type='button' class='td-chip ${scope === 'prompts' ? 'active' : ''}' data-action='pm-diff-set-scope' data-scope='prompts'>主列表</button>
+              <button type='button' class='td-chip ${scope === 'unused' ? 'active' : ''}' data-action='pm-diff-set-scope' data-scope='unused'>未添加池</button>
+              <button type='button' class='td-chip ${scope === 'selected' ? 'active' : ''}' data-action='pm-diff-set-scope' data-scope='selected'>已选 (${dc.selectedKeys.length})</button>
+              ${dc.selectedKeys.length > 0 ? `<button type='button' class='td-chip' data-action='pm-diff-clear-sel'>清空已选</button>` : ''}
+            </div>
+            <div class='td-picker-list td-scroll'>${rowsHtml}</div>
+          </div>
+          <div class='td-modal-foot'>
+            <span style='margin-right:auto;font-size:12px;color:var(--td-text-muted);'>已选 ${dc.selectedKeys.length} 项（至少选 2 项）</span>
+            <button type='button' class='td-btn' data-action='close-preview'>取消</button>
+            <button type='button' class='td-btn primary' data-action='pm-diff-start' ${dc.selectedKeys.length < 2 ? 'disabled' : ''}>开始比对 (${dc.selectedKeys.length})</button>
+          </div>
+        </div>`;
       uiCtx.syncOverlayBounds();
       return true;
     }
@@ -507,6 +698,85 @@ export const presetsUiModule = {
       uiCtx.renderPreviewModal();
       return true;
     }
+    if (action === 'pm-open-diff-compare' && state.modal?.type === 'presetDetail') {
+      state.previewKey = null; state.snapshotDetailId = null;
+      const listName = state.modal.tab === 'unused' ? 'prompts_unused' : 'prompts';
+      const batchKeys = state.modal.batchMode && state.modal.selectedIdx?.size >= 2
+        ? Array.from(state.modal.selectedIdx).sort((a, b) => a - b).map((i) => `${listName}::${i}`)
+        : [];
+      state.previewCtx = {
+        type: 'pmDiffCompare',
+        step: batchKeys.length >= 2 ? 'compare' : 'select',
+        selectedKeys: batchKeys,
+        baseKey: batchKeys[0] || '',
+        pairKeyA: batchKeys[0] || '',
+        pairKeyB: batchKeys[1] || '',
+        compareMode: 'base',
+        scopeFilter: 'all',
+        search: '',
+        onlyDiffLines: false,
+        collapsedKeys: new Set(),
+      };
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (state.previewCtx?.type === 'pmDiffCompare' && state.modal?.type === 'presetDetail') {
+      const dc = state.previewCtx;
+      if (action === 'pm-diff-set-base') {
+        e.stopPropagation();
+        const k = actionEl.getAttribute('data-key');
+        if (k) {
+          if (!dc.selectedKeys.includes(k)) dc.selectedKeys.push(k);
+          dc.baseKey = k;
+          uiCtx.renderPreviewModal();
+        }
+        return true;
+      }
+      if (action === 'pm-diff-toggle-key') {
+        if (e.target.closest("[data-action='pm-diff-set-base']")) return true;
+        const k = actionEl.getAttribute('data-key');
+        if (!k) return true;
+        const idx = dc.selectedKeys.indexOf(k);
+        if (idx >= 0) {
+          dc.selectedKeys.splice(idx, 1);
+          if (dc.baseKey === k) dc.baseKey = dc.selectedKeys[0] || '';
+        } else {
+          dc.selectedKeys.push(k);
+          if (!dc.baseKey) dc.baseKey = k;
+        }
+        uiCtx.renderPreviewModal();
+        return true;
+      }
+      if (action === 'pm-diff-set-scope') { dc.scopeFilter = actionEl.getAttribute('data-scope') || 'all'; uiCtx.renderPreviewModal(); return true; }
+      if (action === 'pm-diff-clear-sel') { dc.selectedKeys = []; dc.baseKey = ''; uiCtx.renderPreviewModal(); return true; }
+      if (action === 'pm-diff-start') {
+        if (dc.selectedKeys.length < 2) { notify('warning', '请至少选择 2 个条目进行比对'); return true; }
+        dc.step = 'compare';
+        if (!dc.selectedKeys.includes(dc.baseKey)) dc.baseKey = dc.selectedKeys[0];
+        dc.pairKeyA = dc.baseKey;
+        dc.pairKeyB = dc.selectedKeys.find((k) => k !== dc.pairKeyA) || dc.selectedKeys[1];
+        uiCtx.renderPreviewModal();
+        return true;
+      }
+      if (action === 'pm-diff-back-select') { dc.step = 'select'; uiCtx.renderPreviewModal(); return true; }
+      if (action === 'pm-diff-set-mode') { dc.compareMode = actionEl.getAttribute('data-mode') === 'pair' ? 'pair' : 'base'; uiCtx.renderPreviewModal(); return true; }
+      if (action === 'pm-diff-swap-ab') {
+        const other = dc.selectedKeys.find((k) => k !== dc.baseKey);
+        if (other) { dc.baseKey = other; uiCtx.renderPreviewModal(); }
+        return true;
+      }
+      if (action === 'pm-diff-toggle-only-diff') { dc.onlyDiffLines = !dc.onlyDiffLines; uiCtx.renderPreviewModal(); return true; }
+      if (action === 'pm-diff-toggle-card') {
+        if (e.target.closest("[data-action='pm-diff-set-base']")) return true;
+        const k = actionEl.getAttribute('data-key');
+        if (!k) return true;
+        if (!(dc.collapsedKeys instanceof Set)) dc.collapsedKeys = new Set();
+        if (dc.collapsedKeys.has(k)) dc.collapsedKeys.delete(k);
+        else dc.collapsedKeys.add(k);
+        uiCtx.renderPreviewModal();
+        return true;
+      }
+    }
 
     return false;
   },
@@ -518,6 +788,7 @@ export const presetsUiModule = {
     if (id === 'td-pm-search' && state.modal?.type === 'presetManager') { state.modal.query = target.value; uiCtx.renderModal(); return true; }
     if (id === 'td-pm-detail-search' && state.modal?.type === 'presetDetail') { state.modal.query = target.value; uiCtx.renderModal(); return true; }
     if (id === 'td-pm-jump-idx' && state.modal?.type === 'presetDetail') { state.modal.jumpVal = target.value; return true; }
+    if (id === 'td-pm-diff-search' && state.previewCtx?.type === 'pmDiffCompare') { state.previewCtx.search = target.value; uiCtx.renderPreviewModal(); return true; }
     return false;
   },
 
@@ -541,6 +812,13 @@ export const presetsUiModule = {
       const file = target.files?.[0]; if (!file) return true;
       importPresetFromFile(file).then(() => refreshAllCatalogs()).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('导入预设文件失败', err); notify('error', err.message || String(err)); });
       return true;
+    }
+
+    if (state.previewCtx?.type === 'pmDiffCompare') {
+      const dc = state.previewCtx;
+      if (id === 'td-pm-diff-base-sel') { dc.baseKey = target.value; uiCtx.renderPreviewModal(); return true; }
+      if (id === 'td-pm-diff-pair-a') { dc.pairKeyA = target.value; uiCtx.renderPreviewModal(); return true; }
+      if (id === 'td-pm-diff-pair-b') { dc.pairKeyB = target.value; uiCtx.renderPreviewModal(); return true; }
     }
 
     return false;

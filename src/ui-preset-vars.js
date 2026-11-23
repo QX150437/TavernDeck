@@ -26,8 +26,10 @@ function scanBalancedMacros(text, onMacro) {
       }
       if (depth === 0) {
         const inner = s.slice(i + 2, j - 2);
-        onMacro(inner);
-        scanBalancedMacros(inner, onMacro);
+        if (!/^\s*\/\//.test(inner)) {
+          onMacro(inner);
+          scanBalancedMacros(inner, onMacro);
+        }
         i = j;
         continue;
       }
@@ -37,8 +39,8 @@ function scanBalancedMacros(text, onMacro) {
 }
 
 function parseEntryMacros(content) {
-  const inits = [];
-  const assigns = [];
+  const setOps = [];
+  const mutates = [];
   const reads = [];
   scanBalancedMacros(content, (inner) => {
     const m = inner.match(/^\s*(setvar|setglobalvar|getvar|getglobalvar|addvar|addglobalvar|incvar|incglobalvar|decvar|decglobalvar|hasvar|hasglobalvar)\s*::\s*([\s\S]*)$/i);
@@ -53,19 +55,18 @@ function parseEntryMacros(content) {
       const name = rest.slice(0, sepIdx).trim();
       const val = rest.slice(sepIdx + 2);
       if (!name || name.includes('{{') || name.includes('}}')) return;
-      if (val.trim() === '') inits.push({ name, isGlobal, op });
-      else assigns.push({ name, isGlobal, op });
+      setOps.push({ name, isGlobal, op, initVal: val.trim() });
     } else if (MUTATE_MACRO_OPS.has(op)) {
       const name = rest.split('::')[0].trim();
       if (!name || name.includes('{{') || name.includes('}}')) return;
-      assigns.push({ name, isGlobal, op });
+      mutates.push({ name, isGlobal, op });
     } else {
       const name = rest.split('::')[0].trim();
       if (!name || name.includes('{{') || name.includes('}}')) return;
       reads.push({ name, isGlobal, op });
     }
   });
-  return { inits, assigns, reads };
+  return { setOps, mutates, reads };
 }
 
 function buildInitMacroListText(varSpecs) {
@@ -80,9 +81,22 @@ function buildInitMacroListText(varSpecs) {
   return lines.join('\n');
 }
 
-export function analyzePresetVariables(presetData) {
+function buildReadMacroListText(varSpecs) {
+  const lines = [];
+  const seen = new Set();
+  (varSpecs || []).forEach((v) => {
+    const key = `${v.isGlobal ? 'g' : 'l'}::${v.name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    lines.push(v.isGlobal ? `{{getglobalvar::${v.name}}}` : `{{getvar::${v.name}}}`);
+  });
+  return lines.join('\n');
+}
+
+export function analyzePresetVariables(presetData, preferredInitSpec) {
   const varMap = new Map();
-  const entryList = [];
+  const parsedEntries = [];
+  const validTextSpecs = new Set();
 
   const ensureVar = (name, isGlobal) => {
     const key = `${isGlobal ? 'g' : 'l'}::${name}`;
@@ -103,37 +117,114 @@ export function analyzePresetVariables(presetData) {
     return item;
   };
 
+  const pushLoc = (arr, locObj) => {
+    if (!arr.some((l) => l.listName === locObj.listName && l.idx === locObj.idx && l.op === locObj.op)) {
+      arr.push(locObj);
+    }
+  };
+
   ['prompts', 'prompts_unused'].forEach((listName) => {
     const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
     list.forEach((p, idx) => {
-      if (!p || typeof p.content !== 'string' || !p.content) return;
-      const parsed = parseEntryMacros(p.content);
-      if (parsed.inits.length === 0 && parsed.assigns.length === 0 && parsed.reads.length === 0) return;
+      if (!p || typeof p.content !== 'string') return;
+      const spec = `${listName}::${idx}`;
+      validTextSpecs.add(spec);
+      if (!p.content) return;
 
-      const entryMeta = {
+      const parsed = parseEntryMacros(p.content);
+      if (parsed.setOps.length === 0 && parsed.mutates.length === 0 && parsed.reads.length === 0) return;
+
+      const setVarKeys = new Set();
+      const emptyInitKeys = new Set();
+      const readKeys = new Set();
+
+      parsed.setOps.forEach((op) => {
+        const k = `${op.isGlobal ? 'g' : 'l'}::${op.name}`;
+        setVarKeys.add(k);
+        if (op.initVal === '') emptyInitKeys.add(k);
+      });
+      parsed.reads.forEach((op) => {
+        readKeys.add(`${op.isGlobal ? 'g' : 'l'}::${op.name}`);
+      });
+
+      parsedEntries.push({
+        spec,
         listName,
         idx,
-        id: p.id,
-        name: p.name || p.id,
-        enabled: !!p.enabled,
-        initKeys: new Set(),
-        assignKeys: new Set(),
-        readKeys: new Set(),
-      };
+        p,
+        parsed,
+        setVarKeys,
+        emptyInitKeys,
+        readKeys,
+      });
+    });
+  });
 
-      const pushLoc = (arr, keySet, macroObj) => {
-        const v = ensureVar(macroObj.name, macroObj.isGlobal);
-        if (!arr.some((l) => l.listName === listName && l.idx === idx && l.op === macroObj.op)) {
-          arr.push({ listName, idx, name: entryMeta.name, enabled: entryMeta.enabled, op: macroObj.op });
-        }
-        keySet.add(v.key);
-      };
+  const initScored = parsedEntries
+    .filter((pe) => pe.setVarKeys.size > 0)
+    .map((pe) => ({
+      spec: pe.spec,
+      listName: pe.listName,
+      idx: pe.idx,
+      p: pe.p,
+      setCount: pe.setVarKeys.size,
+      emptyCount: pe.emptyInitKeys.size,
+      isInitNamed: /初始化|变量|init|var|registry/i.test(pe.p.name || '') ? 1 : 0,
+    }))
+    .sort((a, b) => (b.setCount - a.setCount)
+      || (b.emptyCount - a.emptyCount)
+      || (b.isInitNamed - a.isInitNamed)
+      || ((a.listName === 'prompts' ? 0 : 1) - (b.listName === 'prompts' ? 0 : 1))
+      || ((b.p.enabled ? 1 : 0) - (a.p.enabled ? 1 : 0))
+      || (a.idx - b.idx));
 
-      parsed.inits.forEach((r) => pushLoc(ensureVar(r.name, r.isGlobal).inits, entryMeta.initKeys, r));
-      parsed.assigns.forEach((d) => pushLoc(ensureVar(d.name, d.isGlobal).assigns, entryMeta.assignKeys, d));
-      parsed.reads.forEach((rf) => pushLoc(ensureVar(rf.name, rf.isGlobal).reads, entryMeta.readKeys, rf));
+  const primaryInitSpec = initScored[0]?.spec || null;
+  let effectiveInitSpec = primaryInitSpec;
+  if (preferredInitSpec === '__new__') {
+    effectiveInitSpec = null;
+  } else if (preferredInitSpec && validTextSpecs.has(preferredInitSpec)) {
+    effectiveInitSpec = preferredInitSpec;
+  }
 
-      entryList.push(entryMeta);
+  const entryList = [];
+  parsedEntries.forEach((pe) => {
+    const { spec, listName, idx, p, parsed } = pe;
+    const entryMeta = {
+      spec,
+      listName,
+      idx,
+      id: p.id,
+      name: p.name || p.id,
+      enabled: !!p.enabled,
+      initKeys: new Set(),
+      assignKeys: new Set(),
+      readKeys: new Set(),
+    };
+    entryList.push(entryMeta);
+
+    const isInitEntry = !!effectiveInitSpec && spec === effectiveInitSpec;
+    parsed.setOps.forEach((sOp) => {
+      const v = ensureVar(sOp.name, sOp.isGlobal);
+      const loc = { listName, idx, name: entryMeta.name, enabled: entryMeta.enabled, op: sOp.op, initVal: sOp.initVal };
+      if (isInitEntry) {
+        pushLoc(v.inits, loc);
+        entryMeta.initKeys.add(v.key);
+      } else {
+        pushLoc(v.assigns, loc);
+        entryMeta.assignKeys.add(v.key);
+      }
+    });
+
+    parsed.mutates.forEach((mOp) => {
+      const v = ensureVar(mOp.name, mOp.isGlobal);
+      pushLoc(v.assigns, { listName, idx, name: entryMeta.name, enabled: entryMeta.enabled, op: mOp.op });
+      entryMeta.assignKeys.add(v.key);
+    });
+
+    parsed.reads.forEach((rOp) => {
+      const v = ensureVar(rOp.name, rOp.isGlobal);
+      pushLoc(v.reads, { listName, idx, name: entryMeta.name, enabled: entryMeta.enabled, op: rOp.op });
+      entryMeta.readKeys.add(v.key);
     });
   });
 
@@ -196,19 +287,7 @@ export function analyzePresetVariables(presetData) {
     });
   };
 
-  const initCountByEntry = new Map();
-  entryList.forEach((em) => {
-    if (em.initKeys.size > 0) initCountByEntry.set(`${em.listName}::${em.idx}`, em.initKeys.size);
-  });
-
-  ['prompts', 'prompts_unused'].forEach((listName) => {
-    const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
-    list.forEach((p, idx) => {
-      if (!p || typeof p.content !== 'string') return;
-      const cnt = initCountByEntry.get(`${listName}::${idx}`) || 0;
-      if (cnt > 0) pushCandidate(listName, idx, p, `含${cnt}项初始化`);
-    });
-  });
+  initScored.forEach(({ listName, idx, p, setCount }) => pushCandidate(listName, idx, p, `含${setCount}项初始化`));
   ['prompts', 'prompts_unused'].forEach((listName) => {
     const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
     list.forEach((p, idx) => {
@@ -224,23 +303,59 @@ export function analyzePresetVariables(presetData) {
     });
   });
 
+  const parsedMap = new Map(parsedEntries.map((pe) => [pe.spec, pe]));
+  const readCandidateTargets = [];
+  const readScored = [];
+  ['prompts', 'prompts_unused'].forEach((listName) => {
+    const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
+    list.forEach((p, idx) => {
+      if (!p || typeof p.content !== 'string') return;
+      const spec = `${listName}::${idx}`;
+      const pe = parsedMap.get(spec);
+      const readCnt = pe ? pe.readKeys.size : 0;
+      const isInitOnly = spec === effectiveInitSpec && readCnt === 0 ? 1 : 0;
+      readScored.push({ spec, listName, idx, p, readCnt, isInitOnly });
+    });
+  });
+  readScored.sort((a, b) => (b.readCnt - a.readCnt)
+    || (a.isInitOnly - b.isInitOnly)
+    || ((a.listName === 'prompts' ? 0 : 1) - (b.listName === 'prompts' ? 0 : 1))
+    || ((b.p.enabled ? 1 : 0) - (a.p.enabled ? 1 : 0))
+    || (a.idx - b.idx));
+  readScored.forEach(({ spec, listName, idx, p, readCnt }) => {
+    readCandidateTargets.push({
+      spec,
+      label: `[${listName === 'prompts_unused' ? '未添加' : '主'}#${idx + 1}${p.enabled ? '' : '·关'}] ${p.name || p.id}${readCnt > 0 ? ` (含${readCnt}项读取)` : ''}`,
+    });
+  });
+
   const needInitList = variables.filter(isNeedsAttention);
+  const unusedInitList = variables.filter((v) => v.status === 'unused_init');
   const stats = {
     total: variables.length,
     initialized: variables.filter((v) => v.status === 'initialized').length,
     needInit: needInitList.length,
-    unusedInit: variables.filter((v) => v.status === 'unused_init').length,
+    unusedInit: unusedInitList.length,
     needInitList,
+    unusedInitList,
   };
 
-  return { variables, entries, candidateTargets, stats };
+  return {
+    variables,
+    entries,
+    candidateTargets,
+    readCandidateTargets,
+    primaryInitSpec,
+    effectiveInitSpec,
+    stats,
+  };
 }
 
 function initializeVariablesToTarget(presetData, varSpecs, targetSpec) {
-  if (!Array.isArray(varSpecs) || varSpecs.length === 0) return 0;
+  if (!Array.isArray(varSpecs) || varSpecs.length === 0) return { added: 0, resolvedSpec: targetSpec };
   const macrosText = buildInitMacroListText(varSpecs);
   const macrosToAdd = macrosText ? macrosText.split('\n') : [];
-  if (macrosToAdd.length === 0) return 0;
+  if (macrosToAdd.length === 0) return { added: 0, resolvedSpec: targetSpec };
 
   if (!targetSpec || targetSpec === '__new__') {
     const entry = buildNewPromptEntry({
@@ -251,12 +366,33 @@ function initializeVariablesToTarget(presetData, varSpecs, targetSpec) {
     });
     presetData.prompts = presetData.prompts || [];
     presetData.prompts.unshift(entry);
-    return macrosToAdd.length;
+    return { added: macrosToAdd.length, resolvedSpec: 'prompts::0' };
   }
 
   const [listName, idxStr] = String(targetSpec).split('::');
   const target = presetData?.[listName]?.[Number(idxStr)];
   if (!target) throw new Error('未找到目标初始化条目，请重新选择');
+
+  const existingText = typeof target.content === 'string' ? target.content : '';
+  const appendLines = macrosToAdd.filter((m) => !existingText.includes(m));
+  if (appendLines.length === 0) return { added: 0, resolvedSpec: targetSpec };
+
+  target.content = existingText.trimEnd()
+    ? `${existingText.replace(/\s+$/, '')}\n${appendLines.join('\n')}`
+    : appendLines.join('\n');
+  return { added: appendLines.length, resolvedSpec: targetSpec };
+}
+
+function referenceVariablesToTarget(presetData, varSpecs, targetSpec) {
+  if (!Array.isArray(varSpecs) || varSpecs.length === 0) return 0;
+  if (!targetSpec) throw new Error('请选择要引用的目标条目');
+  const [listName, idxStr] = String(targetSpec).split('::');
+  const target = presetData?.[listName]?.[Number(idxStr)];
+  if (!target) throw new Error('未找到目标引用条目，请重新选择');
+
+  const macrosText = buildReadMacroListText(varSpecs);
+  const macrosToAdd = macrosText ? macrosText.split('\n') : [];
+  if (macrosToAdd.length === 0) return 0;
 
   const existingText = typeof target.content === 'string' ? target.content : '';
   const appendLines = macrosToAdd.filter((m) => !existingText.includes(m));
@@ -274,8 +410,12 @@ function formatLocBadges(locs, label) {
     const prefix = l.listName === 'prompts_unused' ? '池' : '主';
     const stateTag = l.enabled ? '' : '·关';
     const opTag = l.op && MUTATE_MACRO_OPS.has(l.op) ? `(${l.op})` : '';
-    const title = `${l.listName === 'prompts_unused' ? '未添加池' : '主列表'} #${l.idx + 1}「${l.name}」${l.enabled ? '' : '（未启用）'}`;
-    return `<button type='button' class='td-var-loc-btn ${l.enabled && l.listName === 'prompts' ? '' : 'is-dim'}' data-action='pv-jump-entry' data-list='${escapeHtml(l.listName)}' data-idx='${l.idx}' title='${escapeHtml(title)}'>${prefix}#${l.idx + 1} ${escapeHtml(l.name)}${escapeHtml(opTag)}${stateTag}</button>`;
+    const shortVal = l.initVal
+      ? `=${l.initVal.length > 8 ? `${l.initVal.slice(0, 8)}…` : l.initVal}`
+      : '';
+    const valTip = l.initVal ? ` · 值: ${l.initVal}` : '';
+    const title = `${l.listName === 'prompts_unused' ? '未添加池' : '主列表'} #${l.idx + 1}「${l.name}」${l.enabled ? '' : '（未启用）'}${valTip}`;
+    return `<button type='button' class='td-var-loc-btn ${l.enabled && l.listName === 'prompts' ? '' : 'is-dim'}' data-action='pv-jump-entry' data-list='${escapeHtml(l.listName)}' data-idx='${l.idx}' title='${escapeHtml(title)}'>${prefix}#${l.idx + 1} ${escapeHtml(l.name)}${escapeHtml(opTag)}${escapeHtml(shortVal)}${stateTag}</button>`;
   }).join('');
   return `<div class='td-var-loc'><strong>${escapeHtml(label)}：</strong><span class='td-var-loc-list'>${badges}</span></div>`;
 }
@@ -284,9 +424,12 @@ export const presetVarsUiModule = {
   renderPreview(previewLayerEl) {
     if (state.previewCtx?.type !== 'pmVarCheck' || state.modal?.type !== 'presetDetail') return false;
     const vc = state.previewCtx;
-    const report = analyzePresetVariables(state.modal.data);
-    if (!vc.targetSpec) {
-      vc.targetSpec = report.candidateTargets[0]?.spec || '__new__';
+    const report = analyzePresetVariables(state.modal.data, vc.targetSpec || undefined);
+    if (!vc.targetSpec || (vc.targetSpec !== '__new__' && !report.candidateTargets.some((t) => t.spec === vc.targetSpec))) {
+      vc.targetSpec = report.primaryInitSpec || report.candidateTargets[0]?.spec || '__new__';
+    }
+    if (!vc.refTargetSpec || !report.readCandidateTargets.some((t) => t.spec === vc.refTargetSpec)) {
+      vc.refTargetSpec = report.readCandidateTargets[0]?.spec || '';
     }
 
     const tab = vc.tab || 'vars';
@@ -297,6 +440,10 @@ export const presetVarsUiModule = {
       ...report.candidateTargets.map((t) => `<option value='${escapeHtml(t.spec)}' ${t.spec === vc.targetSpec ? 'selected' : ''}>${escapeHtml(t.label)}</option>`),
       `<option value='__new__' ${vc.targetSpec === '__new__' ? 'selected' : ''}>+ 新建「变量初始化 (Variable Init)」到主列表顶部</option>`,
     ].join('');
+
+    const refTargetOpts = report.readCandidateTargets.length > 0
+      ? report.readCandidateTargets.map((t) => `<option value='${escapeHtml(t.spec)}' ${t.spec === vc.refTargetSpec ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('')
+      : "<option value=''>（暂无可选文本条目）</option>";
 
     const needsInit = (v) => v.status === 'uninit_def' || v.status === 'uninit_ref' || v.status === 'inactive_init';
 
@@ -313,11 +460,11 @@ export const presetVarsUiModule = {
 
       listHtml = filteredEntries.map((em) => {
         const allChips = [];
-        em.initVars.forEach((v) => allChips.push(`<span class='td-mode-tag ok' title='在本条目空值初始化'>初始化: ${escapeHtml(v.name)}</span>`));
+        em.initVars.forEach((v) => allChips.push(`<span class='td-mode-tag ok' title='在本条目初始化'>初始化: ${escapeHtml(v.name)}</span>`));
         em.assignVars.forEach((v) => {
           const isMiss = needsInit(v);
           const tagCls = v.status === 'inactive_init' ? 'single' : (isMiss ? 'del' : 'multi');
-          const tip = v.status === 'inactive_init' ? '初始化条目未启用/在未添加池' : (isMiss ? '未初始化' : '已初始化');
+          const tip = v.status === 'inactive_init' ? '初始化条目未启用/在未添加池' : (isMiss ? '未在初始化条目中初始化' : '已初始化');
           allChips.push(`<span class='td-mode-tag ${tagCls}' title='${tip}'>赋值: ${escapeHtml(v.name)}${isMiss ? (v.status === 'inactive_init' ? ' (未生效)' : ' (未初始化)') : ''}</span>`);
         });
         em.readVars.forEach((v) => {
@@ -367,6 +514,7 @@ export const presetVarsUiModule = {
                 ? "<span class='td-mode-tag single'>已初始化未引用</span>"
                 : "<span class='td-mode-tag ok'>已初始化</span>")));
         const needReg = needsInit(v);
+        const isUnusedInit = v.status === 'unused_init';
         const initMacro = v.isGlobal ? `{{setglobalvar::${v.name}::}}` : `{{setvar::${v.name}::}}`;
         const readMacro = v.isGlobal ? `{{getglobalvar::${v.name}}}` : `{{getvar::${v.name}}}`;
         const orderWarn = v.orderIssue
@@ -385,18 +533,23 @@ export const presetVarsUiModule = {
               <span class='td-src-badge'>读 ${v.reads.length} · 改 ${v.assigns.length}</span>
             </div>
             <div class='td-var-locs'>
-              ${formatLocBadges(v.inits, '初始化于') || `<div class='td-var-loc is-miss'><strong>初始化状态：</strong>尚未初始化（缺少 ${escapeHtml(initMacro)}）</div>`}
+              ${formatLocBadges(v.inits, '初始化于') || `<div class='td-var-loc is-miss'><strong>初始化状态：</strong>未在基准初始化条目中找到（缺少 ${escapeHtml(initMacro)}）</div>`}
               ${formatLocBadges(v.assigns, '赋值/修改')}
               ${formatLocBadges(v.reads, '读取引用') || "<div class='td-var-loc'><strong>读取引用：</strong>预设内暂无读取（可能由世界书或正则读取）</div>"}
             </div>
             <div class='td-mgr-row-actions'>
               ${needReg ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-one' data-vkey='${escapeHtml(v.key)}'>一键初始化</button>` : ''}
+              ${isUnusedInit ? `<button type='button' class='td-btn sm primary' data-action='pv-ref-one' data-vkey='${escapeHtml(v.key)}'>一键引用</button>` : ''}
               <button type='button' class='td-btn sm' data-action='pv-copy-macro' data-macro='${escapeHtml(initMacro)}'>复制初始化宏</button>
               <button type='button' class='td-btn sm' data-action='pv-copy-macro' data-macro='${escapeHtml(readMacro)}'>复制读取宏</button>
             </div>
           </div>`;
       }).join('') || "<div class='td-group-empty'>未检测到匹配的变量宏</div>";
     }
+
+    const showRefBar = tab === 'vars' && filter === 'unused';
+    const unusedTargetCount = report.stats.unusedInitList.filter((v) => !q || v.name.toLowerCase().includes(q)
+      || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q))).length;
 
     previewLayerEl.classList.add('is-open');
     previewLayerEl.innerHTML = `
@@ -407,7 +560,7 @@ export const presetVarsUiModule = {
         </div>
         <div class='td-modal-body td-picker-body' style='gap:7px;'>
           <div class='td-pv-target-bar'>
-            <span class='td-bar-label' style='width:auto;font-size:11.5px;'>写入</span>
+            <span class='td-bar-label' style='width:auto;font-size:11.5px;' title='以此条目作为变量初始化的校验基准与写入目标'>写入</span>
             <select class='td-select' id='td-pv-target-sel' style='height:30px;font-size:12px;'>${targetOpts}</select>
             ${report.stats.needInit > 0
               ? `<button type='button' class='td-btn sm warn' data-action='pv-reg-all'>一键初始化 (${report.stats.needInit})</button>
@@ -432,6 +585,15 @@ export const presetVarsUiModule = {
             <button type='button' class='td-chip ${filter === 'registered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='registered'>已就绪 (${report.stats.initialized})</button>
             ${tab === 'vars' ? `<button type='button' class='td-chip ${filter === 'unused' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unused'>仅初始化 (${report.stats.unusedInit})</button>` : ''}
           </div>
+
+          ${showRefBar ? `
+            <div class='td-pv-target-bar'>
+              <span class='td-bar-label' style='width:auto;font-size:11.5px;'>引用到</span>
+              <select class='td-select' id='td-pv-ref-target-sel' style='height:30px;font-size:12px;'>${refTargetOpts}</select>
+              ${unusedTargetCount > 0
+                ? `<button type='button' class='td-btn sm primary' data-action='pv-ref-all'>一键引用 (${unusedTargetCount})</button>`
+                : "<span class='td-mode-tag ok'>✓ 暂无待引用</span>"}
+            </div>` : ''}
 
           <div class='td-picker-list td-scroll'>${listHtml}</div>
         </div>
@@ -470,14 +632,14 @@ export const presetVarsUiModule = {
       return true;
     }
     if (action === 'pv-copy-missing') {
-      const report = analyzePresetVariables(data);
+      const report = analyzePresetVariables(data, vc.targetSpec || undefined);
       const text = buildInitMacroListText(report.stats.needInitList);
       if (!text) { notify('info', '没有缺失初始化的变量'); return true; }
       copyToClipboard(text).then(() => notify('success', `已复制 ${report.stats.needInitList.length} 个初始化宏`)).catch(() => notify('error', '复制失败'));
       return true;
     }
     if (action === 'pv-reg-one' || action === 'pv-reg-entry' || action === 'pv-reg-all') {
-      const report = analyzePresetVariables(data);
+      const report = analyzePresetVariables(data, vc.targetSpec || undefined);
       let specs = [];
       if (action === 'pv-reg-one') {
         const v = report.variables.find((x) => x.key === actionEl.getAttribute('data-vkey'));
@@ -493,15 +655,43 @@ export const presetVarsUiModule = {
       if (specs.length === 0) { notify('info', '没有需要初始化的变量'); return true; }
 
       try {
-        const added = initializeVariablesToTarget(data, specs, vc.targetSpec);
-        if (added > 0) {
+        const res = initializeVariablesToTarget(data, specs, vc.targetSpec);
+        if (res.added > 0) {
           state.modal.dirty = true;
-          if (vc.targetSpec === '__new__') vc.targetSpec = 'prompts::0';
+          if (res.resolvedSpec) vc.targetSpec = res.resolvedSpec;
           uiCtx.renderPreviewModal();
           uiCtx.renderModal();
-          notify('success', `已一键初始化 ${added} 个变量（请记得点击「保存预设」持久化）`);
+          notify('success', `已一键初始化 ${res.added} 个变量（请记得点击「保存预设」持久化）`);
         } else {
           notify('info', '目标条目已包含所选变量的初始化宏');
+        }
+      } catch (err) {
+        notify('error', err.message || String(err));
+      }
+      return true;
+    }
+    if (action === 'pv-ref-one' || action === 'pv-ref-all') {
+      const report = analyzePresetVariables(data, vc.targetSpec || undefined);
+      const q = (vc.query || '').trim().toLowerCase();
+      let specs = [];
+      if (action === 'pv-ref-one') {
+        const v = report.variables.find((x) => x.key === actionEl.getAttribute('data-vkey'));
+        if (v) specs = [v];
+      } else {
+        specs = report.stats.unusedInitList.filter((v) => !q || v.name.toLowerCase().includes(q)
+          || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q)));
+      }
+      if (specs.length === 0) { notify('info', '没有需要引用的变量'); return true; }
+      const targetSpec = vc.refTargetSpec || report.readCandidateTargets[0]?.spec || '';
+      try {
+        const added = referenceVariablesToTarget(data, specs, targetSpec);
+        if (added > 0) {
+          state.modal.dirty = true;
+          uiCtx.renderPreviewModal();
+          uiCtx.renderModal();
+          notify('success', `已一键引用 ${added} 个变量（请记得点击「保存预设」持久化）`);
+        } else {
+          notify('info', '目标条目已包含所选变量的读取宏');
         }
       } catch (err) {
         notify('error', err.message || String(err));
@@ -549,6 +739,11 @@ export const presetVarsUiModule = {
     if (state.previewCtx?.type !== 'pmVarCheck') return false;
     if (e.target?.id === 'td-pv-target-sel') {
       state.previewCtx.targetSpec = e.target.value;
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (e.target?.id === 'td-pv-ref-target-sel') {
+      state.previewCtx.refTargetSpec = e.target.value;
       return true;
     }
     return false;

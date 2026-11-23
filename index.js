@@ -2,7 +2,7 @@ import { APP_NAME, getST, hasTH, logInfo, logWarn, syncNotifyRuntimeConfig } fro
 import { state, loadStore } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
 import { syncNativePresetCollapse, syncNativeToastHook } from './src/native-ui.js';
-import { initDevErrorCapture } from './src/dev-tools.js';
+import { initDevErrorCapture, recordOpStep } from './src/dev-tools.js';
 import { updatePickerList, updateSnapshotList, syncPreviewStatusUi, renderModal } from './src/ui-views.js';
 import {
   mountUI, renderOrb, renderMain, syncExtensionButton, syncTopBarUI, mountExtensionSettingsPanel,
@@ -17,6 +17,7 @@ async function syncAndRefresh() {
   syncNativePresetCollapse();
   syncTopBarUI();
   if (!hasTH('getPreset')) return;
+  recordOpStep('酒馆状态同步', initialSynced ? '事件防抖刷新' : '首次启动同步');
   try {
     state.store = loadStore();
     await refreshAllCatalogs();
@@ -74,6 +75,7 @@ function bindTavernEvents() {
     let t = null;
     return () => {
       if (!state.panelOpen || state.modal?.type !== 'mvuViewer') return;
+      recordOpStep('MVU 楼层变量自动刷新');
       if (t) clearTimeout(t);
       t = setTimeout(() => {
         if (state.panelOpen && state.modal?.type === 'mvuViewer') renderModal();

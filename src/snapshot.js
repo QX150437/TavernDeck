@@ -7,6 +7,7 @@ import {
   state, saveStore,
   getSnapshotPayload, setSnapshotPayload, deleteSnapshotPayload, serializeRegExpDeep,
 } from './store.js';
+import { recordOpStep } from './dev-tools.js';
 import { refreshAllCatalogs, refreshWorldbookCatalog } from './catalog.js';
 import { PRESET_SETTING_FIELDS } from './preset-manager.js';
 
@@ -497,6 +498,7 @@ export async function computeDetailedSnapshotDiff(targetSnap, baseSnap = null) {
 
 export async function applySnapshot(snap, restoreFull, opts = {}) {
   if (!snap || state.isBusy) return false;
+  recordOpStep(`执行${restoreFull ? '完整' : '开关'}快照恢复`, snap.name);
   state.isBusy = true;
   try {
     if (!opts.skipAutoBackup) {
@@ -584,6 +586,7 @@ export async function applySelectiveSnapshot(snap, diffObj, selectedDiffIds) {
   if (!snap || !diffObj || !(selectedDiffIds instanceof Set) || selectedDiffIds.size === 0 || state.isBusy) {
     return false;
   }
+  recordOpStep('执行局部差异恢复', `${snap.name} (${selectedDiffIds.size} 项)`);
   state.isBusy = true;
   try {
     const autoSnap = await createAutoBackupSnapshot(
@@ -711,6 +714,7 @@ export async function applySelectiveSnapshot(snap, diffObj, selectedDiffIds) {
 export async function saveSnapshotAsNewTarget(snap, newName) {
   const clean = String(newName || '').trim();
   if (!clean) throw new Error('请输入新名称');
+  recordOpStep('将快照另存为新目标', `${snap?.name || ''} -> ${clean}`);
   const payload = await getSnapshotPayload(snap);
   if (!payload) throw new Error('该快照不包含完整数据，无法另存为独立预设或世界书');
 
