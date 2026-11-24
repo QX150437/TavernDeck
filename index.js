@@ -1,8 +1,8 @@
 import { APP_NAME, getST, hasTH, logInfo, logWarn, syncNotifyRuntimeConfig } from './src/utils.js';
-import { state, loadStore } from './src/store.js';
+import { state, loadStore, enqueueBackendLogPersist, flushBackendLogQueue } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
 import { syncNativePresetCollapse, syncNativeToastHook } from './src/native-ui.js';
-import { initDevErrorCapture, recordOpStep } from './src/dev-tools.js';
+import { initDevErrorCapture, setDevLogPersistHandler, recordOpStep } from './src/dev-tools.js';
 import { updatePickerList, updateSnapshotList, syncPreviewStatusUi, renderModal } from './src/ui-views.js';
 import {
   mountUI, renderOrb, renderMain, syncExtensionButton, syncTopBarUI, mountExtensionSettingsPanel,
@@ -20,6 +20,7 @@ async function syncAndRefresh() {
   recordOpStep('酒馆状态同步', initialSynced ? '事件防抖刷新' : '首次启动同步');
   try {
     state.store = loadStore();
+    flushBackendLogQueue();
     await refreshAllCatalogs();
     if (!initialSynced) {
       initialSynced = true;
@@ -108,6 +109,7 @@ function bootstrap() {
   if (booted) return;
   booted = true;
   initDevErrorCapture();
+  setDevLogPersistHandler(enqueueBackendLogPersist);
   state.store = loadStore();
   syncNotifyRuntimeConfig(state.store.settings);
   mountUI();

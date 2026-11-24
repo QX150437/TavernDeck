@@ -8,9 +8,10 @@ import {
   getStorageDiagnostics, cleanOrphanSnapshotPayloads, repairMissingSnapshotPayloads,
   clearMvuStarredChat, clearAllMvuStarred, cleanAutoBackupSnapshots,
   migrateLocalSnapshotsToBackend,
+  flushBackendLogQueue, getBackendLogDayDetail, deleteBackendLogDay, clearAllBackendLogDays,
 } from './store.js';
 import { syncNativePresetCollapse, syncNativeToastHook } from './native-ui.js';
-import { getDevLogs, clearDevLogs, formatLogsReport, formatSingleLogReport } from './dev-tools.js';
+import { getDevLogs, clearDevLogs, formatLogsReport, formatSingleLogReport, formatDayLogsReport } from './dev-tools.js';
 import { ICONS, uiCtx, formatByteSize, openConfirm } from './ui-common.js';
 
 export const toolsUiModule = {
@@ -41,6 +42,25 @@ export const toolsUiModule = {
               </div>
               <div style='display:flex;gap:4px;flex-shrink:0;'>
                 <button type='button' class='td-btn sm danger' data-action='storage-del-snap' data-snap-id='${escapeHtml(it.id)}' data-orphan='0' title='删除后端文件与快照记录'>删除</button>
+              </div>
+            </div>`).join('');
+
+      const backendLogRowsHtml = bk.logItems.length === 0
+        ? "<div class='td-group-empty'>暂无警告/错误日志存档</div>"
+        : bk.logItems.map((it) => `
+            <div class='td-storage-row'>
+              <div class='td-storage-info'>
+                <div class='td-storage-head-row'>
+                  <span class='td-storage-title'>${escapeHtml(it.date)}</span>
+                  ${it.errCount > 0 ? `<span class='td-mode-tag del'>错误 ${it.errCount}</span>` : ''}
+                  ${it.warnCount > 0 ? `<span class='td-mode-tag single'>警告 ${it.warnCount}</span>` : ''}
+                  <span class='td-src-badge'>共 ${it.count} 条${it.bytes > 0 ? ` · ${formatByteSize(it.bytes)}` : ''}</span>
+                </div>
+                <div class='td-storage-sub'>${escapeHtml(it.fileName)}</div>
+              </div>
+              <div class='td-storage-actions'>
+                <button type='button' class='td-btn sm primary' data-action='storage-view-log-day' data-date='${escapeHtml(it.date)}'>查看</button>
+                <button type='button' class='td-btn sm danger' data-action='storage-del-log-day' data-date='${escapeHtml(it.date)}'>删除</button>
               </div>
             </div>`).join('');
 
@@ -135,13 +155,20 @@ export const toolsUiModule = {
                 <span>2. 酒馆后端文件 (users/files/)</span>
                 <span class='td-mode-tag ok'>${formatByteSize(bk.totalBytes)}</span>
               </div>
-              <div class='td-storage-desc'>完整快照保存于酒馆服务端文件夹，突破浏览器 5MB 限制且跨端可用。</div>
+              <div class='td-storage-desc'>完整快照与按天分类的警告/错误日志保存于酒馆服务端文件夹，不占浏览器配额。</div>
               <div class='td-storage-sublist'>
                 <details class='td-attr-diff-box' ${m.backendOpen !== false ? 'open' : ''}>
                   <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='backendOpen'>
-                    <span>快照文件列表 (${bk.items.length} 个 · ${formatByteSize(bk.totalBytes)})</span>
+                    <span>快照文件列表 (${bk.items.length} 个 · ${formatByteSize(bk.snapTotalBytes)})</span>
                   </summary>
                   <div class='td-storage-sublist' style='padding:6px;max-height:220px;overflow-y:auto;border-top:1px solid var(--td-border);'>${backendRowsHtml}</div>
+                </details>
+                <details class='td-attr-diff-box' ${m.logsOpen !== false ? 'open' : ''}>
+                  <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='logsOpen'>
+                    <span>警告/错误日志存档 (按天 · ${bk.logItems.length} 天 · ${formatByteSize(bk.logTotalBytes)})</span>
+                    ${bk.logItems.length > 0 ? `<button type='button' class='td-btn sm danger' onclick='event.stopPropagation()' data-action='storage-clear-all-logs-backend'>清空全部</button>` : ''}
+                  </summary>
+                  <div class='td-storage-sublist' style='padding:6px;max-height:220px;overflow-y:auto;border-top:1px solid var(--td-border);'>${backendLogRowsHtml}</div>
                 </details>
               </div>
             </div>
@@ -314,16 +341,166 @@ export const toolsUiModule = {
     return false;
   },
 
+  renderPreview(previewLayerEl) {
+    const pc = state.previewCtx;
+    if (!pc || pc.type !== 'backendLogDay') return false;
+    const allLogs = Array.isArray(pc.logs) ? pc.logs.slice().reverse() : [];
+    const filter = pc.filter || 'ALL';
+    const logs = filter === 'ALL' ? allLogs : allLogs.filter((l) => l.level === filter);
+    const errCount = allLogs.filter((l) => l.level === 'ERR').length;
+    const warnCount = allLogs.filter((l) => l.level === 'WARN').length;
+
+    previewLayerEl.classList.add('is-open');
+    previewLayerEl.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>${ICONS.code} 后端日志存档 · ${escapeHtml(pc.date)} (${allLogs.length})</div>
+          <div class='td-modal-head-actions'>
+            <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+          </div>
+        </div>
+        <div class='td-modal-body td-picker-body'>
+          <div class='td-filter-bar'>
+            <button class='td-chip ${filter === 'ALL' ? 'active' : ''}' data-action='storage-log-filter' data-filter='ALL'>全部 (${allLogs.length})</button>
+            <button class='td-chip ${filter === 'ERR' ? 'active' : ''}' data-action='storage-log-filter' data-filter='ERR'>错误 (${errCount})</button>
+            <button class='td-chip ${filter === 'WARN' ? 'active' : ''}' data-action='storage-log-filter' data-filter='WARN'>警告 (${warnCount})</button>
+          </div>
+          <div style='display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;'>
+            <button class='td-btn sm' data-action='storage-log-copy'>${ICONS.copy} 复制</button>
+            <button class='td-btn sm primary' data-action='storage-log-export'>${ICONS.download} 导出 (.txt)</button>
+            <button class='td-btn sm danger' data-action='storage-del-log-day' data-date='${escapeHtml(pc.date)}' style='margin-left:auto;'>${ICONS.trash} 删除当日</button>
+          </div>
+          <div class='td-picker-list td-scroll'>
+            ${pc.missing && allLogs.length === 0
+              ? "<div class='td-group-empty'>未找到该日期的后端日志文件（可能已被手动删除）</div>"
+              : (logs.length === 0
+                ? "<div class='td-group-empty'>当前筛选下暂无日志记录</div>"
+                : logs.map((l, idx) => {
+                    const cls = l.level === 'ERR' ? 'is-err' : 'is-warn';
+                    const hasExtra = !!(l.trail || l.stack);
+                    return `
+                      <div class='td-log-row ${cls}'>
+                        <div class='td-log-head'>
+                          <span class='td-log-badge'>${escapeHtml(l.level)}</span>
+                          <span class='td-log-main'>[${escapeHtml(l.time || '')}] ${escapeHtml(l.message)}</span>
+                          <button type='button' class='td-btn xs' data-action='storage-log-copy-one' data-lidx='${idx}' title='复制本条日志'>复制</button>
+                        </div>
+                        ${(l.uiContext || l.step) ? `<div class='td-log-meta'>${l.uiContext ? `界面：${escapeHtml(l.uiContext)}` : ''}${l.uiContext && l.step ? ' · ' : ''}${l.step ? `步骤：${escapeHtml(l.step)}` : ''}</div>` : ''}
+                        ${hasExtra ? `
+                          <details class='td-log-details'>
+                            <summary>查看操作轨迹与堆栈</summary>
+                            <div class='td-log-detail-body'>${l.trail ? `<div><strong>近期步骤：</strong>\n${escapeHtml(l.trail)}</div>` : ''}${l.stack ? `<div style='margin-top:4px;'><strong>调用位置：</strong>\n${escapeHtml(l.stack)}</div>` : ''}</div>
+                          </details>` : ''}
+                      </div>`;
+                  }).join(''))}
+          </div>
+        </div>
+        <div class='td-modal-foot'><button class='td-btn primary' data-action='close-preview'>关闭</button></div>
+      </div>`;
+    uiCtx.syncOverlayBounds();
+    return true;
+  },
+
   handleClick(e, actionEl, action) {
     const modalLayerEl = uiCtx.getModalLayer();
 
-    if (action === 'open-storage-manager') { state.modal = { type: 'storageManager', backendOpen: true, payloadsOpen: false, mvuOpen: false }; uiCtx.renderModal(); return true; }
-    if (action === 'storage-refresh' && state.modal?.type === 'storageManager') { uiCtx.renderModal(); return true; }
+    if (action === 'open-storage-manager') {
+      state.modal = { type: 'storageManager', backendOpen: true, logsOpen: true, payloadsOpen: false, mvuOpen: false };
+      uiCtx.renderModal();
+      flushBackendLogQueue().then(() => { if (state.modal?.type === 'storageManager') uiCtx.renderModal(); });
+      return true;
+    }
+    if (action === 'storage-refresh' && state.modal?.type === 'storageManager') {
+      flushBackendLogQueue().then(() => { if (state.modal?.type === 'storageManager') uiCtx.renderModal(); });
+      return true;
+    }
     if (action === 'storage-toggle-sec' && state.modal?.type === 'storageManager') {
       const sec = actionEl.getAttribute('data-sec');
       if (sec === 'backendOpen') state.modal.backendOpen = state.modal.backendOpen === false;
+      else if (sec === 'logsOpen') state.modal.logsOpen = state.modal.logsOpen === false;
       else if (sec === 'payloadsOpen') state.modal.payloadsOpen = !state.modal.payloadsOpen;
       else if (sec === 'mvuOpen') state.modal.mvuOpen = !state.modal.mvuOpen;
+      return true;
+    }
+    if (action === 'storage-view-log-day') {
+      const date = actionEl.getAttribute('data-date');
+      if (!date) return true;
+      getBackendLogDayDetail(date).then((res) => {
+        state.previewKey = null;
+        state.snapshotDetailId = null;
+        state.previewCtx = { type: 'backendLogDay', date: res.date, fileName: res.fileName, logs: res.logs, missing: res.missing, filter: 'ALL' };
+        uiCtx.renderPreviewModal();
+      }).catch((err) => { logError('读取后端日志文件失败', err); notify('error', err.message || String(err)); });
+      return true;
+    }
+    if (action === 'storage-del-log-day') {
+      const date = actionEl.getAttribute('data-date');
+      if (!date) return true;
+      openConfirm({
+        title: '删除后端日志存档确认',
+        message: `确定要永久删除 ${date} 的警告/错误后端日志文件吗？`,
+        confirmText: '确认删除',
+        onConfirm: () => {
+          deleteBackendLogDay(date).then(() => {
+            if (state.previewCtx?.type === 'backendLogDay' && state.previewCtx.date === date) {
+              state.previewCtx = null;
+              uiCtx.renderPreviewModal();
+            }
+            if (state.modal?.type === 'storageManager') uiCtx.renderModal();
+            notify('info', `已删除 ${date} 的后端日志存档`);
+          }).catch((err) => { logError('删除后端日志文件失败', err); notify('error', err.message || String(err)); });
+        },
+      });
+      return true;
+    }
+    if (action === 'storage-clear-all-logs-backend') {
+      openConfirm({
+        title: '清空全部后端日志确认',
+        message: '确定要永久删除酒馆后端保存的所有按天分类警告/错误日志文件吗？此操作不可撤销。',
+        confirmText: '确认清空',
+        onConfirm: () => {
+          clearAllBackendLogDays().then((cnt) => {
+            if (state.previewCtx?.type === 'backendLogDay') {
+              state.previewCtx = null;
+              uiCtx.renderPreviewModal();
+            }
+            if (state.modal?.type === 'storageManager') uiCtx.renderModal();
+            notify('info', `已清空 ${cnt} 天的后端日志存档`);
+          }).catch((err) => { logError('清空后端日志失败', err); notify('error', err.message || String(err)); });
+        },
+      });
+      return true;
+    }
+    if (action === 'storage-log-filter' && state.previewCtx?.type === 'backendLogDay') {
+      state.previewCtx.filter = actionEl.getAttribute('data-filter') || 'ALL';
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'storage-log-copy' && state.previewCtx?.type === 'backendLogDay') {
+      const pc = state.previewCtx;
+      const ordered = Array.isArray(pc.logs) ? pc.logs.slice().reverse() : [];
+      copyToClipboard(formatDayLogsReport(pc.date, ordered, pc.filter || 'ALL'))
+        .then(() => notify('success', `${pc.date} 日志已复制到剪贴板`))
+        .catch(() => notify('error', '复制失败'));
+      return true;
+    }
+    if (action === 'storage-log-copy-one' && state.previewCtx?.type === 'backendLogDay') {
+      const pc = state.previewCtx;
+      const all = Array.isArray(pc.logs) ? pc.logs.slice().reverse() : [];
+      const filter = pc.filter || 'ALL';
+      const list = filter === 'ALL' ? all : all.filter((l) => l.level === filter);
+      const item = list[Number(actionEl.getAttribute('data-lidx'))];
+      if (!item) return true;
+      copyToClipboard(formatSingleLogReport(item))
+        .then(() => notify('success', '该条日志已复制'))
+        .catch(() => notify('error', '复制失败'));
+      return true;
+    }
+    if (action === 'storage-log-export' && state.previewCtx?.type === 'backendLogDay') {
+      const pc = state.previewCtx;
+      const ordered = Array.isArray(pc.logs) ? pc.logs.slice().reverse() : [];
+      downloadTextFile(formatDayLogsReport(pc.date, ordered, pc.filter || 'ALL'), `TavernDeck-logs-${pc.date}.txt`);
+      notify('success', `已导出 ${pc.date} 日志 (.txt)`);
       return true;
     }
     if (action === 'storage-migrate-local') {

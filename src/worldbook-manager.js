@@ -205,21 +205,6 @@ export async function exportWorldbookFile(name) {
   notify('success', `已导出世界书「${name}」`);
 }
 
-export async function importWorldbookFromFile(file) {
-  const text = await file.text();
-  const parsed = JSON.parse(text);
-  const baseName = file.name.replace(/\.json$/i, '').trim() || `导入世界书_${Date.now()}`;
-  if (Array.isArray(parsed)) {
-    await callTH('createOrReplaceWorldbook', baseName, parsed, { render: 'debounced' });
-  } else if (hasTH('importRawWorldbook')) {
-    const res = await callTH('importRawWorldbook', file.name, text);
-    if (res && res.ok === false) throw new Error('后端导入世界书失败');
-  } else {
-    throw new Error('当前酒馆助手版本不支持 importRawWorldbook');
-  }
-  notify('success', `已导入世界书「${baseName}」`);
-}
-
 export function moveWorldbookEntriesBatchBeforeIndex(list, fromIndices, beforeIdx) {
   if (!Array.isArray(list) || !Array.isArray(fromIndices) || fromIndices.length === 0) return false;
   const idxSet = new Set(fromIndices.map(Number).filter((n) => !Number.isNaN(n) && n >= 0 && n < list.length));

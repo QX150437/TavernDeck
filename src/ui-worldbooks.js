@@ -7,8 +7,8 @@ import { refreshWorldbookCatalog } from './catalog.js';
 import {
   WB_POSITION_OPTIONS, getWorldbookBindingsSnapshot, toggleGlobalWorldbook,
   toggleCharPrimaryWorldbook, toggleCharAdditionalWorldbook, bindChatWorldbookSafe,
-  createOrBindChatWorldbookSafe, createWorldbookSafe, renameWorldbookSafe,
-  deleteWorldbookSafe, exportWorldbookFile, importWorldbookFromFile,
+  createWorldbookSafe, renameWorldbookSafe,
+  deleteWorldbookSafe, exportWorldbookFile,
   buildDefaultWorldbookEntry, disableAllRecursionInEntries,
 } from './worldbook-manager.js';
 import {
@@ -107,23 +107,16 @@ export const worldbooksUiModule = {
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'><div class='td-modal-title'>${ICONS.layers} 世界书管理 (${snap.allBooks.length})</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='worldbookManager' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
-          <div class='td-modal-body td-picker-body'>
-            <div class='td-mgr-topbar'>
-              <input class='td-input' id='td-wbm-search' type='text' placeholder='搜索世界书名称...' value='${escapeHtml(m.query || '')}' />
-              <button class='td-btn sm primary' data-action='wbm-create'>${ICONS.plus} 新建</button>
-              <button class='td-icon-btn ${m.toolsOpen ? 'is-active' : ''}' data-action='wbm-toggle-tools' title='筛选与更多工具'>${ICONS.more}</button>
+          <div class='td-modal-body td-picker-body' style='gap:7px;'>
+            <div class='td-compact-bar'>
+              <input class='td-input' id='td-wbm-search' type='text' placeholder='搜索世界书名称...' value='${escapeHtml(m.query || '')}' style='flex:1;min-width:110px;height:30px;font-size:12.5px;border-radius:8px;' />
+              <button class='td-btn sm primary' data-action='wbm-create' style='min-height:30px;'>${ICONS.plus} 新建</button>
             </div>
-            <div class='td-mgr-subtools ${m.toolsOpen ? 'is-open' : ''}'>
-              <div class='td-filter-bar' style='width:100%;'>
-                <button class='td-chip ${filter === 'all' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='all'>全部 (${snap.allBooks.length})</button>
-                <button class='td-chip ${filter === 'global' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='global'>全局 (${snap.globalList.length})</button>
-                <button class='td-chip ${filter === 'char' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='char'>当前角色 (${(snap.charPrimary ? 1 : 0) + snap.charAdditional.length})</button>
-                <button class='td-chip ${filter === 'chat' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='chat'>当前聊天 (${snap.chatBook ? 1 : 0})</button>
-              </div>
-              <button class='td-btn sm' data-action='wbm-open-snapshots'>${ICONS.camera} 世界书快照</button>
-              <button class='td-btn sm' data-action='wbm-create-chat'>${ICONS.link} 新建/绑定聊天世界书</button>
-              <button class='td-btn sm' data-action='wbm-trigger-import'>${ICONS.upload} 导入 (.json)</button>
-              <input type='file' id='td-wbm-import-file' accept='.json,application/json' style='display:none;' />
+            <div class='td-filter-bar td-snap-filter-bar'>
+              <button class='td-chip ${filter === 'all' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='all'>全部 (${snap.allBooks.length})</button>
+              <button class='td-chip ${filter === 'global' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='global'>全局 (${snap.globalList.length})</button>
+              <button class='td-chip ${filter === 'char' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='char'>当前角色 (${(snap.charPrimary ? 1 : 0) + snap.charAdditional.length})</button>
+              <button class='td-chip ${filter === 'chat' ? 'active' : ''}' data-action='wbm-set-filter' data-filter='chat'>当前聊天 (${snap.chatBook ? 1 : 0})</button>
             </div>
             <div class='td-picker-list td-scroll'>${rowsHtml || "<div class='td-group-empty'>未找到匹配的世界书</div>"}</div>
           </div>
@@ -304,23 +297,7 @@ export const worldbooksUiModule = {
       uiCtx.renderSelectPopup();
       return true;
     }
-    if (action === 'wbm-open-snapshots') {
-      state.modal = {
-        type: 'snapshots',
-        kind: 'worldbook',
-        targetBook: '',
-        createMode: 'state',
-        filter: 'all',
-        search: '',
-        draftName: '',
-        draftNote: '',
-        createOpen: false,
-      };
-      uiCtx.renderModal();
-      return true;
-    }
-    if (action === 'open-worldbook-manager') { state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false }; uiCtx.renderModal(); return true; }
-    if (action === 'wbm-toggle-tools' && state.modal?.type === 'worldbookManager') { state.modal.toolsOpen = !state.modal.toolsOpen; uiCtx.renderModal(); return true; }
+    if (action === 'open-worldbook-manager') { state.modal = { type: 'worldbookManager', filter: 'all', query: '' }; uiCtx.renderModal(); return true; }
     if (action === 'wbm-set-filter' && state.modal?.type === 'worldbookManager') { state.modal.filter = actionEl.getAttribute('data-filter') || 'all'; uiCtx.renderModal(); return true; }
     if (action === 'wbm-toggle-global') { toggleGlobalWorldbook(actionEl.getAttribute('data-name')).then(() => refreshWorldbookCatalog(false)).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('切换全局世界书失败', err); notify('error', err.message || String(err)); }); return true; }
     if (action === 'wbm-toggle-char-pri') { toggleCharPrimaryWorldbook(actionEl.getAttribute('data-name')).then(() => refreshWorldbookCatalog(false)).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('切换角色卡主世界书失败', err); notify('error', err.message || String(err)); }); return true; }
@@ -335,11 +312,6 @@ export const worldbooksUiModule = {
       createWorldbookSafe(name.trim()).then(() => refreshWorldbookCatalog(false)).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('新建世界书失败', err); notify('error', err.message || String(err)); });
       return true;
     }
-    if (action === 'wbm-create-chat') {
-      const name = window.prompt('输入聊天世界书名称（留空自动生成）：', ''); if (name === null) return true;
-      createOrBindChatWorldbookSafe(name.trim()).then(() => refreshWorldbookCatalog(false)).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('新建/绑定聊天世界书失败', err); notify('error', err.message || String(err)); });
-      return true;
-    }
     if (action === 'wbm-duplicate') {
       const src = actionEl.getAttribute('data-name'); const name = window.prompt(`复制世界书「${src}」为：`, `${src}-副本`); if (!name || !name.trim()) return true;
       createWorldbookSafe(name.trim(), src).then(() => refreshWorldbookCatalog(false)).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('复制世界书失败', err); notify('error', err.message || String(err)); });
@@ -352,7 +324,6 @@ export const worldbooksUiModule = {
       return true;
     }
     if (action === 'wbm-export') { exportWorldbookFile(actionEl.getAttribute('data-name')).catch((err) => { logError('导出世界书失败', err); notify('error', err.message || String(err)); }); return true; }
-    if (action === 'wbm-trigger-import') { modalLayerEl?.querySelector('#td-wbm-import-file')?.click(); return true; }
     if (action === 'wbm-delete') {
       const name = actionEl.getAttribute('data-name');
       openConfirm({
@@ -565,14 +536,7 @@ export const worldbooksUiModule = {
     return false;
   },
 
-  handleChange(e) {
-    const target = e.target;
-    if (!target) return false;
-    if (target.id === 'td-wbm-import-file') {
-      const file = target.files?.[0]; if (!file) return true;
-      importWorldbookFromFile(file).then(() => refreshWorldbookCatalog(false)).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('导入世界书文件失败', err); notify('error', err.message || String(err)); });
-      return true;
-    }
+  handleChange() {
     return false;
   },
 };

@@ -203,6 +203,65 @@ export async function setSnapshotPayload(snapId, payload, opts = {}) {
   return { fileName: '', bytes, storage: 'local' };
 }
 
+async function deleteBackendFileByName(rawFileName, opts = {}) {
+  const fileName = String(rawFileName || '').trim();
+  if (!fileName) return;
+  const base = normalizeBackendFileName(fileName);
+  const thCands = [base, fileName].filter((v, i, a) => v && a.indexOf(v) === i);
+  let deletedOk = false;
+  let lastErr = null;
+
+  if (hasTH('deleteTavernFile')) {
+    for (const cand of thCands) {
+      try {
+        await callTH('deleteTavernFile', cand);
+        deletedOk = true;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+  }
+
+  if (!deletedOk && typeof fetch === 'function') {
+    const st = getST();
+    const headers = st && typeof st.getRequestHeaders === 'function'
+      ? st.getRequestHeaders()
+      : { 'Content-Type': 'application/json' };
+    const apiCands = [
+      base,
+      base ? `user/files/${base}` : '',
+      base ? `/user/files/${base}` : '',
+      base ? `files/${base}` : '',
+      base ? `/files/${base}` : '',
+      fileName,
+    ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+    for (const p of apiCands) {
+      try {
+        const res = await fetch('/api/files/delete', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ path: p }),
+        });
+        if (res.ok || res.status === 404) {
+          deletedOk = true;
+          break;
+        }
+        const errText = await res.text().catch(() => '');
+        lastErr = new Error(errText || `HTTP ${res.status}`);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+  }
+
+  if (!deletedOk && lastErr) {
+    if (!opts.silent) logWarn(`删除酒馆后端文件「${fileName}」失败`, lastErr);
+    if (opts.strict) throw lastErr;
+  }
+}
+
 export async function deleteSnapshotPayload(snapOrId, opts = {}) {
   const snap = typeof snapOrId === 'string'
     ? (state.store.snapshots || []).find((s) => s.id === snapOrId)
@@ -210,60 +269,7 @@ export async function deleteSnapshotPayload(snapOrId, opts = {}) {
   const snapId = typeof snapOrId === 'string' ? snapOrId : snapOrId?.id;
 
   if (snap?.payloadFile) {
-    const base = normalizeBackendFileName(snap.payloadFile);
-    const thCands = [base, snap.payloadFile].filter((v, i, a) => v && a.indexOf(v) === i);
-    let deletedOk = false;
-    let lastErr = null;
-
-    if (hasTH('deleteTavernFile')) {
-      for (const cand of thCands) {
-        try {
-          await callTH('deleteTavernFile', cand);
-          deletedOk = true;
-          break;
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-    }
-
-    if (!deletedOk && typeof fetch === 'function') {
-      const st = getST();
-      const headers = st && typeof st.getRequestHeaders === 'function'
-        ? st.getRequestHeaders()
-        : { 'Content-Type': 'application/json' };
-      const apiCands = [
-        base,
-        base ? `user/files/${base}` : '',
-        base ? `/user/files/${base}` : '',
-        base ? `files/${base}` : '',
-        base ? `/files/${base}` : '',
-        snap.payloadFile,
-      ].filter((v, i, a) => v && a.indexOf(v) === i);
-
-      for (const p of apiCands) {
-        try {
-          const res = await fetch('/api/files/delete', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ path: p }),
-          });
-          if (res.ok || res.status === 404) {
-            deletedOk = true;
-            break;
-          }
-          const errText = await res.text().catch(() => '');
-          lastErr = new Error(errText || `HTTP ${res.status}`);
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-    }
-
-    if (!deletedOk && lastErr) {
-      logWarn(`删除酒馆后端快照文件「${snap.payloadFile}」失败`, lastErr);
-      if (opts.strict) throw lastErr;
-    }
+    await deleteBackendFileByName(snap.payloadFile, opts);
     delete snap.payloadFile;
   }
 
@@ -722,7 +728,7 @@ export function loadStore() {
   }
 }
 
-export function saveStore(store = state.store) {
+export function saveStore(store = state.store, opts = {}) {
   try {
     if (!hasTH('updateVariablesWith')) return;
     callTH('updateVariablesWith', (vars) => {
@@ -731,8 +737,10 @@ export function saveStore(store = state.store) {
       return next;
     }, { type: 'global' });
   } catch (e) {
-    logError('保存全局变量失败', e);
-    notify('error', '保存配置到全局变量失败');
+    if (!opts?.silent) {
+      logError('保存全局变量失败', e);
+      notify('error', '保存配置到全局变量失败');
+    }
   }
 }
 
@@ -1299,8 +1307,28 @@ export function getStorageDiagnostics(devLogCount = 0) {
     },
     backend: {
       available: hasTH('uploadTavernFile') && hasTH('getTavernFile') && hasTH('deleteTavernFile'),
-      totalBytes: backendTotalBytes,
+      snapTotalBytes: backendTotalBytes,
+      logTotalBytes: (() => {
+        const logMap = storeObj.extensions?.backendLogDays || {};
+        return Object.values(logMap).reduce((sum, it) => sum + (Number(it?.bytes) || 0), 0);
+      })(),
+      totalBytes: backendTotalBytes + (() => {
+        const logMap = storeObj.extensions?.backendLogDays || {};
+        return Object.values(logMap).reduce((sum, it) => sum + (Number(it?.bytes) || 0), 0);
+      })(),
       items: backendItems,
+      logItems: Object.values(storeObj.extensions?.backendLogDays || {})
+        .filter((it) => it && it.date)
+        .map((it) => ({
+          date: it.date,
+          fileName: normalizeBackendFileName(it.fileName) || `taverndeck_log_${it.date}.json`,
+          count: Number(it.count) || 0,
+          warnCount: Number(it.warnCount) || 0,
+          errCount: Number(it.errCount) || 0,
+          bytes: Number(it.bytes) || 0,
+          updatedAt: Number(it.updatedAt) || 0,
+        }))
+        .sort((a, b) => b.date.localeCompare(a.date)),
     },
     localStorage: {
       quotaEstimateBytes: 5 * 1024 * 1024,
@@ -1335,7 +1363,10 @@ export function getStorageDiagnostics(devLogCount = 0) {
       orphanCount: orphanPayloadIds.length,
       missingPayloadCount: missingPayloadSnaps.length,
     },
-    grandTotalBytes: globalTotalBytes + backendTotalBytes + payloadsTotalBytes + draftsTotalBytes,
+    grandTotalBytes: globalTotalBytes + backendTotalBytes + (() => {
+      const logMap = storeObj.extensions?.backendLogDays || {};
+      return Object.values(logMap).reduce((sum, it) => sum + (Number(it?.bytes) || 0), 0);
+    })() + payloadsTotalBytes + draftsTotalBytes,
   };
 }
 
@@ -1459,4 +1490,167 @@ export async function migrateLocalSnapshotsToBackend() {
     saveStore(state.store);
   }
   return { migrated, orphansRemoved };
+}
+
+const pendingBackendLogs = [];
+let backendLogFlushTimer = null;
+let backendLogTaskChain = Promise.resolve();
+
+function getLocalDateStr(ts = Date.now()) {
+  const d = new Date(ts);
+  const pad = (n) => (n < 10 ? `0${n}` : String(n));
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+async function readBackendLogJson(candidates) {
+  const cands = (candidates || []).map((c) => String(c || '').trim()).filter((v, i, a) => v && a.indexOf(v) === i);
+  for (const raw of cands) {
+    const base = normalizeBackendFileName(raw);
+    if (hasTH('getTavernFile')) {
+      for (const cand of [base, raw].filter((v, i, a) => v && a.indexOf(v) === i)) {
+        try {
+          const res = await callTH('getTavernFile', cand);
+          if (res && res.ok) {
+            const text = await res.text();
+            if (text) return JSON.parse(text);
+          }
+        } catch (e) {}
+      }
+    }
+    if (base && typeof fetch === 'function') {
+      for (const url of [`/user/files/${encodeURIComponent(base)}`, `user/files/${encodeURIComponent(base)}`]) {
+        try {
+          const res = await fetch(url, { cache: 'no-store' });
+          if (res && res.ok) {
+            const text = await res.text();
+            if (text) return JSON.parse(text);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+  return null;
+}
+
+export function enqueueBackendLogPersist(entry) {
+  if (!entry || (entry.level !== 'WARN' && entry.level !== 'ERR')) return;
+  const date = entry.date || getLocalDateStr(entry.ts || Date.now());
+  pendingBackendLogs.push(Object.assign({}, entry, { date }));
+  if (backendLogFlushTimer) clearTimeout(backendLogFlushTimer);
+  backendLogFlushTimer = setTimeout(() => {
+    backendLogFlushTimer = null;
+    flushBackendLogQueue();
+  }, 300);
+}
+
+export function flushBackendLogQueue() {
+  if (backendLogFlushTimer) {
+    clearTimeout(backendLogFlushTimer);
+    backendLogFlushTimer = null;
+  }
+  backendLogTaskChain = backendLogTaskChain.then(async () => {
+    if (pendingBackendLogs.length === 0 || !hasTH('uploadTavernFile')) return;
+    const batch = pendingBackendLogs.splice(0, pendingBackendLogs.length);
+    const byDate = new Map();
+    batch.forEach((item) => {
+      const d = item.date || getLocalDateStr(item.ts || Date.now());
+      if (!byDate.has(d)) byDate.set(d, []);
+      byDate.get(d).push(item);
+    });
+
+    for (const [date, items] of byDate.entries()) {
+      try {
+        const curMeta = state.store?.extensions?.backendLogDays?.[date] || null;
+        const prevFile = curMeta?.fileName ? normalizeBackendFileName(curMeta.fileName) : '';
+        const existingDoc = await readBackendLogJson([prevFile, `taverndeck_log_${date}.json`]);
+        const existingLogs = Array.isArray(existingDoc?.logs) ? existingDoc.logs : [];
+        const combined = [...existingLogs, ...items];
+        if (combined.length > 2000) combined.splice(0, combined.length - 2000);
+
+        const warnCount = combined.filter((x) => x.level === 'WARN').length;
+        const errCount = combined.filter((x) => x.level === 'ERR').length;
+        const updatedAt = Date.now();
+        const doc = { app: 'TavernDeck', date, updatedAt, logs: combined };
+        const jsonStr = JSON.stringify(doc, null, 2);
+        const bytes = getUtf8ByteLength(jsonStr);
+        const desiredName = prevFile
+          ? `taverndeck_log_${date}_${Date.now().toString(36)}.json`
+          : `taverndeck_log_${date}.json`;
+
+        const actualName = await callTH('uploadTavernFile', desiredName, utf8ToBase64(jsonStr));
+        const fileName = normalizeBackendFileName(actualName) || desiredName;
+        if (prevFile && prevFile !== fileName) {
+          await deleteBackendFileByName(prevFile, { silent: true });
+        }
+
+        state.store.extensions = state.store.extensions || {};
+        state.store.extensions.backendLogDays = state.store.extensions.backendLogDays || {};
+        state.store.extensions.backendLogDays[date] = {
+          date,
+          fileName,
+          count: combined.length,
+          warnCount,
+          errCount,
+          bytes,
+          updatedAt,
+        };
+        saveStore(state.store, { silent: true });
+      } catch (err) {
+        console.debug('[TavernDeck] 写入后端日志文件失败:', err);
+      }
+    }
+  }).catch((err) => {
+    console.debug('[TavernDeck] 后端日志队列异常:', err);
+  });
+  return backendLogTaskChain;
+}
+
+export async function getBackendLogDayDetail(date) {
+  await flushBackendLogQueue();
+  const meta = state.store?.extensions?.backendLogDays?.[date] || null;
+  const fileName = meta?.fileName ? normalizeBackendFileName(meta.fileName) : `taverndeck_log_${date}.json`;
+  const doc = await readBackendLogJson([meta?.fileName, `taverndeck_log_${date}.json`]);
+  if (!doc || !Array.isArray(doc.logs)) {
+    return { date, fileName, logs: [], missing: true };
+  }
+  return { date, fileName, logs: doc.logs, missing: false };
+}
+
+export function deleteBackendLogDay(date) {
+  for (let i = pendingBackendLogs.length - 1; i >= 0; i--) {
+    if (pendingBackendLogs[i].date === date) pendingBackendLogs.splice(i, 1);
+  }
+  backendLogTaskChain = backendLogTaskChain.then(async () => {
+    const map = state.store?.extensions?.backendLogDays;
+    const meta = map?.[date] || null;
+    const targetFile = meta?.fileName || `taverndeck_log_${date}.json`;
+    await deleteBackendFileByName(targetFile, { strict: !!meta?.fileName, silent: true });
+    if (map && Object.prototype.hasOwnProperty.call(map, date)) {
+      delete map[date];
+      if (Object.keys(map).length === 0) delete state.store.extensions.backendLogDays;
+      saveStore(state.store, { silent: true });
+    }
+  });
+  return backendLogTaskChain;
+}
+
+export function clearAllBackendLogDays() {
+  pendingBackendLogs.length = 0;
+  if (backendLogFlushTimer) {
+    clearTimeout(backendLogFlushTimer);
+    backendLogFlushTimer = null;
+  }
+  backendLogTaskChain = backendLogTaskChain.then(async () => {
+    const map = state.store?.extensions?.backendLogDays;
+    if (!map) return 0;
+    const dates = Object.keys(map);
+    for (const d of dates) {
+      const f = map[d]?.fileName || `taverndeck_log_${d}.json`;
+      await deleteBackendFileByName(f, { silent: true });
+    }
+    delete state.store.extensions.backendLogDays;
+    saveStore(state.store, { silent: true });
+    return dates.length;
+  });
+  return backendLogTaskChain;
 }

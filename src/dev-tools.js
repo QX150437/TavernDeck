@@ -6,6 +6,7 @@ const MAX_LOGS = 200;
 const MAX_STEPS = 15;
 let captureInstalled = false;
 let currentUiContext = '主面板';
+let persistLogHandler = null;
 
 const OWN_FILES = [
   'taverndeck', 'index.js', 'utils.js', 'store.js', 'dev-tools.js', 'native-ui.js',
@@ -22,8 +23,12 @@ function isOwnSource(text) {
   return OWN_FILES.some((f) => s.includes(f));
 }
 
-function getNowTimeStr() {
-  const d = new Date();
+function getNowDateStr(d = new Date()) {
+  const pad = (n) => (n < 10 ? `0${n}` : String(n));
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function getNowTimeStr(d = new Date()) {
   const pad = (n) => (n < 10 ? `0${n}` : String(n));
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
@@ -82,6 +87,10 @@ export function setDevUiContext(ctxLabel) {
   if (clean) currentUiContext = clean;
 }
 
+export function setDevLogPersistHandler(fn) {
+  persistLogHandler = typeof fn === 'function' ? fn : null;
+}
+
 export function recordOpStep(stepLabel, detail = '') {
   const step = String(stepLabel || '').trim();
   if (!step) return;
@@ -100,10 +109,15 @@ export function getRecentOpSteps(limit = 6) {
 }
 
 export function pushDevLog(level, message, extra = {}) {
-  const time = getNowTimeStr();
+  const now = new Date();
+  const date = getNowDateStr(now);
+  const time = getNowTimeStr(now);
+  const ts = now.getTime();
   const lv = level || 'INFO';
   const entry = {
+    date,
     time,
+    ts,
     level: lv,
     message: stripAppPrefix(message),
     uiContext: '',
@@ -120,6 +134,9 @@ export function pushDevLog(level, message, extra = {}) {
       .map((s) => `[${s.time}] ${s.ui ? `${s.ui} -> ` : ''}${s.step}${s.detail ? ` (${s.detail})` : ''}`)
       .join('\n');
     entry.stack = extra.stack || '';
+    if (persistLogHandler && !extra.skipPersist) {
+      try { persistLogHandler(Object.assign({}, entry)); } catch (e) {}
+    }
   }
 
   logBuffer.unshift(entry);
@@ -133,12 +150,11 @@ export function getDevLogs(levelFilter = 'ALL') {
 
 export function clearDevLogs() {
   logBuffer.length = 0;
-  pushDevLog('INFO', '日志已清空');
 }
 
 export function formatSingleLogReport(l) {
   if (!l) return '';
-  const lines = [`[${l.time}][${l.level}] ${l.message}`];
+  const lines = [`[${l.date ? `${l.date} ` : ''}${l.time}][${l.level}] ${l.message}`];
   if (l.uiContext) lines.push(`  当前界面: ${l.uiContext}`);
   if (l.step) lines.push(`  触发步骤: ${l.step}`);
   if (l.trail) {
@@ -155,6 +171,14 @@ export function formatSingleLogReport(l) {
 export function formatLogsReport(levelFilter = 'ALL') {
   const list = getDevLogs(levelFilter);
   const header = `=== ${APP_NAME} ${APP_VERSION} 运行日志 (${list.length} 条) ===`;
+  if (list.length === 0) return `${header}\n（暂无日志）`;
+  return [header, ...list.map(formatSingleLogReport)].join('\n');
+}
+
+export function formatDayLogsReport(date, logs, levelFilter = 'ALL') {
+  const arr = Array.isArray(logs) ? logs : [];
+  const list = (!levelFilter || levelFilter === 'ALL') ? arr : arr.filter((l) => l.level === levelFilter);
+  const header = `=== ${APP_NAME} ${APP_VERSION} 后端日志存档 [${date}] (${list.length} 条) ===`;
   if (list.length === 0) return `${header}\n（暂无日志）`;
   return [header, ...list.map(formatSingleLogReport)].join('\n');
 }

@@ -6,6 +6,7 @@ import {
 import { setDevUiContext, recordOpStep } from './dev-tools.js';
 import {
   state, saveStore, ensureSchemesPool, getVisibleSchemes, getActiveScheme, findGroupNode,
+  flushBackendLogQueue,
 } from './store.js';
 import { refreshAllCatalogs } from './catalog.js';
 import { syncTopBarButton } from './native-ui.js';
@@ -830,11 +831,13 @@ function onHostWandClick(e) { if (e.target?.closest?.('#extensionsMenuButton')) 
 
 function onHostBeforeUnload() {
   if (previewLayerEl) flushActiveMergeDraft(previewLayerEl);
+  flushBackendLogQueue();
 }
 
 function onHostVisibilityChange() {
-  if (document.visibilityState === 'hidden' && previewLayerEl) {
-    flushActiveMergeDraft(previewLayerEl);
+  if (document.visibilityState === 'hidden') {
+    if (previewLayerEl) flushActiveMergeDraft(previewLayerEl);
+    flushBackendLogQueue();
   }
 }
 

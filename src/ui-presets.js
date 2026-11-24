@@ -5,7 +5,7 @@ import { saveInUseToPreset } from './preset-merge.js';
 import {
   PRESET_SYSTEM_IDS, PRESET_SETTING_FIELDS, getPresetSummaryList, getPresetDetail,
   savePresetDetail, createNewPresetSafe, renameSavedPresetSafe, deleteSavedPresetSafe,
-  exportPresetFile, importPresetFromFile, buildNewPromptEntry,
+  exportPresetFile, buildNewPromptEntry,
 } from './preset-manager.js';
 import {
   ICONS, uiCtx, openConfirm, confirmDiscardDirtyModal,
@@ -87,17 +87,11 @@ export const presetsUiModule = {
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'><div class='td-modal-title'>${ICONS.layers} 预设管理 (${info.list.length})</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='presetManager' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div>
-          <div class='td-modal-body td-picker-body'>
-            <div class='td-mgr-topbar'>
-              <input class='td-input' id='td-pm-search' type='text' placeholder='搜索预设名称...' value='${escapeHtml(m.query || '')}' />
-              <button class='td-btn sm primary' data-action='pm-create'>${ICONS.plus} 新建</button>
-              <button class='td-icon-btn ${m.toolsOpen ? 'is-active' : ''}' data-action='pm-toggle-tools' title='更多工具'>${ICONS.more}</button>
-            </div>
-            <div class='td-mgr-subtools ${m.toolsOpen ? 'is-open' : ''}'>
-              <button class='td-btn sm' data-action='pm-save-inuse-as'>${ICONS.save} 另存实时预设</button>
-              <button class='td-btn sm' data-action='pm-open-detail' data-name='in_use'>${ICONS.sliders} 编辑实时预设</button>
-              <button class='td-btn sm' data-action='pm-trigger-import'>${ICONS.upload} 导入 (.json)</button>
-              <input type='file' id='td-pm-import-file' accept='.json,application/json' style='display:none;' />
+          <div class='td-modal-body td-picker-body' style='gap:7px;'>
+            <div class='td-compact-bar'>
+              <input class='td-input' id='td-pm-search' type='text' placeholder='搜索预设名称...' value='${escapeHtml(m.query || '')}' style='flex:1;min-width:110px;height:30px;font-size:12.5px;border-radius:8px;' />
+              <button class='td-btn xs' data-action='pm-save-inuse-as' style='min-height:30px;'>${ICONS.save} 另存实时预设</button>
+              <button class='td-btn xs' data-action='pm-open-detail' data-name='in_use' style='min-height:30px;'>${ICONS.sliders} 编辑实时预设</button>
             </div>
             <div class='td-picker-list td-scroll'>${rowsHtml || "<div class='td-group-empty'>未找到匹配的预设</div>"}</div>
           </div>
@@ -461,15 +455,9 @@ export const presetsUiModule = {
     const modalLayerEl = uiCtx.getModalLayer();
     const previewLayerEl = uiCtx.getPreviewLayer();
 
-    if (action === 'open-preset-manager') { state.modal = { type: 'presetManager', query: '', toolsOpen: false }; uiCtx.renderModal(); return true; }
-    if (action === 'pm-toggle-tools' && state.modal?.type === 'presetManager') { state.modal.toolsOpen = !state.modal.toolsOpen; uiCtx.renderModal(); return true; }
+    if (action === 'open-preset-manager') { state.modal = { type: 'presetManager', query: '' }; uiCtx.renderModal(); return true; }
     if (action === 'pm-load') { uiCtx.performSwitchPreset(actionEl.getAttribute('data-name')); setTimeout(() => { if (state.modal?.type === 'presetManager') uiCtx.renderModal(); }, 180); return true; }
     if (action === 'pm-save-inuse-back') { saveInUseToPreset(actionEl.getAttribute('data-name')).then(() => uiCtx.renderModal()).catch((err) => { logError('保存实时修改回预设失败', err); notify('error', err.message || String(err)); }); return true; }
-    if (action === 'pm-create') {
-      const name = window.prompt('请输入新建预设名称：', ''); if (!name || !name.trim()) return true;
-      createNewPresetSafe(name.trim()).then(() => refreshAllCatalogs()).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('新建预设失败', err); notify('error', err.message || String(err)); });
-      return true;
-    }
     if (action === 'pm-save-inuse-as') {
       const name = window.prompt('将当前实时预设另存为：', `${state.presetName || '预设'}-副本`); if (!name || !name.trim()) return true;
       createNewPresetSafe(name.trim(), 'in_use').then(() => refreshAllCatalogs()).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('另存预设失败', err); notify('error', err.message || String(err)); });
@@ -487,7 +475,6 @@ export const presetsUiModule = {
       return true;
     }
     if (action === 'pm-export') { try { exportPresetFile(actionEl.getAttribute('data-name')); } catch (err) { logError('导出预设失败', err); notify('error', err.message || String(err)); } return true; }
-    if (action === 'pm-trigger-import') { modalLayerEl?.querySelector('#td-pm-import-file')?.click(); return true; }
     if (action === 'pm-delete') {
       const name = actionEl.getAttribute('data-name');
       openConfirm({
@@ -805,12 +792,6 @@ export const presetsUiModule = {
       const isDirty = syncPresetDetailDirty(state.modal);
       const dirtyEl = uiCtx.getModalLayer()?.querySelector("[data-role='pm-dirty-label']");
       if (dirtyEl) dirtyEl.textContent = isDirty ? '有未保存修改' : '已同步';
-      return true;
-    }
-
-    if (id === 'td-pm-import-file') {
-      const file = target.files?.[0]; if (!file) return true;
-      importPresetFromFile(file).then(() => refreshAllCatalogs()).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('导入预设文件失败', err); notify('error', err.message || String(err)); });
       return true;
     }
 
