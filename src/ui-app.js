@@ -570,7 +570,11 @@ function handleRootClick(e) {
       }
     };
     const pc = state.previewCtx;
-    if (pc && (pc.type === 'pmAiEdit' || pc.type === 'wbAiEdit' || pc.type === 'mvuAiUpdate') && pc.step === 'review') {
+    const hasAiReview = pc && (
+      ((pc.type === 'pmAiEdit' || pc.type === 'wbAiEdit') && (pc.step === 'review' || (Array.isArray(pc.results) && pc.results.length > 0)))
+      || (pc.type === 'mvuAiUpdate' && (pc.step === 'review' || !!pc.replyText))
+    );
+    if (hasAiReview) {
       openConfirm({
         title: '关闭检视窗口确认',
         message: '当前 AI 生成的检视结果尚未写回，关闭后本次结果将会丢失，确定要关闭吗？',

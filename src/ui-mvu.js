@@ -736,6 +736,7 @@ export const mvuUiModule = {
           </div>
           <div class='td-modal-foot'>
             <button class='td-btn' data-action='close-preview'>取消</button>
+            ${ai.replyText ? `<button type='button' class='td-btn warn' data-action='mvu-ai-goto-review' ${ai.loading ? 'disabled' : ''}>返回检视</button>` : ''}
             <button class='td-btn primary' data-action='mvu-ai-run' ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'AI 处理中，请稍候...' : '调用 AI 生成更新'}</button>
           </div>
         </div>`;
@@ -1169,6 +1170,15 @@ export const mvuUiModule = {
     }
     if (action === 'mvu-ai-back' && state.previewCtx?.type === 'mvuAiUpdate') {
       state.previewCtx.step = 'setup'; uiCtx.renderPreviewModal(); return true;
+    }
+    if (action === 'mvu-ai-goto-review' && state.previewCtx?.type === 'mvuAiUpdate') {
+      saveSharedAiApiFieldsFromPreview(previewLayerEl);
+      syncAiPreviewDraftInputs(previewLayerEl);
+      if (state.previewCtx.replyText) {
+        state.previewCtx.step = 'review';
+        uiCtx.renderPreviewModal();
+      }
+      return true;
     }
     if (action === 'mvu-ai-apply' && state.previewCtx?.type === 'mvuAiUpdate' && state.modal?.type === 'mvuViewer') {
       const ai = state.previewCtx;

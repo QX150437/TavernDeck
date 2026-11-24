@@ -380,7 +380,11 @@ function renderAiEditSetupHtml({ title, ai, items, itemLabelFn }) {
           </div>
         </div>
       </div>
-      <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='ai-run' ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'AI 处理中，请稍候...' : '发送给 AI 编辑'}</button></div>
+      <div class='td-modal-foot'>
+        <button class='td-btn' data-action='close-preview'>取消</button>
+        ${Array.isArray(ai.results) && ai.results.length > 0 ? `<button type='button' class='td-btn warn' data-action='ai-goto-review' ${ai.loading ? 'disabled' : ''}>返回检视 (${ai.results.length})</button>` : ''}
+        <button class='td-btn primary' data-action='ai-run' ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'AI 处理中，请稍候...' : '发送给 AI 编辑'}</button>
+      </div>
     </div>`;
 }
 
@@ -930,6 +934,15 @@ export const aiAssistantUiModule = {
     }
     if (action === 'ai-back-setup' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       state.previewCtx.step = 'setup'; uiCtx.renderPreviewModal(); return true;
+    }
+    if (action === 'ai-goto-review' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      saveSharedAiApiFieldsFromPreview(previewLayerEl);
+      syncAiPreviewDraftInputs(previewLayerEl);
+      if (Array.isArray(state.previewCtx.results) && state.previewCtx.results.length > 0) {
+        state.previewCtx.step = 'review';
+        uiCtx.renderPreviewModal();
+      }
+      return true;
     }
     if (action === 'ai-apply-results' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       let updated = 0;
