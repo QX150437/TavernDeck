@@ -1,7 +1,7 @@
 import { escapeHtml, notify, computeLineDiff, logError } from './utils.js';
 import { state } from './store.js';
 import { refreshAllCatalogs } from './catalog.js';
-import { saveInUseToPreset } from './preset-merge.js';
+import { saveInUseToPreset, describePresetChanges } from './preset-merge.js';
 import {
   PRESET_SYSTEM_IDS, PRESET_SETTING_FIELDS, getPresetSummaryList, getPresetDetail,
   savePresetDetail, createNewPresetSafe, renameSavedPresetSafe, deleteSavedPresetSafe,
@@ -27,9 +27,15 @@ export const presetsUiModule = {
     const m = state.modal;
     if (!m || m.type !== 'presetDetail' || !syncPresetDetailDirty(m)) return false;
     const targetName = m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName;
+    let diffDetails = [];
+    try {
+      const baseData = m.savedSnapshot ? JSON.parse(m.savedSnapshot) : getPresetDetail(m.presetName);
+      diffDetails = describePresetChanges(baseData, m.data).lines;
+    } catch (err) {}
     openConfirm({
       title: '未保存修改确认',
-      message: `预设「${targetName}」有未保存的修改，关闭后修改将会丢失，是否保存？`,
+      message: `预设「${targetName}」有以下未保存变动，关闭后将会丢失，是否保存？`,
+      details: diffDetails,
       confirmText: '放弃修改',
       confirmClass: 'danger',
       extraButton: {
@@ -455,7 +461,24 @@ export const presetsUiModule = {
 
     if (action === 'open-preset-manager') { state.modal = { type: 'presetManager', query: '' }; uiCtx.renderModal(); return true; }
     if (action === 'pm-load') { uiCtx.performSwitchPreset(actionEl.getAttribute('data-name')); setTimeout(() => { if (state.modal?.type === 'presetManager') uiCtx.renderModal(); }, 180); return true; }
-    if (action === 'pm-save-inuse-back') { saveInUseToPreset(actionEl.getAttribute('data-name')).then(() => uiCtx.renderModal()).catch((err) => { logError('保存实时修改回预设失败', err); notify('error', err.message || String(err)); }); return true; }
+    if (action === 'pm-save-inuse-back') {
+      const name = actionEl.getAttribute('data-name');
+      let diffRes = { hasChanges: false, count: 0, lines: [] };
+      try {
+        diffRes = describePresetChanges(getPresetDetail(name), getPresetDetail('in_use'));
+      } catch (err) {}
+      openConfirm({
+        title: `保存实时修改确认 · ${name}`,
+        message: diffRes.hasChanges
+          ? `确定要将以下 ${diffRes.count} 项实时变动保存回预设「${name}」吗？`
+          : `确定要将当前实时预设保存回「${name}」吗？`,
+        details: diffRes.lines,
+        confirmText: '确认保存',
+        confirmClass: 'primary',
+        onConfirm: () => saveInUseToPreset(name).then(() => uiCtx.renderModal()).catch((err) => { logError('保存实时修改回预设失败', err); notify('error', err.message || String(err)); }),
+      });
+      return true;
+    }
     if (action === 'pm-save-inuse-as') {
       const name = window.prompt('将当前实时预设另存为：', `${state.presetName || '预设'}-副本`); if (!name || !name.trim()) return true;
       createNewPresetSafe(name.trim(), 'in_use').then(() => refreshAllCatalogs()).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('另存预设失败', err); notify('error', err.message || String(err)); });
@@ -627,7 +650,9 @@ export const presetsUiModule = {
         if (typeof target.content === 'string' || snap.content.length > 0 || !PRESET_SYSTEM_IDS.has(target.id)) target.content = snap.content;
         state.modal.dirty = true;
       }
-      state.previewCtx = null; uiCtx.renderPreviewModal(); uiCtx.renderModal();
+      state.previewCtx = state.previewCtx.returnPreviewCtx || null;
+      uiCtx.renderPreviewModal();
+      uiCtx.renderModal();
       return true;
     }
     if (action === 'pm-add-prompt' && state.modal?.type === 'presetDetail') {
@@ -665,10 +690,28 @@ export const presetsUiModule = {
       return true;
     }
     if (action === 'pm-save-detail' && state.modal?.type === 'presetDetail') {
-      savePresetDetail(state.modal.presetName, state.modal.data, true).then(() => {
-        state.modal.savedSnapshot = JSON.stringify(state.modal.data);
-        state.modal.dirty = false; notify('success', `已保存预设「${state.modal.presetName}」`); return refreshAllCatalogs();
-      }).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('保存预设详情失败', err); notify('error', `保存失败: ${err.message || err}`); });
+      const m = state.modal;
+      let diffRes = { hasChanges: false, count: 0, lines: [] };
+      try {
+        const baseData = m.savedSnapshot ? JSON.parse(m.savedSnapshot) : getPresetDetail(m.presetName);
+        diffRes = describePresetChanges(baseData, m.data);
+      } catch (err) {}
+      const targetLabel = m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName;
+      openConfirm({
+        title: `保存预设确认 · ${targetLabel}`,
+        message: diffRes.hasChanges
+          ? `检测到以下 ${diffRes.count} 项变动，确定要保存并持久化到预设「${targetLabel}」吗？`
+          : `当前未检测到预设「${targetLabel}」有变动，确定仍要重新保存吗？`,
+        details: diffRes.lines,
+        confirmText: '确认保存',
+        confirmClass: 'primary',
+        onConfirm: () => {
+          savePresetDetail(m.presetName, m.data, true).then(() => {
+            m.savedSnapshot = JSON.stringify(m.data);
+            m.dirty = false; notify('success', `已保存预设「${m.presetName}」`); return refreshAllCatalogs();
+          }).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('保存预设详情失败', err); notify('error', `保存失败: ${err.message || err}`); });
+        },
+      });
       return true;
     }
     if (action === 'pm-open-var-check' && state.modal?.type === 'presetDetail') {

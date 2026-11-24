@@ -1,7 +1,7 @@
 export const APP_NAME = 'TavernDeck';
 export const APP_SHORT = 'TD';
 export const APP_CN = '酒馆总控台';
-export const APP_VERSION = 'v1.3.8';
+export const APP_VERSION = 'v1.3.9';
 export const STORAGE_KEY = 'TavernDeck';
 export const SCHEMA_VERSION = 3;
 export const ROOT_ID = 'tavern-deck-root';
@@ -285,7 +285,9 @@ export function formatTime(ts) {
 
 export function makeItemKey(ref) {
   if (!ref) return '';
-  if (ref.type === 'preset') return `preset::${ref.id}`;
+  if (ref.type === 'preset') {
+    return ref.preset ? `preset::${ref.preset}::${ref.id}` : `preset::${ref.id}`;
+  }
   if (ref.type === 'worldbook') return `worldbook::${ref.book}::${ref.uid}`;
   if (ref.type === 'script') return `script::${ref.scope}::${ref.id}`;
   if (ref.type === 'regex') return `regex::${ref.scope}::${ref.id}`;
@@ -294,7 +296,12 @@ export function makeItemKey(ref) {
 
 export function cloneItemRef(ref) {
   const key = makeItemKey(ref);
-  if (ref.type === 'preset') return { key, type: 'preset', id: String(ref.id) };
+  if (ref.type === 'preset') {
+    const out = { key, type: 'preset', id: String(ref.id) };
+    if (ref.preset) out.preset = String(ref.preset);
+    if (ref.name) out.name = String(ref.name);
+    return out;
+  }
   if (ref.type === 'worldbook') return { key, type: 'worldbook', book: String(ref.book), uid: Number(ref.uid) };
   if (ref.type === 'script') return { key, type: 'script', scope: String(ref.scope), id: String(ref.id) };
   if (ref.type === 'regex') return { key, type: 'regex', scope: String(ref.scope), id: String(ref.id) };

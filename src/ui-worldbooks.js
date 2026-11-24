@@ -2,8 +2,9 @@ import {
   escapeHtml, notify, cloneWorldbookEntry, formatKeysInput, parseKeysInput,
   callTH, logError,
 } from './utils.js';
-import { state, serializeRegExpDeep } from './store.js';
+import { state, serializeRegExpDeep, reviveRegExpDeep } from './store.js';
 import { refreshWorldbookCatalog } from './catalog.js';
+import { describeWorldbookChanges } from './worldbook-merge.js';
 import {
   WB_POSITION_OPTIONS, getWorldbookBindingsSnapshot, toggleGlobalWorldbook,
   toggleCharPrimaryWorldbook, toggleCharAdditionalWorldbook, bindChatWorldbookSafe,
@@ -34,9 +35,15 @@ export const worldbooksUiModule = {
   confirmDirty(onProceed) {
     const m = state.modal;
     if (!m || m.type !== 'worldbookDetail' || !syncWbDetailDirty(m)) return false;
+    let diffDetails = [];
+    try {
+      const baseEntries = m.savedSnapshot ? reviveRegExpDeep(JSON.parse(m.savedSnapshot)) : [];
+      diffDetails = describeWorldbookChanges(baseEntries, m.entries).lines;
+    } catch (err) {}
     openConfirm({
       title: '未保存修改确认',
-      message: `世界书「${m.bookName}」有未保存的修改，关闭后修改将会丢失，是否保存？`,
+      message: `世界书「${m.bookName}」有以下未保存变动，关闭后将会丢失，是否保存？`,
+      details: diffDetails,
       confirmText: '放弃修改',
       confirmClass: 'danger',
       extraButton: {
@@ -514,10 +521,27 @@ export const worldbooksUiModule = {
       return true;
     }
     if (action === 'wbd-save-book' && state.modal?.type === 'worldbookDetail') {
-      callTH('replaceWorldbook', state.modal.bookName, state.modal.entries, { render: 'debounced' }).then(() => {
-        state.modal.savedSnapshot = serializeWbEntries(state.modal.entries);
-        state.modal.dirty = false; notify('success', `已保存世界书「${state.modal.bookName}」`); return refreshWorldbookCatalog(false);
-      }).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('保存世界书失败', err); notify('error', `保存世界书失败: ${err.message || err}`); });
+      const m = state.modal;
+      let diffRes = { hasChanges: false, count: 0, lines: [] };
+      try {
+        const baseEntries = m.savedSnapshot ? reviveRegExpDeep(JSON.parse(m.savedSnapshot)) : [];
+        diffRes = describeWorldbookChanges(baseEntries, m.entries);
+      } catch (err) {}
+      openConfirm({
+        title: `保存世界书确认 · ${m.bookName}`,
+        message: diffRes.hasChanges
+          ? `检测到以下 ${diffRes.count} 项变动，确定要保存并持久化到世界书「${m.bookName}」吗？`
+          : `当前未检测到世界书「${m.bookName}」有变动，确定仍要重新保存吗？`,
+        details: diffRes.lines,
+        confirmText: '确认保存',
+        confirmClass: 'primary',
+        onConfirm: () => {
+          callTH('replaceWorldbook', m.bookName, m.entries, { render: 'debounced' }).then(() => {
+            m.savedSnapshot = serializeWbEntries(m.entries);
+            m.dirty = false; notify('success', `已保存世界书「${m.bookName}」`); return refreshWorldbookCatalog(false);
+          }).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('保存世界书失败', err); notify('error', `保存世界书失败: ${err.message || err}`); });
+        },
+      });
       return true;
     }
     if (action === 'wbd-open-ai-edit' && state.modal?.type === 'worldbookDetail') {

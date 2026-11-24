@@ -60,7 +60,12 @@ function updateScriptInTrees(trees, targetId, updater) {
 
 export function rebuildCatalogIndex() {
   const byKey = new Map();
-  state.catalog.preset.forEach((item) => byKey.set(item.key, item));
+  state.catalog.preset.forEach((item) => {
+    byKey.set(item.key, item);
+    if (item.legacyKey && item.legacyKey !== item.key) {
+      byKey.set(item.legacyKey, item);
+    }
+  });
   state.catalog.worldbook.groups.forEach((g) => {
     g.items.forEach((item) => byKey.set(item.key, item));
   });
@@ -73,18 +78,30 @@ export function rebuildCatalogIndex() {
   state.catalog.byKey = byKey;
 }
 
-function syncPresetCatalogFromPrompts(prompts) {
-  state.catalog.preset = (prompts || []).map((p) => {
-    const ref = { type: 'preset', id: p.id };
+function buildPresetCatalogItems(prompts) {
+  const curPreset = state.presetName && state.presetName !== 'in_use' ? state.presetName : '';
+  return (prompts || []).map((p) => {
+    const ref = {
+      type: 'preset',
+      ...(curPreset ? { preset: curPreset } : {}),
+      id: p.id,
+      name: p.name || p.id,
+    };
     return {
       key: makeItemKey(ref),
+      legacyKey: `preset::${p.id}`,
       ref,
       type: 'preset',
+      preset: curPreset,
       name: p.name || p.id,
       enabled: !!p.enabled,
       raw: p,
     };
   });
+}
+
+function syncPresetCatalogFromPrompts(prompts) {
+  state.catalog.preset = buildPresetCatalogItems(prompts);
   rebuildCatalogIndex();
 }
 
@@ -117,17 +134,7 @@ export function refreshSyncSources() {
       currentPresetObj = callTH('getPreset', 'in_use');
     }
     const prompts = currentPresetObj && Array.isArray(currentPresetObj.prompts) ? currentPresetObj.prompts : [];
-    state.catalog.preset = prompts.map((p) => {
-      const ref = { type: 'preset', id: p.id };
-      return {
-        key: makeItemKey(ref),
-        ref,
-        type: 'preset',
-        name: p.name || p.id,
-        enabled: !!p.enabled,
-        raw: p,
-      };
-    });
+    state.catalog.preset = buildPresetCatalogItems(prompts);
   } catch (e) {
     logWarn('读取当前预设条目失败', e);
     state.catalog.preset = [];
@@ -527,6 +534,11 @@ export function toggleEntryInGroup(groupId, itemKey) {
   const path = findGroupPath(getActiveScheme().groups, groupId);
   if (!path) return Promise.resolve(false);
   const group = path[path.length - 1];
+  const refInGroup = (group.items || []).find((it) => (it.key || makeItemKey(it)) === itemKey);
+  if (refInGroup && refInGroup.type === 'preset' && refInGroup.preset && state.presetName && refInGroup.preset !== state.presetName) {
+    notify('warning', `该条目属于预设「${refInGroup.preset}」，当前预设「${state.presetName}」不可控制`);
+    return Promise.resolve(false);
+  }
   const targetItem = state.catalog.byKey.get(itemKey);
   if (!targetItem) {
     notify('warning', '该条目当前未加载或已不存在');

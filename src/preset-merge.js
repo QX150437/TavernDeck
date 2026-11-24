@@ -1,9 +1,93 @@
 import { callTH, hasTH, notify, genId, findBestMatchingName, computeLineDiff, logWarn } from './utils.js';
 import { createAutoBackupSnapshot } from './snapshot.js';
-import { PRESET_SYSTEM_IDS } from './preset-manager.js';
+import { PRESET_SYSTEM_IDS, PRESET_SETTING_FIELDS } from './preset-manager.js';
 
 export { computeLineDiff };
 export const findBestMatchingOldPreset = findBestMatchingName;
+
+function formatPromptPosBrief(p) {
+  if (!p?.position || p.position.type !== 'in_chat') return '相对';
+  return `@D${p.position.depth ?? 0}(顺${p.position.order ?? 100})`;
+}
+
+export function describePresetChanges(beforePreset, afterPreset) {
+  const lines = [];
+  const beforePrompts = Array.isArray(beforePreset?.prompts) ? beforePreset.prompts : [];
+  const afterPrompts = Array.isArray(afterPreset?.prompts) ? afterPreset.prompts : [];
+  const beforeUnused = Array.isArray(beforePreset?.prompts_unused) ? beforePreset.prompts_unused : [];
+  const afterUnused = Array.isArray(afterPreset?.prompts_unused) ? afterPreset.prompts_unused : [];
+
+  const bUnusedIdSet = new Set(beforeUnused.map((p) => p?.id).filter(Boolean));
+  const aUnusedIdSet = new Set(afterUnused.map((p) => p?.id).filter(Boolean));
+  const bPromptIdSet = new Set(beforePrompts.map((p) => p?.id).filter(Boolean));
+  const aPromptIdSet = new Set(afterPrompts.map((p) => p?.id).filter(Boolean));
+
+  const diffList = (bList, aList, listLabel, otherBeforeIds, otherAfterIds) => {
+    const bMap = new Map(bList.map((p, idx) => [p.id, { p, idx }]));
+    const aMap = new Map(aList.map((p, idx) => [p.id, { p, idx }]));
+    const matchedIdsA = [];
+
+    aList.forEach((ap, idx) => {
+      const hit = bMap.get(ap.id);
+      const name = ap.name || ap.id || `#${idx + 1}`;
+      if (!hit) {
+        if (otherBeforeIds.has(ap.id)) {
+          lines.push(`[${listLabel}] 从${listLabel === '提示词' ? '未添加池' : '提示词'}移入 #${idx + 1}「${name}」`);
+        } else {
+          lines.push(`[${listLabel}] 新增 #${idx + 1}「${name}」(${ap.enabled ? '开启' : '关闭'})`);
+        }
+        return;
+      }
+      matchedIdsA.push(ap.id);
+      const bp = hit.p;
+      const changes = [];
+      if (!!bp.enabled !== !!ap.enabled) changes.push(`开关: ${bp.enabled ? '开' : '关'} → ${ap.enabled ? '开' : '关'}`);
+      if ((bp.name || '') !== (ap.name || '')) changes.push(`名称:「${bp.name || bp.id}」→「${ap.name || ap.id}」`);
+      if ((bp.role || 'system') !== (ap.role || 'system')) changes.push(`身份: ${bp.role || 'system'} → ${ap.role || 'system'}`);
+      if (JSON.stringify(bp.position || null) !== JSON.stringify(ap.position || null)) {
+        changes.push(`位置: ${formatPromptPosBrief(bp)} → ${formatPromptPosBrief(ap)}`);
+      }
+      const oldC = typeof bp.content === 'string' ? bp.content : '';
+      const newC = typeof ap.content === 'string' ? ap.content : '';
+      if (oldC !== newC) {
+        const diffs = computeLineDiff(oldC, newC);
+        const addCnt = diffs.filter((d) => d.type === 'add').length;
+        const delCnt = diffs.filter((d) => d.type === 'del').length;
+        changes.push(`正文修改 (${oldC.length}→${newC.length}字, +${addCnt}/-${delCnt}行)`);
+      }
+      if (changes.length > 0) {
+        lines.push(`[${listLabel}] #${idx + 1}「${name}」: ${changes.join('；')}`);
+      }
+    });
+
+    bList.forEach((bp, idx) => {
+      if (!aMap.has(bp.id) && !otherAfterIds.has(bp.id)) {
+        lines.push(`[${listLabel}] 删除原 #${idx + 1}「${bp.name || bp.id}」`);
+      }
+    });
+
+    const matchedIdsB = bList.filter((bp) => aMap.has(bp.id)).map((bp) => bp.id);
+    if (matchedIdsA.length === matchedIdsB.length && matchedIdsA.some((id, i) => id !== matchedIdsB[i])) {
+      lines.push(`[${listLabel}] 条目排列顺序已调整`);
+    }
+  };
+
+  diffList(beforePrompts, afterPrompts, '提示词', bUnusedIdSet, aUnusedIdSet);
+  diffList(beforeUnused, afterUnused, '未添加池', bPromptIdSet, aPromptIdSet);
+
+  const bSettings = beforePreset?.settings || {};
+  const aSettings = afterPreset?.settings || {};
+  const fieldLabelMap = new Map(PRESET_SETTING_FIELDS.map((f) => [f.key, f.label]));
+  const settingKeys = new Set([...Object.keys(bSettings), ...Object.keys(aSettings)]);
+  settingKeys.forEach((k) => {
+    if (JSON.stringify(bSettings[k]) !== JSON.stringify(aSettings[k])) {
+      const lbl = fieldLabelMap.get(k) || k;
+      lines.push(`[生成参数] ${lbl}: ${String(bSettings[k] ?? '未设置')} → ${String(aSettings[k] ?? '未设置')}`);
+    }
+  });
+
+  return { hasChanges: lines.length > 0, count: lines.length, lines };
+}
 
 function promptSignature(p) {
   if (!p) return '';

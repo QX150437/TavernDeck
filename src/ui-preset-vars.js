@@ -501,8 +501,8 @@ function formatLocBadges(locs, label) {
       ? `=${l.initVal.length > 8 ? `${l.initVal.slice(0, 8)}…` : l.initVal}`
       : '';
     const valTip = l.initVal ? ` · 值: ${l.initVal}` : '';
-    const title = `${l.listName === 'prompts_unused' ? '未添加池' : '主列表'} #${l.idx + 1}「${l.name}」${l.enabled ? '' : '（未启用）'}${valTip}`;
-    return `<button type='button' class='td-var-loc-btn ${l.enabled && l.listName === 'prompts' ? '' : 'is-dim'}' data-action='pv-jump-entry' data-list='${escapeHtml(l.listName)}' data-idx='${l.idx}' title='${escapeHtml(title)}'>${prefix}#${l.idx + 1} ${escapeHtml(l.name)}${escapeHtml(opTag)}${escapeHtml(shortVal)}${stateTag}</button>`;
+    const title = `${l.listName === 'prompts_unused' ? '未添加池' : '主列表'} #${l.idx + 1}「${l.name}」${l.enabled ? '' : '（未启用）'}${valTip}（点击编辑内容）`;
+    return `<button type='button' class='td-var-loc-btn ${l.enabled && l.listName === 'prompts' ? '' : 'is-dim'}' data-action='pv-edit-entry' data-list='${escapeHtml(l.listName)}' data-idx='${l.idx}' title='${escapeHtml(title)}'>${prefix}#${l.idx + 1} ${escapeHtml(l.name)}${escapeHtml(opTag)}${escapeHtml(shortVal)}${stateTag}</button>`;
   }).join('');
   return `<div class='td-var-loc'><strong>${escapeHtml(label)}：</strong><span class='td-var-loc-list'>${badges}</span></div>`;
 }
@@ -785,6 +785,14 @@ export const presetVarsUiModule = {
           <button type='button' class='td-btn primary' data-action='close-preview'>完成</button>
         </div>
       </div>`;
+    if (vc._pendingScrollTop > 0) {
+      const box = previewLayerEl.querySelector('.td-picker-list');
+      if (box) {
+        box.scrollTop = vc._pendingScrollTop;
+        requestAnimationFrame(() => { box.scrollTop = vc._pendingScrollTop; });
+      }
+      vc._pendingScrollTop = 0;
+    }
     uiCtx.syncOverlayBounds();
     return true;
   },
@@ -904,6 +912,25 @@ export const presetVarsUiModule = {
       } catch (err) {
         notify('error', err.message || String(err));
       }
+      return true;
+    }
+    if (action === 'pv-edit-entry') {
+      const ln = actionEl.getAttribute('data-list') || 'prompts';
+      const idx = Number(actionEl.getAttribute('data-idx'));
+      const p = data?.[ln]?.[idx];
+      if (!p) { notify('warning', '未找到对应条目'); return true; }
+      const previewLayerEl = uiCtx.getPreviewLayer();
+      vc._pendingScrollTop = previewLayerEl?.querySelector('.td-picker-list')?.scrollTop || 0;
+      state.previewKey = null;
+      state.snapshotDetailId = null;
+      state.previewCtx = {
+        type: 'pmContentEdit',
+        listName: ln,
+        idx,
+        prompt: JSON.parse(JSON.stringify(p)),
+        returnPreviewCtx: vc,
+      };
+      uiCtx.renderPreviewModal();
       return true;
     }
     if (action === 'pv-jump-entry') {

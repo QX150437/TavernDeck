@@ -1,6 +1,6 @@
 import {
   TYPE_LABELS, escapeHtml, makeItemKey, cloneItemRef,
-  hasTH, callTH, notify, copyToClipboard, logError,
+  hasTH, callTH, notify, copyToClipboard, computeLineDiff, logError,
 } from './utils.js';
 import {
   state, saveStore, ensureSchemesPool, getBoundSchemeIds,
@@ -12,7 +12,8 @@ import {
   refreshWorldbookCatalog, refreshAllCatalogs,
   toggleEntryInGroup, toggleMultiGroupAll, saveEditedEntry,
 } from './catalog.js';
-import { hasUnsavedPresetChanges, saveInUseToPreset } from './preset-merge.js';
+import { hasUnsavedPresetChanges, saveInUseToPreset, describePresetChanges } from './preset-merge.js';
+import { getPresetDetail } from './preset-manager.js';
 import { ICONS, uiCtx, openConfirm, readPreviewSnapshot } from './ui-common.js';
 
 const SOURCE_LABELS = { preset: '预设条目', worldbook: '世界书', script: '酒馆脚本', regex: '正则条目' };
@@ -57,24 +58,27 @@ export function renderGroupItemsListHtml(group) {
   return visibleRefs.map((ref) => {
     const k = ref.key || makeItemKey(ref);
     const entry = state.catalog.byKey.get(k);
-    const missing = !entry;
-    const name = entry ? entry.name : `未找到条目 (${ref.id || ref.uid || k})`;
+    const isOtherPreset = ref.type === 'preset' && !!ref.preset && !!state.presetName && ref.preset !== state.presetName;
+    const missing = !entry && !isOtherPreset;
+    const unavailable = !entry;
+    const name = entry ? entry.name : (isOtherPreset ? (ref.name || ref.id) : `未找到条目 (${ref.id || ref.uid || k})`);
     const enabled = entry ? !!entry.enabled : false;
-    const typeBadge = TYPE_LABELS[ref.type] || ref.type;
+    const typeBadge = isOtherPreset ? `预设:${ref.preset}` : (TYPE_LABELS[ref.type] || ref.type);
     const drawerId = `${group.id}::${k}`;
     const drawerOpen = hasAnyFolded && state.activeItemDrawerId === drawerId;
+    const disableTitle = isOtherPreset ? `该条目属于预设「${ref.preset}」，当前预设不可控制` : '';
 
     const controlBtn = isMulti
-      ? `<button type='button' class='td-switch sm ${enabled ? 'on' : ''}' data-action='toggle-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' ${missing ? 'disabled' : ''} title='点击开关条目'></button>`
-      : `<button type='button' class='td-radio-btn' data-action='toggle-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' ${missing ? 'disabled' : ''} title='点击切换选中'><span class='td-radio-dot ${enabled ? 'on' : ''}'></span></button>`;
+      ? `<button type='button' class='td-switch sm ${enabled ? 'on' : ''}' data-action='toggle-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' ${unavailable ? 'disabled' : ''} title='${escapeHtml(disableTitle || '点击开关条目')}'></button>`
+      : `<button type='button' class='td-radio-btn' data-action='toggle-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' ${unavailable ? 'disabled' : ''} title='${escapeHtml(disableTitle || '点击切换选中')}'><span class='td-radio-dot ${enabled ? 'on' : ''}'></span></button>`;
 
     const gripHtml = dragEnabled && !gQuery
       ? `<span class='td-drag-grip' data-drag-type='item' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' data-drag-label='${escapeHtml(name)}' title='按住拖拽移动'>${ICONS.gripDots}</span>`
       : '';
 
     const inlineOps = [
-      !foldBadge ? `<span class='td-src-badge'>${escapeHtml(typeBadge)}</span>` : '',
-      !foldPreview && !missing ? `<button class='td-icon-btn' data-action='preview-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' title='预览与编辑'>${ICONS.eye}</button>` : '',
+      (!foldBadge || isOtherPreset) ? `<span class='td-src-badge'>${escapeHtml(typeBadge)}</span>` : '',
+      !foldPreview && !unavailable ? `<button class='td-icon-btn' data-action='preview-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' title='预览与编辑'>${ICONS.eye}</button>` : '',
       !foldRemove ? `<button class='td-icon-btn danger' data-action='remove-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' title='从分组移除'>${ICONS.close}</button>` : '',
       controlBtn,
       hasAnyFolded ? `<button class='td-icon-btn ${drawerOpen ? 'is-active' : ''}' data-action='toggle-item-drawer' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' title='更多操作'>${ICONS.more}</button>` : '',
@@ -83,15 +87,15 @@ export function renderGroupItemsListHtml(group) {
     const drawerHtml = drawerOpen
       ? `
         <div class='td-item-drawer'>
-          ${foldBadge ? `<span class='td-src-badge'>类型: ${escapeHtml(typeBadge)}</span>` : ''}
-          ${foldPreview && !missing ? `<button class='td-group-menu-btn' style='flex:0 1 auto;' data-action='preview-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}'>${ICONS.eye} 预览与编辑</button>` : ''}
+          ${foldBadge && !isOtherPreset ? `<span class='td-src-badge'>类型: ${escapeHtml(typeBadge)}</span>` : ''}
+          ${foldPreview && !unavailable ? `<button class='td-group-menu-btn' style='flex:0 1 auto;' data-action='preview-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}'>${ICONS.eye} 预览与编辑</button>` : ''}
           ${foldRemove ? `<button class='td-group-menu-btn danger' style='flex:0 1 auto;' data-action='remove-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}'>${ICONS.close} 移除</button>` : ''}
         </div>`
       : '';
 
     return `
       <div class='td-item-wrap' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}'>
-        <div class='td-item ${missing ? 'missing' : ''}' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}'>
+        <div class='td-item ${missing ? 'missing' : ''} ${isOtherPreset ? 'is-other-preset' : ''}' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' ${disableTitle ? `title='${escapeHtml(disableTitle)}'` : ''}>
           ${gripHtml}
           <div class='td-item-main'>
             <span class='td-item-name' title='${escapeHtml(name)}'>${escapeHtml(name)}</span>
@@ -292,7 +296,7 @@ export function updatePickerList() {
       } else {
         html = sections.map((sec) => {
           const rows = sec.items.map((item) => {
-            const checked = selectedMap.has(item.key);
+            const checked = selectedMap.has(item.key) || (!!item.legacyKey && selectedMap.has(item.legacyKey));
             const isAnchor = isRange && anchorKey === item.key;
             const folderSub = item.folder ? `[${item.folder}] ` : '';
             return `
@@ -552,11 +556,42 @@ export const groupsUiModule = {
       const item = state.catalog.byKey.get(state.previewKey); if (!item) return true;
       const targetKey = state.previewKey, snap = readPreviewSnapshot();
       const fields = { name: snap.name || item.name };
-      if (previewLayerEl?.querySelector('#td-edit-content')) { fields.content = snap.content; fields.allowContent = typeof item.raw.content === 'string' || snap.content.length > 0; }
-      if (previewLayerEl?.querySelector('#td-edit-find-regex')) fields.find_regex = snap.find_regex;
-      if (previewLayerEl?.querySelector('#td-edit-replace-string')) fields.replace_string = snap.replace_string;
+      const changeDetails = [];
+      if (fields.name !== (item.name || '')) {
+        changeDetails.push(`名称:「${item.name || ''}」→「${fields.name}」`);
+      }
+      if (previewLayerEl?.querySelector('#td-edit-content')) {
+        fields.content = snap.content;
+        fields.allowContent = typeof item.raw.content === 'string' || snap.content.length > 0;
+        const oldC = typeof item.raw.content === 'string' ? item.raw.content : '';
+        if (oldC !== snap.content) {
+          const diffs = computeLineDiff(oldC, snap.content);
+          const addCnt = diffs.filter((d) => d.type === 'add').length;
+          const delCnt = diffs.filter((d) => d.type === 'del').length;
+          changeDetails.push(`正文修改 (${oldC.length}→${snap.content.length}字, +${addCnt}/-${delCnt}行)`);
+        }
+      }
+      if (previewLayerEl?.querySelector('#td-edit-find-regex')) {
+        fields.find_regex = snap.find_regex;
+        if ((item.raw.find_regex || '') !== snap.find_regex) {
+          changeDetails.push(`查找正则:「${item.raw.find_regex || ''}」→「${snap.find_regex}」`);
+        }
+      }
+      if (previewLayerEl?.querySelector('#td-edit-replace-string')) {
+        fields.replace_string = snap.replace_string;
+        const oldR = item.raw.replace_string || '';
+        if (oldR !== snap.replace_string) {
+          changeDetails.push(`替换文本修改 (${oldR.length}→${snap.replace_string.length}字)`);
+        }
+      }
       openConfirm({
-        title: '保存更改确认', message: `确定要将对「${fields.name || item.name}」的修改保存并持久化吗？`, confirmText: '确认保存', confirmClass: 'primary',
+        title: '保存更改确认',
+        message: changeDetails.length > 0
+          ? `确定要将对「${fields.name || item.name}」的以下修改保存并持久化吗？`
+          : `未检测到「${fields.name || item.name}」有内容变动，确定仍要保存吗？`,
+        details: changeDetails,
+        confirmText: '确认保存',
+        confirmClass: 'primary',
         onConfirm: () => saveEditedEntry(targetKey, fields).then((ok) => { if (ok) { uiCtx.renderMain(); uiCtx.renderPreviewModal(); if (state.modal?.type === 'picker') updatePickerList(); } }),
       });
       return true;
@@ -610,7 +645,8 @@ export const groupsUiModule = {
       if (m.selectMode === 'range') {
         const visibleKeys = Array.from(modalLayerEl.querySelectorAll('.td-picker-row[data-item-key]')).map((r) => r.getAttribute('data-item-key'));
         if (!m.rangeAnchorKey || !visibleKeys.includes(m.rangeAnchorKey)) {
-          const willCheck = !map.has(itemKey);
+          const willCheck = !(map.has(itemKey) || (!!item.legacyKey && map.has(item.legacyKey)));
+          if (item.legacyKey) map.delete(item.legacyKey);
           if (willCheck) map.set(itemKey, cloneItemRef(item.ref)); else map.delete(itemKey);
           m.rangeAnchorKey = itemKey; m.rangeAction = willCheck; updatePickerList(); return true;
         }
@@ -618,11 +654,13 @@ export const groupsUiModule = {
         const idx1 = visibleKeys.indexOf(m.rangeAnchorKey), idx2 = visibleKeys.indexOf(itemKey);
         for (let i = Math.min(idx1, idx2); i <= Math.max(idx1, idx2); i++) {
           const rk = visibleKeys[i], rItem = state.catalog.byKey.get(rk);
+          if (rItem?.legacyKey) map.delete(rItem.legacyKey);
           if (m.rangeAction) { if (rItem) map.set(rk, cloneItemRef(rItem.ref)); } else map.delete(rk);
         }
         m.rangeAnchorKey = null; updatePickerList(); return true;
       }
-      const willCheck = !map.has(itemKey);
+      const willCheck = !(map.has(itemKey) || (!!item.legacyKey && map.has(item.legacyKey)));
+      if (item.legacyKey) map.delete(item.legacyKey);
       if (willCheck) map.set(itemKey, cloneItemRef(item.ref)); else map.delete(itemKey);
       actionEl.classList.toggle('checked', willCheck);
       const cb = actionEl.querySelector('.td-checkbox'); if (cb) cb.checked = willCheck;
@@ -635,15 +673,31 @@ export const groupsUiModule = {
     if (action === 'set-picker-filter' && state.modal?.type === 'picker') { state.modal.filter = actionEl.getAttribute('data-filter'); state.modal.rangeAnchorKey = null; updatePickerList(); return true; }
     if (action === 'picker-select-scope' && state.modal?.type === 'picker') {
       const sec = getPickerSections().find((s) => s.scopeKey === actionEl.getAttribute('data-scope-key'));
-      if (sec) { sec.items.forEach((it) => state.modal.selectedMap.set(it.key, cloneItemRef(it.ref))); state.modal.rangeAnchorKey = null; updatePickerList(); }
+      if (sec) {
+        sec.items.forEach((it) => {
+          if (it.legacyKey) state.modal.selectedMap.delete(it.legacyKey);
+          state.modal.selectedMap.set(it.key, cloneItemRef(it.ref));
+        });
+        state.modal.rangeAnchorKey = null; updatePickerList();
+      }
       return true;
     }
     if (action === 'picker-select-visible' && state.modal?.type === 'picker') {
-      modalLayerEl.querySelectorAll('.td-picker-row[data-item-key]').forEach((r) => { const k = r.getAttribute('data-item-key'), it = state.catalog.byKey.get(k); if (it) state.modal.selectedMap.set(k, cloneItemRef(it.ref)); });
+      modalLayerEl.querySelectorAll('.td-picker-row[data-item-key]').forEach((r) => {
+        const k = r.getAttribute('data-item-key'), it = state.catalog.byKey.get(k);
+        if (it) {
+          if (it.legacyKey) state.modal.selectedMap.delete(it.legacyKey);
+          state.modal.selectedMap.set(k, cloneItemRef(it.ref));
+        }
+      });
       state.modal.rangeAnchorKey = null; updatePickerList(); return true;
     }
     if (action === 'picker-unselect-visible' && state.modal?.type === 'picker') {
-      modalLayerEl.querySelectorAll('.td-picker-row[data-item-key]').forEach((r) => state.modal.selectedMap.delete(r.getAttribute('data-item-key')));
+      modalLayerEl.querySelectorAll('.td-picker-row[data-item-key]').forEach((r) => {
+        const k = r.getAttribute('data-item-key'), it = state.catalog.byKey.get(k);
+        state.modal.selectedMap.delete(k);
+        if (it?.legacyKey) state.modal.selectedMap.delete(it.legacyKey);
+      });
       state.modal.rangeAnchorKey = null; updatePickerList(); return true;
     }
     if (action === 'save-picker' && state.modal?.type === 'picker') {
@@ -689,9 +743,14 @@ export const groupsUiModule = {
       const nextPreset = target.value; if (!nextPreset || nextPreset === state.presetName) return true;
       const prevName = state.presetName;
       if (hasUnsavedPresetChanges(prevName)) {
+        let diffDetails = [];
+        try {
+          diffDetails = describePresetChanges(getPresetDetail(prevName), getPresetDetail('in_use')).lines;
+        } catch (err) {}
         openConfirm({
           title: '检测到未保存的预设修改',
-          message: `当前预设「${prevName}」的开关或内容与原预设文件不一致，切换至「${nextPreset}」前是否保存？`,
+          message: `当前预设「${prevName}」与原预设文件存在以下变动，切换至「${nextPreset}」前是否保存？`,
+          details: diffDetails,
           confirmText: '保存并切换', confirmClass: 'primary',
           extraButton: { text: '仅切换', className: 'warn', onClick: () => uiCtx.performSwitchPreset(nextPreset) },
           onCancel: () => { target.value = prevName; },

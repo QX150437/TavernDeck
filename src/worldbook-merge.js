@@ -1,5 +1,6 @@
 import {
-  callTH, notify, genId, cloneWorldbookEntry, cloneWorldbookEntries, keysSignature,
+  callTH, notify, genId, cloneWorldbookEntry, cloneWorldbookEntries,
+  keysSignature, formatKeysInput, computeLineDiff,
 } from './utils.js';
 import { serializeRegExpDeep, reviveRegExpDeep } from './store.js';
 import { createAutoBackupSnapshot } from './snapshot.js';
@@ -299,6 +300,82 @@ export function findWbCounterpart(item, targetEntries) {
     if (byName) return byName;
   }
   return byUid || null;
+}
+
+export function describeWorldbookChanges(beforeEntries, afterEntries) {
+  const bList = Array.isArray(beforeEntries) ? beforeEntries : [];
+  const aList = Array.isArray(afterEntries) ? afterEntries : [];
+  const bMap = new Map(bList.map((e, idx) => [Number(e.uid), { e, idx }]));
+  const aMap = new Map(aList.map((e, idx) => [Number(e.uid), { e, idx }]));
+  const lines = [];
+  const matchedA = [];
+
+  aList.forEach((ae, idx) => {
+    const uid = Number(ae.uid);
+    const hit = bMap.get(uid);
+    const name = ae.name || `条目 #${uid}`;
+    if (!hit) {
+      lines.push(`[新增] #${idx + 1}「${name}」(${ae.enabled ? '开启' : '关闭'})`);
+      return;
+    }
+    matchedA.push(uid);
+    const be = hit.e;
+    const changes = [];
+    if (!!be.enabled !== !!ae.enabled) changes.push(`开关: ${be.enabled ? '开' : '关'} → ${ae.enabled ? '开' : '关'}`);
+    if ((be.name || '') !== (ae.name || '')) changes.push(`标题:「${be.name || `#${uid}`}」→「${ae.name || `#${uid}`}」`);
+
+    const stLabel = (t) => (t === 'constant' ? '蓝灯' : (t === 'vectorized' ? '向量' : '绿灯'));
+    const bSt = be.strategy || {};
+    const aSt = ae.strategy || {};
+    if ((bSt.type || 'selective') !== (aSt.type || 'selective')) {
+      changes.push(`策略: ${stLabel(bSt.type)} → ${stLabel(aSt.type)}`);
+    }
+    if (keysSignature(bSt.keys) !== keysSignature(aSt.keys)) {
+      changes.push(`主关键词: [${formatKeysInput(bSt.keys) || '空'}] → [${formatKeysInput(aSt.keys) || '空'}]`);
+    }
+    if (
+      (bSt.keys_secondary?.logic || 'and_any') !== (aSt.keys_secondary?.logic || 'and_any')
+      || keysSignature(bSt.keys_secondary?.keys) !== keysSignature(aSt.keys_secondary?.keys)
+      || (bSt.scan_depth ?? 'same_as_global') !== (aSt.scan_depth ?? 'same_as_global')
+    ) {
+      changes.push('次要关键词/扫描深度修改');
+    }
+    if (JSON.stringify(be.position || null) !== JSON.stringify(ae.position || null)) {
+      changes.push(`位置/顺: ${be.position?.type || ''}(顺${be.position?.order ?? 100}) → ${ae.position?.type || ''}(顺${ae.position?.order ?? 100})`);
+    }
+    if (
+      (be.probability ?? 100) !== (ae.probability ?? 100)
+      || JSON.stringify(be.recursion || null) !== JSON.stringify(ae.recursion || null)
+      || JSON.stringify(be.effect || null) !== JSON.stringify(ae.effect || null)
+    ) {
+      changes.push('概率/递归/时效参数修改');
+    }
+    const oldC = be.content || '';
+    const newC = ae.content || '';
+    if (oldC !== newC) {
+      const diffs = computeLineDiff(oldC, newC);
+      const addCnt = diffs.filter((d) => d.type === 'add').length;
+      const delCnt = diffs.filter((d) => d.type === 'del').length;
+      changes.push(`正文修改 (${oldC.length}→${newC.length}字, +${addCnt}/-${delCnt}行)`);
+    }
+    if (changes.length > 0) {
+      lines.push(`#${idx + 1}「${name}」: ${changes.join('；')}`);
+    }
+  });
+
+  bList.forEach((be, idx) => {
+    const uid = Number(be.uid);
+    if (!aMap.has(uid)) {
+      lines.push(`[删除] 原 #${idx + 1}「${be.name || `条目 #${uid}`}」`);
+    }
+  });
+
+  const matchedB = bList.filter((be) => aMap.has(Number(be.uid))).map((be) => Number(be.uid));
+  if (matchedA.length === matchedB.length && matchedA.some((u, i) => u !== matchedB[i])) {
+    lines.push('[顺序调整] 条目排列顺序已调整');
+  }
+
+  return { hasChanges: lines.length > 0, count: lines.length, lines };
 }
 
 export function getWbPairDiffReasons(oe, ne) {

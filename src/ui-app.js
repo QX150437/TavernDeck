@@ -556,6 +556,11 @@ function handleRootClick(e) {
   }
   const requestClosePreview = () => {
     const doClose = () => {
+      if (state.previewCtx?.returnPreviewCtx) {
+        state.previewCtx = state.previewCtx.returnPreviewCtx;
+        renderPreviewModal();
+        return;
+      }
       const prevType = state.previewCtx?.type;
       discardPendingCustomMergeDraft();
       state.previewKey = null;

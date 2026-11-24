@@ -22,10 +22,14 @@ export function renderConfirmModal() {
   const extrasHtml = Array.isArray(c.extraButtons)
     ? c.extraButtons.map((btn, idx) => `<button class='td-btn ${escapeHtml(btn.className || 'warn')}' data-action='confirm-extra-idx' data-idx='${idx}'>${escapeHtml(btn.text)}</button>`).join('')
     : '';
+  const detailsArr = Array.isArray(c.details) ? c.details.filter(Boolean) : [];
+  const detailsHtml = detailsArr.length > 0
+    ? `<div class='td-confirm-details td-scroll'>${detailsArr.map((line) => `<div class='td-confirm-detail-line'>• ${escapeHtml(line)}</div>`).join('')}</div>`
+    : '';
   confirmLayerEl.innerHTML = `
-    <div class='td-modal td-modal-sm'>
+    <div class='td-modal ${detailsArr.length > 0 ? '' : 'td-modal-sm'}'>
       <div class='td-modal-head'><div class='td-modal-title'>${escapeHtml(c.title || '确认操作')}</div><button class='td-icon-btn' data-action='confirm-cancel'>${ICONS.close}</button></div>
-      <div class='td-modal-body'><div style='font-size:14px;color:var(--td-text);line-height:1.6;white-space:pre-line;'>${escapeHtml(c.message || '确定要执行此操作吗？')}</div></div>
+      <div class='td-modal-body'><div style='font-size:14px;color:var(--td-text);line-height:1.6;white-space:pre-line;'>${escapeHtml(c.message || '确定要执行此操作吗？')}</div>${detailsHtml}</div>
       <div class='td-modal-foot'><button class='td-btn' data-action='confirm-cancel'>取消</button>${extraHtml}${extrasHtml}<button class='td-btn ${escapeHtml(c.confirmClass || 'danger')}' data-action='confirm-ok'>${escapeHtml(c.confirmText || '确认')}</button></div>
     </div>`;
   uiCtx.syncOverlayBounds();

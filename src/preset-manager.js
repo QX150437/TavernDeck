@@ -1,6 +1,6 @@
-import { callTH, hasTH, getTH, getST, notify, genId, downloadJsonFile, logWarn } from './utils.js';
+import { callTH, hasTH, getTH, getST, notify, genId, makeItemKey, downloadJsonFile, logWarn } from './utils.js';
 import { hasUnsavedPresetChanges } from './preset-merge.js';
-import { state } from './store.js';
+import { state, saveStore } from './store.js';
 
 export const PRESET_SYSTEM_IDS = new Set([
   'main', 'nsfw', 'jailbreak', 'enhanceDefinitions',
@@ -77,6 +77,19 @@ export async function createNewPresetSafe(name, sourceName = '') {
   notify('success', `已创建预设「${clean}」`);
 }
 
+function renamePresetRefsInGroups(groups, oldName, newName) {
+  if (!Array.isArray(groups)) return;
+  groups.forEach((g) => {
+    (g.items || []).forEach((it) => {
+      if (it && it.type === 'preset' && it.preset === oldName) {
+        it.preset = newName;
+        it.key = makeItemKey(it);
+      }
+    });
+    if (Array.isArray(g.children)) renamePresetRefsInGroups(g.children, oldName, newName);
+  });
+}
+
 export async function renameSavedPresetSafe(oldName, newName) {
   const clean = String(newName || '').trim();
   if (!clean || clean === 'in_use') throw new Error('无效的新预设名称');
@@ -92,6 +105,8 @@ export async function renameSavedPresetSafe(oldName, newName) {
     state.store.activeSchemeByPreset[clean] = state.store.activeSchemeByPreset[oldName];
     delete state.store.activeSchemeByPreset[oldName];
   }
+  (state.store.schemes || []).forEach((s) => renamePresetRefsInGroups(s.groups, oldName, clean));
+  saveStore(state.store);
   notify('success', `已将预设重命名为「${clean}」`);
 }
 

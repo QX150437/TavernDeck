@@ -9,13 +9,13 @@ import {
   buildPresetDiffSession, executePresetStitch, findBestMatchingOldPreset,
   buildDualPresetSession, recomputePresetSessionDirty, pushPresetSessionUndo,
   undoPresetSession, redoPresetSession, findPresetCounterpart, computePresetGlobalDiff,
-  saveDualPresetSide, hydratePresetMergeDraft,
+  saveDualPresetSide, hydratePresetMergeDraft, describePresetChanges,
 } from './preset-merge.js';
 import {
   buildWorldbookDiffSession, executeWorldbookStitch,
   buildDualWorldbookSession, recomputeWbSessionDirty, pushWbSessionUndo,
   undoWbSession, redoWbSession, findWbCounterpart, computeWbGlobalDiff,
-  saveDualWbSide, hydrateWbMergeDraft,
+  saveDualWbSide, hydrateWbMergeDraft, describeWorldbookChanges,
 } from './worldbook-merge.js';
 import {
   initPresetMergeCustomCtx, renderPresetMergeCustomModal,
@@ -948,9 +948,29 @@ export const mergePanelUiModule = {
         return true;
       }
       if (action === 'dual-save-source') {
+        let diffDetails = [];
+        try {
+          if (isPreset) {
+            const pDir = session.migrateSettingsDir || (session.migrateSettings ? 'a2b' : 'none');
+            const nextPreset = {
+              prompts: session.sourceEntries.map((x) => x.data),
+              settings: pDir === 'b2a' && session.origBasePreset?.settings ? session.origBasePreset.settings : session.origSourcePreset?.settings,
+            };
+            diffDetails = describePresetChanges(session.origSourcePreset, nextPreset).lines;
+          } else {
+            const origList = Object.keys(session.origMap || {})
+              .filter((k) => k.startsWith('s:'))
+              .sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)))
+              .map((k) => session.origMap[k].data);
+            diffDetails = describeWorldbookChanges(origList, session.sourceEntries.map((x) => x.data)).lines;
+          }
+        } catch (err) {}
         openConfirm({
           title: '覆盖保存 A 确认',
-          message: `确定要将 A 侧内容覆盖保存到「${session.sourceName}」吗？（保存前会自动备份）`,
+          message: diffDetails.length > 0
+            ? `确定要将 A 侧以下 ${diffDetails.length} 项变动覆盖保存到「${session.sourceName}」吗？（保存前会自动备份）`
+            : `确定要将 A 侧内容覆盖保存到「${session.sourceName}」吗？（保存前会自动备份）`,
+          details: diffDetails,
           confirmText: '确认覆盖 A',
           confirmClass: 'warn',
           onConfirm: () => {
@@ -974,9 +994,29 @@ export const mergePanelUiModule = {
         return true;
       }
       if (action === 'dual-save-base') {
+        let diffDetails = [];
+        try {
+          if (isPreset) {
+            const pDir = session.migrateSettingsDir || (session.migrateSettings ? 'a2b' : 'none');
+            const nextPreset = {
+              prompts: session.baseEntries.map((x) => x.data),
+              settings: pDir === 'a2b' && session.origSourcePreset?.settings ? session.origSourcePreset.settings : session.origBasePreset?.settings,
+            };
+            diffDetails = describePresetChanges(session.origBasePreset, nextPreset).lines;
+          } else {
+            const origList = Object.keys(session.origMap || {})
+              .filter((k) => k.startsWith('b:'))
+              .sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)))
+              .map((k) => session.origMap[k].data);
+            diffDetails = describeWorldbookChanges(origList, session.baseEntries.map((x) => x.data)).lines;
+          }
+        } catch (err) {}
         openConfirm({
           title: '覆盖保存 B 确认',
-          message: `确定要将 B 侧内容覆盖保存到${isPreset ? '预设' : '世界书'}「${session.baseName}」吗？（保存前会自动备份）`,
+          message: diffDetails.length > 0
+            ? `确定要将 B 侧以下 ${diffDetails.length} 项变动覆盖保存到${isPreset ? '预设' : '世界书'}「${session.baseName}」吗？（保存前会自动备份）`
+            : `确定要将 B 侧内容覆盖保存到${isPreset ? '预设' : '世界书'}「${session.baseName}」吗？（保存前会自动备份）`,
+          details: diffDetails,
           confirmText: '确认覆盖 B',
           confirmClass: 'danger',
           onConfirm: () => {
