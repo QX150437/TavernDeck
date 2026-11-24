@@ -553,7 +553,41 @@ function handleRootClick(e) {
     if (typeof cancelFn === 'function') cancelFn();
     return;
   }
-  if (e.target === selectLayerEl) { state.selectPopup = null; renderSelectPopup(); return; }
+  const requestClosePreview = () => {
+    const doClose = () => {
+      const prevType = state.previewCtx?.type;
+      discardPendingCustomMergeDraft();
+      state.previewKey = null;
+      state.previewCtx = null;
+      state.snapshotDetailId = null;
+      state.snapshotDetailCtx = null;
+      renderPreviewModal();
+      if ((prevType?.startsWith('merge') || prevType === 'wbMergeCustom')
+        && (state.modal?.type === 'presetMerge' || state.modal?.type === 'wbMerge')
+        && state.modal.session?.v === 3) {
+        updateDualMergeBody(state.modal.session.kind);
+      }
+    };
+    const pc = state.previewCtx;
+    if (pc && (pc.type === 'pmAiEdit' || pc.type === 'wbAiEdit' || pc.type === 'mvuAiUpdate') && pc.step === 'review') {
+      openConfirm({
+        title: '关闭检视窗口确认',
+        message: '当前 AI 生成的检视结果尚未写回，关闭后本次结果将会丢失，确定要关闭吗？',
+        confirmText: '确认关闭',
+        confirmClass: 'danger',
+        onConfirm: doClose,
+      });
+      return;
+    }
+    doClose();
+  };
+
+  if (e.target === selectLayerEl) {
+    if (state.selectPopup?.timer) clearTimeout(state.selectPopup.timer);
+    state.selectPopup = null;
+    renderSelectPopup();
+    return;
+  }
   if (e.target === modalLayerEl) {
     confirmDiscardDirtyModal(() => {
       state.modal = null;
@@ -562,18 +596,7 @@ function handleRootClick(e) {
     return;
   }
   if (e.target === previewLayerEl) {
-    const prevType = state.previewCtx?.type;
-    discardPendingCustomMergeDraft();
-    state.previewKey = null;
-    state.previewCtx = null;
-    state.snapshotDetailId = null;
-    state.snapshotDetailCtx = null;
-    renderPreviewModal();
-    if ((prevType?.startsWith('merge') || prevType === 'wbMergeCustom')
-      && (state.modal?.type === 'presetMerge' || state.modal?.type === 'wbMerge')
-      && state.modal.session?.v === 3) {
-      updateDualMergeBody(state.modal.session.kind);
-    }
+    requestClosePreview();
     return;
   }
 
@@ -689,18 +712,7 @@ function handleRootClick(e) {
     return;
   }
   if (action === 'close-preview') {
-    const prevType = state.previewCtx?.type;
-    discardPendingCustomMergeDraft();
-    state.previewKey = null;
-    state.previewCtx = null;
-    state.snapshotDetailId = null;
-    state.snapshotDetailCtx = null;
-    renderPreviewModal();
-    if ((prevType?.startsWith('merge') || prevType === 'wbMergeCustom')
-      && (state.modal?.type === 'presetMerge' || state.modal?.type === 'wbMerge')
-      && state.modal.session?.v === 3) {
-      updateDualMergeBody(state.modal.session.kind);
-    }
+    requestClosePreview();
     return;
   }
   if (action === 'preview-undo') {
@@ -722,12 +734,18 @@ function handleRootClick(e) {
     }
     return;
   }
-  if (action.startsWith('es-') && handleEditorSearchClick(e, actionEl, action, previewLayerEl)) {
+  if (action.startsWith('es-') && handleEditorSearchClick(e, actionEl, action, actionEl.closest('.td-modal') || previewLayerEl)) {
     return;
   }
   if (action.startsWith('qi-') && handleQuickInsertClick(e, actionEl, action, {
-    previewLayerEl,
-    onAfterInsert: () => pushEditSnapshot(true),
+    previewLayerEl: actionEl.closest('.td-modal') || previewLayerEl,
+    onAfterInsert: () => {
+      if (selectLayerEl && selectLayerEl.contains(actionEl)) {
+        UI_MODULES.forEach((mod) => mod?.onSnippetInsert?.(selectLayerEl));
+      } else {
+        pushEditSnapshot(true);
+      }
+    },
     openConfirm,
   })) {
     return;
@@ -743,9 +761,10 @@ function handleRootClick(e) {
 
 function handleRootInput(e) {
   if (!e.target) return;
-  if (previewLayerEl && previewLayerEl.contains(e.target)) {
-    if (handleEditorSearchInput(e, previewLayerEl)) return;
-    if (state.previewCtx?.type === 'mergeCustom' || state.previewCtx?.type === 'wbMergeCustom') {
+  if ((previewLayerEl && previewLayerEl.contains(e.target)) || (selectLayerEl && selectLayerEl.contains(e.target))) {
+    const esContainer = e.target.closest('.td-modal') || previewLayerEl;
+    if (handleEditorSearchInput(e, esContainer)) return;
+    if (previewLayerEl && previewLayerEl.contains(e.target) && (state.previewCtx?.type === 'mergeCustom' || state.previewCtx?.type === 'wbMergeCustom')) {
       scheduleActiveMergeDraftSave(previewLayerEl);
     }
   }
@@ -784,7 +803,8 @@ function handleRootChange(e) {
 }
 
 function handleRootKeydown(e) {
-  if (previewLayerEl && handleEditorSearchKeydown(e, previewLayerEl)) return;
+  const esContainer = e.target?.closest?.('.td-modal') || previewLayerEl;
+  if (esContainer && handleEditorSearchKeydown(e, esContainer)) return;
   if (e.key === 'Enter' && !e.isComposing && e.target) {
     if (e.target.id === 'td-sp-color-input') selectLayerEl.querySelector("[data-action='select-popup-apply-color']")?.click();
     else if (e.target.id === 'td-move-idx-input') selectLayerEl.querySelector("[data-action='move-by-number']")?.click();

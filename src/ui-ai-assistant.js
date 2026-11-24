@@ -1,6 +1,6 @@
 import {
   escapeHtml, notify, computeLineDiff, formatKeysInput, parseKeysInput,
-  hasTH, callTH, getST, genId, logWarn, logError,
+  hasTH, callTH, getST, genId, copyToClipboard, logWarn, logError,
 } from './utils.js';
 import { state, saveStore } from './store.js';
 import { PRESET_SYSTEM_IDS, buildNewPromptEntry } from './preset-manager.js';
@@ -10,6 +10,84 @@ import {
   getAvailableApiTargets, fetchModelsForApiTarget, normalizeApiTargetValue,
 } from './ai-preset-edit.js';
 import { ICONS, uiCtx, openConfirm } from './ui-common.js';
+import { renderQuickInsertHtml } from './ui-snippets.js';
+import { renderSearchableTextareaHtml, bindEditorSearchEvents, syncEditorSearchHighlights } from './ui-editor-search.js';
+
+function readAiResultEditSnapshot(selectLayerEl, aiType) {
+  const q = (sel) => selectLayerEl?.querySelector(sel);
+  return {
+    name: q('#td-aire-name')?.value ?? '',
+    enabled: !!q('#td-aire-enabled')?.checked,
+    role: aiType === 'pmAiEdit' ? (q('#td-aire-role')?.value || 'system') : '',
+    keys: aiType === 'wbAiEdit' ? (q('#td-aire-keys')?.value ?? '') : '',
+    content: q('#td-aire-content')?.value ?? '',
+  };
+}
+
+function aiEditSnapshotsEqual(a, b) {
+  return !!a && !!b
+    && a.name === b.name
+    && a.enabled === b.enabled
+    && a.role === b.role
+    && a.keys === b.keys
+    && a.content === b.content;
+}
+
+function updateAiEditHistoryButtons(selectLayerEl, sp) {
+  if (!selectLayerEl || !sp) return;
+  const undoBtn = selectLayerEl.querySelector("[data-action='ai-edit-undo']");
+  const redoBtn = selectLayerEl.querySelector("[data-action='ai-edit-redo']");
+  if (undoBtn) undoBtn.disabled = !sp.history || sp.historyIdx <= 0;
+  if (redoBtn) redoBtn.disabled = !sp.history || sp.historyIdx >= sp.history.length - 1;
+}
+
+function applyAiResultEditSnapshot(selectLayerEl, sp, snap) {
+  if (!selectLayerEl || !snap) return;
+  const q = (sel) => selectLayerEl.querySelector(sel);
+  const nameEl = q('#td-aire-name');
+  const enEl = q('#td-aire-enabled');
+  const roleEl = q('#td-aire-role');
+  const keysEl = q('#td-aire-keys');
+  const contentEl = q('#td-aire-content');
+  if (nameEl) nameEl.value = snap.name;
+  if (enEl) enEl.checked = !!snap.enabled;
+  if (roleEl && sp.aiType === 'pmAiEdit') roleEl.value = snap.role || 'system';
+  if (keysEl && sp.aiType === 'wbAiEdit') keysEl.value = snap.keys || '';
+  if (contentEl) contentEl.value = snap.content;
+  syncEditorSearchHighlights('td-aire-content', selectLayerEl, false);
+}
+
+function pushAiEditSnapshot(selectLayerEl, sp, force = false) {
+  if (!sp || sp.type !== 'aiResultEdit') return;
+  if (sp.timer) { clearTimeout(sp.timer); sp.timer = null; }
+  const snap = readAiResultEditSnapshot(selectLayerEl, sp.aiType);
+  if (!Array.isArray(sp.history)) {
+    sp.history = [snap];
+    sp.historyIdx = 0;
+    updateAiEditHistoryButtons(selectLayerEl, sp);
+    return;
+  }
+  if (aiEditSnapshotsEqual(sp.history[sp.historyIdx], snap)) {
+    updateAiEditHistoryButtons(selectLayerEl, sp);
+    return;
+  }
+  if (!force || sp.historyIdx < sp.history.length - 1) {
+    sp.history = sp.history.slice(0, sp.historyIdx + 1);
+  }
+  sp.history.push(snap);
+  if (sp.history.length > 80) sp.history.shift();
+  sp.historyIdx = sp.history.length - 1;
+  updateAiEditHistoryButtons(selectLayerEl, sp);
+}
+
+function scheduleAiEditSnapshot(selectLayerEl, sp) {
+  if (!sp || sp.type !== 'aiResultEdit') return;
+  if (sp.timer) clearTimeout(sp.timer);
+  sp.timer = setTimeout(() => {
+    sp.timer = null;
+    pushAiEditSnapshot(selectLayerEl, sp, false);
+  }, 300);
+}
 
 const DEFAULT_AI_TEMPLATES = [
   { id: 'tpl_polish', name: '润色精简', content: '在不改变原有核心规则与约束的前提下，精简冗余表述，使指令更清晰、紧凑。' },
@@ -314,6 +392,86 @@ export function setAiRunBtnLoading(previewLayerEl, loading, selector = "[data-ac
 }
 
 export const aiAssistantUiModule = {
+  renderSelectPopup(sp, selectLayerEl) {
+    if (sp.type !== 'aiResultEdit') return false;
+    const pc = state.previewCtx;
+    const r = pc?.results?.[sp.rIdx];
+    if (!pc || !r || (pc.type !== 'pmAiEdit' && pc.type !== 'wbAiEdit')) return false;
+
+    if (!Array.isArray(sp.history) || sp.history.length === 0) {
+      sp.history = [{
+        name: r.newName || '',
+        enabled: !!r.newEnabled,
+        role: pc.type === 'pmAiEdit' ? (r.newRole || 'system') : '',
+        keys: pc.type === 'wbAiEdit' ? (r.newKeys || '') : '',
+        content: r.newContent || '',
+      }];
+      sp.historyIdx = 0;
+    }
+    const cur = sp.history[sp.historyIdx] || sp.history[0];
+    const isPreset = pc.type === 'pmAiEdit';
+
+    const extraFieldHtml = isPreset
+      ? `<div class='td-field'>
+           <label class='td-label'>角色身份 (Role)</label>
+           <select class='td-select' id='td-aire-role'>
+             <option value='system' ${cur.role === 'system' ? 'selected' : ''}>System</option>
+             <option value='user' ${cur.role === 'user' ? 'selected' : ''}>User</option>
+             <option value='assistant' ${cur.role === 'assistant' ? 'selected' : ''}>Assistant</option>
+           </select>
+         </div>`
+      : `<div class='td-field'>
+           <label class='td-label'>主要关键词（逗号或换行分隔）</label>
+           <input class='td-input' id='td-aire-keys' type='text' value='${escapeHtml(cur.keys || '')}' />
+         </div>`;
+
+    selectLayerEl.innerHTML = `
+      <div class='td-modal td-modal-tall'>
+        <div class='td-modal-head'>
+          <div class='td-modal-title'>手动编辑检视结果 · ${escapeHtml(cur.name || `结果 #${sp.rIdx + 1}`)}</div>
+          <div class='td-modal-head-actions'>
+            <button type='button' class='td-icon-btn' data-action='ai-edit-undo' title='撤销 (后退)' ${sp.historyIdx <= 0 ? 'disabled' : ''}>${ICONS.undo}</button>
+            <button type='button' class='td-icon-btn' data-action='ai-edit-redo' title='重做 (前进)' ${sp.historyIdx >= sp.history.length - 1 ? 'disabled' : ''}>${ICONS.redo}</button>
+            <button type='button' class='td-icon-btn' data-action='ai-edit-copy' title='复制正文'>${ICONS.copy}</button>
+            <button type='button' class='td-icon-btn' data-action='close-select-popup' title='关闭'>${ICONS.close}</button>
+          </div>
+        </div>
+        <div class='td-modal-body'>
+          <div style='display:flex;gap:8px;align-items:center;'>
+            <div class='td-field' style='flex:1;'>
+              <label class='td-label'>条目名称</label>
+              <input class='td-input' id='td-aire-name' type='text' value='${escapeHtml(cur.name || '')}' />
+            </div>
+            <label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'>
+              <input type='checkbox' class='td-checkbox' id='td-aire-enabled' ${cur.enabled ? 'checked' : ''} /><span>启用</span>
+            </label>
+          </div>
+          ${extraFieldHtml}
+          <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:170px;'>
+            <label class='td-label'>条目正文（支持顶部撤销/重做）</label>
+            ${renderQuickInsertHtml('td-aire-content')}
+            ${renderSearchableTextareaHtml({ id: 'td-aire-content', value: cur.content || '', minHeight: '170px' })}
+          </div>
+        </div>
+        <div class='td-modal-foot'>
+          <button type='button' class='td-btn' data-action='close-select-popup'>取消</button>
+          <button type='button' class='td-btn primary' data-action='ai-edit-save'>${ICONS.save} 保存到检视结果</button>
+        </div>
+      </div>`;
+    bindEditorSearchEvents(selectLayerEl);
+    updateAiEditHistoryButtons(selectLayerEl, sp);
+    uiCtx.syncOverlayBounds();
+    return true;
+  },
+
+  onSnippetInsert(layerEl) {
+    if (state.selectPopup?.type === 'aiResultEdit') {
+      pushAiEditSnapshot(layerEl, state.selectPopup, true);
+      return true;
+    }
+    return false;
+  },
+
   renderPreview(previewLayerEl) {
     if (state.previewCtx?.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
       const ai = state.previewCtx;
@@ -333,6 +491,7 @@ export const aiAssistantUiModule = {
                 <label style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;cursor:pointer;'>
                   <input type='checkbox' class='td-checkbox' data-action='ai-toggle-accept' data-ridx='${rIdx}' ${r.accepted ? 'checked' : ''} />
                   ${tagHtml}
+                  ${r.manualEdited ? "<span class='td-mode-tag multi'>已手动编辑</span>" : ''}
                   ${!r.isAiNew ? `<span class='td-idx-badge'>#${r.index + 1}</span>` : ''}
                   <span class='td-mgr-row-title' title='${escapeHtml(r.newName)}'>${escapeHtml(r.newName)}</span>
                 </label>
@@ -340,7 +499,8 @@ export const aiAssistantUiModule = {
               </div>
               <div style='display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;'>
                 ${r.note ? `<span style='font-size:11.5px;color:var(--td-text-muted);flex:1;'>AI 说明：${escapeHtml(r.note)}</span>` : '<span></span>'}
-                <div style='display:flex;gap:4px;flex-shrink:0;'>
+                <div style='display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;'>
+                  <button type='button' class='td-btn sm primary' data-action='ai-edit-result' data-ridx='${rIdx}'>${ICONS.edit} 手动编辑</button>
                   ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
                   ${isAdd ? `<button type='button' class='td-btn sm' data-action='ai-toggle-target-list' data-ridx='${rIdx}'>目标: ${r.targetList === 'prompts_unused' ? '未添加池' : '主列表'}</button>` : ''}
                 </div>
@@ -390,6 +550,7 @@ export const aiAssistantUiModule = {
                   <input type='checkbox' class='td-checkbox' data-action='ai-toggle-accept' data-ridx='${rIdx}' ${r.accepted ? 'checked' : ''} />
                   ${tagHtml}
                   ${!r.isAiNew ? `<span class='td-idx-badge'>#${r.index + 1}</span>` : ''}
+                  ${r.manualEdited ? "<span class='td-mode-tag multi'>已手动编辑</span>" : ''}
                   <span class='td-mgr-row-title' title='${escapeHtml(r.newName)}'>${escapeHtml(r.newName)}</span>
                 </label>
                 <span class='td-src-badge'>${r.newEnabled ? '开' : '关'}</span>
@@ -397,7 +558,10 @@ export const aiAssistantUiModule = {
               ${r.newKeys !== r.oldKeys && r.newKeys ? `<div style='font-size:11.5px;color:var(--td-single);'>关键词：${escapeHtml(r.newKeys)}</div>` : ''}
               <div style='display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;'>
                 ${r.note ? `<span style='font-size:11.5px;color:var(--td-text-muted);flex:1;'>AI 说明：${escapeHtml(r.note)}</span>` : '<span></span>'}
-                ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
+                <div style='display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;'>
+                  <button type='button' class='td-btn sm primary' data-action='ai-edit-result' data-ridx='${rIdx}'>${ICONS.edit} 手动编辑</button>
+                  ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
+                </div>
               </div>
               <div class='td-diff-box td-scroll'>${lines.map((l) => `<div class='td-diff-line ${l.type}'>${l.type === 'add' ? '+ ' : (l.type === 'del' ? '- ' : '  ')}${escapeHtml(l.text)}</div>`).join('')}</div>
             </div>`;
@@ -678,6 +842,71 @@ export const aiAssistantUiModule = {
         return true;
       }
     }
+    if (action === 'ai-edit-result' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      const rIdx = Number(actionEl.getAttribute('data-ridx'));
+      const r = state.previewCtx.results?.[rIdx];
+      if (!r) return true;
+      state.selectPopup = {
+        type: 'aiResultEdit',
+        aiType: state.previewCtx.type,
+        rIdx,
+        history: null,
+        historyIdx: 0,
+        timer: null,
+      };
+      uiCtx.renderSelectPopup();
+      return true;
+    }
+    if (action === 'ai-edit-undo' && state.selectPopup?.type === 'aiResultEdit') {
+      const selectLayerEl = uiCtx.getSelectLayer();
+      const sp = state.selectPopup;
+      pushAiEditSnapshot(selectLayerEl, sp, true);
+      if (sp.historyIdx > 0) {
+        sp.historyIdx--;
+        applyAiResultEditSnapshot(selectLayerEl, sp, sp.history[sp.historyIdx]);
+        updateAiEditHistoryButtons(selectLayerEl, sp);
+      }
+      return true;
+    }
+    if (action === 'ai-edit-redo' && state.selectPopup?.type === 'aiResultEdit') {
+      const selectLayerEl = uiCtx.getSelectLayer();
+      const sp = state.selectPopup;
+      if (Array.isArray(sp.history) && sp.historyIdx < sp.history.length - 1) {
+        sp.historyIdx++;
+        applyAiResultEditSnapshot(selectLayerEl, sp, sp.history[sp.historyIdx]);
+        updateAiEditHistoryButtons(selectLayerEl, sp);
+      }
+      return true;
+    }
+    if (action === 'ai-edit-copy' && state.selectPopup?.type === 'aiResultEdit') {
+      const contentEl = uiCtx.getSelectLayer()?.querySelector('#td-aire-content');
+      copyToClipboard(contentEl ? contentEl.value : '').then(() => notify('success', '正文已复制到剪贴板')).catch(() => notify('error', '复制失败'));
+      return true;
+    }
+    if (action === 'ai-edit-save' && state.selectPopup?.type === 'aiResultEdit') {
+      const selectLayerEl = uiCtx.getSelectLayer();
+      const sp = state.selectPopup;
+      pushAiEditSnapshot(selectLayerEl, sp, true);
+      const snap = readAiResultEditSnapshot(selectLayerEl, sp.aiType);
+      const r = state.previewCtx?.results?.[sp.rIdx];
+      if (r) {
+        if (snap.name.trim()) r.newName = snap.name.trim();
+        r.newEnabled = !!snap.enabled;
+        if (sp.aiType === 'pmAiEdit') {
+          r.newRole = ['system', 'user', 'assistant'].includes(snap.role) ? snap.role : 'system';
+        } else if (sp.aiType === 'wbAiEdit') {
+          r.newKeys = snap.keys;
+        }
+        r.newContent = snap.content;
+        r.manualEdited = true;
+      }
+      if (sp.timer) { clearTimeout(sp.timer); sp.timer = null; }
+      state.selectPopup = null;
+      uiCtx.renderSelectPopup();
+      uiCtx.renderPreviewModal();
+      notify('success', `已更新检视条目「${r?.newName || ''}」`);
+      return true;
+    }
     if (action === 'ai-toggle-accept' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       const r = state.previewCtx.results?.[Number(actionEl.getAttribute('data-ridx'))];
       if (r) { r.accepted = !r.accepted; uiCtx.renderPreviewModal(); }
@@ -779,6 +1008,13 @@ export const aiAssistantUiModule = {
     const target = e.target;
     if (!target) return false;
     const id = target.id || '';
+    if (state.selectPopup?.type === 'aiResultEdit' && ['td-aire-name', 'td-aire-keys', 'td-aire-content'].includes(id)) {
+      const selectLayerEl = uiCtx.getSelectLayer();
+      const isLarge = e.inputType === 'insertFromPaste' || e.inputType === 'deleteByCut';
+      if (isLarge) pushAiEditSnapshot(selectLayerEl, state.selectPopup, true);
+      else scheduleAiEditSnapshot(selectLayerEl, state.selectPopup);
+      return true;
+    }
     if (id === 'td-ai-instruction' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) { state.previewCtx.instruction = target.value; return true; }
     if (id === 'td-ai-model' && state.previewCtx) {
       state.store.settings.aiEditConfig.model = target.value;
@@ -796,6 +1032,10 @@ export const aiAssistantUiModule = {
     const target = e.target;
     if (!target) return false;
     const id = target.id || '';
+    if (state.selectPopup?.type === 'aiResultEdit' && (id === 'td-aire-enabled' || id === 'td-aire-role')) {
+      pushAiEditSnapshot(uiCtx.getSelectLayer(), state.selectPopup, true);
+      return true;
+    }
     if (id === 'td-ai-proxy-preset' || id === 'td-ai-jailbreak-preset') {
       saveSharedAiApiFieldsFromPreview(uiCtx.getPreviewLayer());
       syncAiPreviewDraftInputs(uiCtx.getPreviewLayer());

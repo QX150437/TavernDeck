@@ -840,6 +840,8 @@
   background: var(--td-surface); display: flex; flex-direction: column; gap: 7px; flex-shrink: 0;
 }
 .td-mgr-row.is-active { border-color: var(--td-accent); background: var(--td-accent-soft); }
+.td-mgr-row.is-ignored { opacity: 0.76; border-style: dashed; }
+.td-mode-tag.is-ignored { background: var(--td-switch-off); color: var(--td-text-muted); }
 .td-mgr-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .td-mgr-row-title { font-size: 13.5px; font-weight: 700; color: var(--td-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .td-mgr-row-sub { font-size: 11.5px; color: var(--td-text-muted); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }

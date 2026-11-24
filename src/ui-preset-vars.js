@@ -1,7 +1,67 @@
 import { escapeHtml, notify, copyToClipboard } from './utils.js';
-import { state } from './store.js';
+import { state, saveStore } from './store.js';
 import { buildNewPromptEntry } from './preset-manager.js';
 import { ICONS, uiCtx } from './ui-common.js';
+
+function getPresetVarIgnoreKey() {
+  if (state.modal?.type !== 'presetDetail') return '';
+  return state.modal.presetName === 'in_use'
+    ? (state.presetName || 'in_use')
+    : (state.modal.presetName || 'in_use');
+}
+
+function getIgnoredPresetVarsState() {
+  const pKey = getPresetVarIgnoreKey();
+  const map = state.store?.extensions?.ignoredPresetVars;
+  const raw = (pKey && map && typeof map[pKey] === 'object') ? map[pKey] : null;
+  return {
+    vars: new Set(Array.isArray(raw?.vars) ? raw.vars : []),
+    entries: new Set(Array.isArray(raw?.entries) ? raw.entries : []),
+  };
+}
+
+function writeIgnoredPresetVarsState(pKey, varsSet, entriesSet) {
+  if (!pKey) return;
+  state.store.extensions = state.store.extensions || {};
+  state.store.extensions.ignoredPresetVars = state.store.extensions.ignoredPresetVars || {};
+  if (varsSet.size === 0 && entriesSet.size === 0) {
+    delete state.store.extensions.ignoredPresetVars[pKey];
+  } else {
+    state.store.extensions.ignoredPresetVars[pKey] = {
+      vars: Array.from(varsSet),
+      entries: Array.from(entriesSet),
+    };
+  }
+  saveStore(state.store);
+}
+
+function toggleIgnoredPresetVar(varKey) {
+  const pKey = getPresetVarIgnoreKey();
+  if (!pKey || !varKey) return false;
+  const cur = getIgnoredPresetVarsState();
+  let ignored = false;
+  if (cur.vars.has(varKey)) cur.vars.delete(varKey);
+  else { cur.vars.add(varKey); ignored = true; }
+  writeIgnoredPresetVarsState(pKey, cur.vars, cur.entries);
+  return ignored;
+}
+
+function toggleIgnoredPresetEntry(entryIgnoreKey) {
+  const pKey = getPresetVarIgnoreKey();
+  if (!pKey || !entryIgnoreKey) return false;
+  const cur = getIgnoredPresetVarsState();
+  let ignored = false;
+  if (cur.entries.has(entryIgnoreKey)) cur.entries.delete(entryIgnoreKey);
+  else { cur.entries.add(entryIgnoreKey); ignored = true; }
+  writeIgnoredPresetVarsState(pKey, cur.vars, cur.entries);
+  return ignored;
+}
+
+function clearIgnoredPresetVars() {
+  const pKey = getPresetVarIgnoreKey();
+  if (!pKey) return;
+  writeIgnoredPresetVarsState(pKey, new Set(), new Set());
+}
 
 const GLOBAL_MACRO_OPS = new Set(['setglobalvar', 'getglobalvar', 'addglobalvar', 'incglobalvar', 'decglobalvar', 'hasglobalvar']);
 const MUTATE_MACRO_OPS = new Set(['addvar', 'addglobalvar', 'incvar', 'incglobalvar', 'decvar', 'decglobalvar']);
@@ -93,7 +153,9 @@ function buildReadMacroListText(varSpecs) {
   return lines.join('\n');
 }
 
-export function analyzePresetVariables(presetData, preferredInitSpec) {
+export function analyzePresetVariables(presetData, preferredInitSpec, ignoredState = null) {
+  const ignoredVars = ignoredState?.vars instanceof Set ? ignoredState.vars : new Set();
+  const ignoredEntries = ignoredState?.entries instanceof Set ? ignoredState.entries : new Set();
   const varMap = new Map();
   const parsedEntries = [];
   const validTextSpecs = new Set();
@@ -189,8 +251,11 @@ export function analyzePresetVariables(presetData, preferredInitSpec) {
   const entryList = [];
   parsedEntries.forEach((pe) => {
     const { spec, listName, idx, p, parsed } = pe;
+    const ignoreKey = p.id ? `id::${p.id}` : `name::${listName}::${p.name || idx}`;
     const entryMeta = {
       spec,
+      ignoreKey,
+      ignored: ignoredEntries.has(ignoreKey),
       listName,
       idx,
       id: p.id,
@@ -241,6 +306,8 @@ export function analyzePresetVariables(presetData, preferredInitSpec) {
     else if (hasInit && !hasRead) v.status = 'unused_init';
     else v.status = 'initialized';
 
+    v.ignored = ignoredVars.has(v.key);
+
     const activeInitIdxs = v.inits.filter((l) => l.listName === 'prompts' && l.enabled).map((l) => l.idx);
     const activeUseIdxs = [...v.assigns, ...v.reads].filter((l) => l.listName === 'prompts' && l.enabled).map((l) => l.idx);
     if (activeInitIdxs.length > 0 && activeUseIdxs.length > 0) {
@@ -254,10 +321,13 @@ export function analyzePresetVariables(presetData, preferredInitSpec) {
   });
 
   const orderWeight = { uninit_def: 0, uninit_ref: 1, inactive_init: 2, unused_init: 3, initialized: 4 };
-  variables.sort((a, b) => (orderWeight[a.status] - orderWeight[b.status]) || a.name.localeCompare(b.name));
+  variables.sort((a, b) => {
+    if (a.ignored !== b.ignored) return a.ignored ? 1 : -1;
+    return (orderWeight[a.status] - orderWeight[b.status]) || a.name.localeCompare(b.name);
+  });
 
   const varByKey = new Map(variables.map((v) => [v.key, v]));
-  const isNeedsAttention = (v) => v.status === 'uninit_def' || v.status === 'uninit_ref' || v.status === 'inactive_init';
+  const isNeedsAttention = (v) => !v.ignored && (v.status === 'uninit_def' || v.status === 'uninit_ref' || v.status === 'inactive_init');
 
   const entries = entryList.map((em) => {
     const initVars = Array.from(em.initKeys).map((k) => varByKey.get(k)).filter(Boolean);
@@ -265,11 +335,13 @@ export function analyzePresetVariables(presetData, preferredInitSpec) {
     const readVars = Array.from(em.readKeys).map((k) => varByKey.get(k)).filter(Boolean);
     const usedVars = new Map();
     [...assignVars, ...readVars].forEach((v) => usedVars.set(v.key, v));
-    const missingInitVars = Array.from(usedVars.values()).filter(isNeedsAttention);
+    const missingInitVars = em.ignored ? [] : Array.from(usedVars.values()).filter(isNeedsAttention);
 
     const definedMap = new Map();
     [...initVars, ...assignVars].forEach((v) => definedMap.set(v.key, v));
-    const unreferencedVars = Array.from(definedMap.values()).filter((v) => v.status === 'unused_init');
+    const unreferencedVars = em.ignored
+      ? []
+      : Array.from(definedMap.values()).filter((v) => !v.ignored && v.status === 'unused_init');
 
     return {
       ...em,
@@ -336,17 +408,23 @@ export function analyzePresetVariables(presetData, preferredInitSpec) {
   });
 
   const needInitList = variables.filter(isNeedsAttention);
-  const unusedInitList = variables.filter((v) => v.status === 'unused_init');
+  const unusedInitList = variables.filter((v) => !v.ignored && v.status === 'unused_init');
+  const ignoredVarList = variables.filter((v) => v.ignored);
+  const ignoredEntryList = entries.filter((em) => em.ignored);
   const stats = {
     total: variables.length,
-    initialized: variables.filter((v) => v.status === 'initialized').length,
+    initialized: variables.filter((v) => !v.ignored && v.status === 'initialized').length,
     needInit: needInitList.length,
     unusedInit: unusedInitList.length,
+    ignoredVars: ignoredVarList.length,
     needInitList,
     unusedInitList,
-    entryNeedInit: entries.filter((em) => em.missingInitVars.length > 0).length,
-    entryReady: entries.filter((em) => em.missingInitVars.length === 0).length,
-    entryUnref: entries.filter((em) => em.unreferencedVars.length > 0).length,
+    ignoredVarList,
+    ignoredEntryList,
+    entryNeedInit: entries.filter((em) => !em.ignored && em.missingInitVars.length > 0).length,
+    entryReady: entries.filter((em) => !em.ignored && em.missingInitVars.length === 0).length,
+    entryUnref: entries.filter((em) => !em.ignored && em.unreferencedVars.length > 0).length,
+    entryIgnored: ignoredEntryList.length,
   };
 
   return {
@@ -438,49 +516,63 @@ function renderEntryCardHtml(em, needsInit, highlightUnrefOnly = false) {
     });
   } else {
     em.initVars.forEach((v) => {
-      const cls = v.status === 'unused_init' ? 'single' : 'ok';
-      const suffix = v.status === 'unused_init' ? ' (未引用)' : '';
+      const cls = v.ignored ? 'is-ignored' : (v.status === 'unused_init' ? 'single' : 'ok');
+      const suffix = v.ignored ? ' (已忽略)' : (v.status === 'unused_init' ? ' (未引用)' : '');
       allChips.push(`<span class='td-mode-tag ${cls}' title='在本条目初始化'>初始化: ${escapeHtml(v.name)}${suffix}</span>`);
     });
     em.assignVars.forEach((v) => {
       const isMiss = needsInit(v);
-      const tagCls = v.status === 'inactive_init' || v.status === 'unused_init' ? 'single' : (isMiss ? 'del' : 'multi');
-      const tip = v.status === 'inactive_init'
-        ? '初始化条目未启用/在未添加池'
-        : (isMiss ? '未在初始化条目中初始化' : (v.status === 'unused_init' ? '已初始化但未引用' : '已初始化'));
-      const suffix = isMiss
-        ? (v.status === 'inactive_init' ? ' (未生效)' : ' (未初始化)')
-        : (v.status === 'unused_init' ? ' (未引用)' : '');
+      const tagCls = v.ignored
+        ? 'is-ignored'
+        : (v.status === 'inactive_init' || v.status === 'unused_init' ? 'single' : (isMiss ? 'del' : 'multi'));
+      const tip = v.ignored
+        ? '该变量已手动忽略'
+        : (v.status === 'inactive_init'
+          ? '初始化条目未启用/在未添加池'
+          : (isMiss ? '未在初始化条目中初始化' : (v.status === 'unused_init' ? '已初始化但未引用' : '已初始化')));
+      const suffix = v.ignored
+        ? ' (已忽略)'
+        : (isMiss
+          ? (v.status === 'inactive_init' ? ' (未生效)' : ' (未初始化)')
+          : (v.status === 'unused_init' ? ' (未引用)' : ''));
       allChips.push(`<span class='td-mode-tag ${tagCls}' title='${tip}'>赋值: ${escapeHtml(v.name)}${suffix}</span>`);
     });
     em.readVars.forEach((v) => {
       const isMiss = needsInit(v);
-      allChips.push(`<span class='td-mode-tag ${isMiss ? 'single' : 'multi'}' title='读取引用'>读取: ${escapeHtml(v.name)}${isMiss ? ' (未初始化)' : ''}</span>`);
+      const cls = v.ignored ? 'is-ignored' : (isMiss ? 'single' : 'multi');
+      const suffix = v.ignored ? ' (已忽略)' : (isMiss ? ' (未初始化)' : '');
+      allChips.push(`<span class='td-mode-tag ${cls}' title='读取引用'>读取: ${escapeHtml(v.name)}${suffix}</span>`);
     });
   }
 
+  const rowCls = em.ignored ? 'is-ignored' : (em.missingInitVars.length > 0 ? 'is-active' : '');
+  const statusBadgeHtml = em.ignored
+    ? "<span class='td-mode-tag is-ignored'>已忽略</span>"
+    : (highlightUnrefOnly
+      ? `<span class='td-mode-tag single'>${em.unreferencedVars.length} 项未引用</span>`
+      : (em.missingInitVars.length > 0
+        ? `<span class='td-mode-tag del'>${em.missingInitVars.length} 项待初始化</span>`
+        : (em.unreferencedVars.length > 0
+          ? `<span class='td-mode-tag single'>${em.unreferencedVars.length} 项未引用</span>`
+          : `<span class='td-mode-tag ok'>已就绪</span>`)));
+
   return `
-    <div class='td-mgr-row ${em.missingInitVars.length > 0 ? 'is-active' : ''}'>
+    <div class='td-mgr-row ${rowCls}'>
       <div class='td-mgr-row-head'>
         <div style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;'>
           <span class='td-idx-badge'>${em.listName === 'prompts_unused' ? '池' : ''}#${em.idx + 1}</span>
           <span class='td-mgr-row-title' title='${escapeHtml(em.name)}'>${escapeHtml(em.name)}</span>
         </div>
         <div style='display:flex;gap:4px;align-items:center;flex-shrink:0;'>
-          ${highlightUnrefOnly
-            ? `<span class='td-mode-tag single'>${em.unreferencedVars.length} 项未引用</span>`
-            : (em.missingInitVars.length > 0
-              ? `<span class='td-mode-tag del'>${em.missingInitVars.length} 项待初始化</span>`
-              : (em.unreferencedVars.length > 0
-                ? `<span class='td-mode-tag single'>${em.unreferencedVars.length} 项未引用</span>`
-                : `<span class='td-mode-tag ok'>已就绪</span>`))}
+          ${statusBadgeHtml}
           <span class='td-src-badge'>${em.enabled ? '开' : '关'}</span>
         </div>
       </div>
       <div class='td-var-chips'>${allChips.join('')}</div>
       <div class='td-mgr-row-actions'>
-        ${!highlightUnrefOnly && em.missingInitVars.length > 0 ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>一键初始化本条目 (${em.missingInitVars.length})</button>` : ''}
-        ${em.unreferencedVars.length > 0 && (highlightUnrefOnly || em.missingInitVars.length === 0) ? `<button type='button' class='td-btn sm primary' data-action='pv-ref-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>一键引用本条目 (${em.unreferencedVars.length})</button>` : ''}
+        ${!em.ignored && !highlightUnrefOnly && em.missingInitVars.length > 0 ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>一键初始化本条目 (${em.missingInitVars.length})</button>` : ''}
+        ${!em.ignored && em.unreferencedVars.length > 0 && (highlightUnrefOnly || em.missingInitVars.length === 0) ? `<button type='button' class='td-btn sm primary' data-action='pv-ref-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>一键引用本条目 (${em.unreferencedVars.length})</button>` : ''}
+        <button type='button' class='td-btn sm ${em.ignored ? 'warn' : ''}' data-action='pv-toggle-ignore-entry' data-ekey='${escapeHtml(em.ignoreKey)}'>${em.ignored ? '取消忽略' : '忽略'}</button>
         <button type='button' class='td-btn sm' data-action='pv-jump-entry' data-list='${escapeHtml(em.listName)}' data-idx='${em.idx}'>定位条目</button>
       </div>
     </div>`;
@@ -490,7 +582,8 @@ export const presetVarsUiModule = {
   renderPreview(previewLayerEl) {
     if (state.previewCtx?.type !== 'pmVarCheck' || state.modal?.type !== 'presetDetail') return false;
     const vc = state.previewCtx;
-    const report = analyzePresetVariables(state.modal.data, vc.targetSpec || undefined);
+    const ignoredState = getIgnoredPresetVarsState();
+    const report = analyzePresetVariables(state.modal.data, vc.targetSpec || undefined, ignoredState);
     if (!vc.targetSpec || (vc.targetSpec !== '__new__' && !report.candidateTargets.some((t) => t.spec === vc.targetSpec))) {
       vc.targetSpec = report.primaryInitSpec || report.candidateTargets[0]?.spec || '__new__';
     }
@@ -516,9 +609,9 @@ export const presetVarsUiModule = {
     let listHtml = '';
     if (tab === 'entries') {
       const filteredEntries = report.entries.filter((em) => {
-        if (filter === 'unregistered' && em.missingInitVars.length === 0) return false;
-        if (filter === 'registered' && em.missingInitVars.length > 0) return false;
-        if (filter === 'unused' && em.unreferencedVars.length === 0) return false;
+        if (filter === 'unregistered' && (em.ignored || em.missingInitVars.length === 0)) return false;
+        if (filter === 'unused' && (em.ignored || em.unreferencedVars.length === 0)) return false;
+        if (filter === 'ignored' && !em.ignored) return false;
         if (!q) return true;
         const matchEntry = em.name.toLowerCase().includes(q) || `#${em.idx + 1}`.includes(q);
         const matchVar = [...em.initVars, ...em.assignVars, ...em.readVars].some((v) => v.name.toLowerCase().includes(q));
@@ -527,19 +620,21 @@ export const presetVarsUiModule = {
 
       listHtml = filteredEntries
         .map((em) => renderEntryCardHtml(em, needsInit, filter === 'unused'))
-        .join('') || "<div class='td-group-empty'>没有匹配的含变量条目</div>";
+        .join('') || (filter === 'ignored'
+          ? "<div class='td-group-empty'>暂无已忽略的条目</div>"
+          : "<div class='td-group-empty'>没有匹配的含变量条目</div>");
     } else {
       const filteredVars = report.variables.filter((v) => {
-        if (filter === 'unregistered' && !needsInit(v)) return false;
-        if (filter === 'registered' && v.status !== 'initialized') return false;
-        if (filter === 'unused' && v.status !== 'unused_init') return false;
+        if (filter === 'unregistered' && (v.ignored || !needsInit(v))) return false;
+        if (filter === 'unused' && (v.ignored || v.status !== 'unused_init')) return false;
+        if (filter === 'ignored' && !v.ignored) return false;
         if (!q) return true;
         return v.name.toLowerCase().includes(q)
           || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q));
       });
 
       const varsHtml = filteredVars.map((v) => {
-        const badge = v.status === 'uninit_def'
+        const origBadge = v.status === 'uninit_def'
           ? "<span class='td-mode-tag del'>赋值未初始化</span>"
           : (v.status === 'uninit_ref'
             ? "<span class='td-mode-tag single'>仅引用未初始化</span>"
@@ -548,16 +643,19 @@ export const presetVarsUiModule = {
               : (v.status === 'unused_init'
                 ? "<span class='td-mode-tag single'>未引用</span>"
                 : "<span class='td-mode-tag ok'>已初始化</span>")));
+        const badge = v.ignored
+          ? `<span class='td-mode-tag is-ignored'>已忽略</span>${origBadge}`
+          : origBadge;
         const needReg = needsInit(v);
-        const isUnusedInit = v.status === 'unused_init';
+        const isUnusedInit = !v.ignored && v.status === 'unused_init';
         const initMacro = v.isGlobal ? `{{setglobalvar::${v.name}::}}` : `{{setvar::${v.name}::}}`;
         const readMacro = v.isGlobal ? `{{getglobalvar::${v.name}}}` : `{{getvar::${v.name}}}`;
-        const orderWarn = v.orderIssue
+        const orderWarn = !v.ignored && v.orderIssue
           ? `<span class='td-mode-tag single' title='主列表 #${v.orderIssue.firstUseIdx + 1} 先于初始化条目 #${v.orderIssue.firstInitIdx + 1}'>顺序靠后(#${v.orderIssue.firstUseIdx + 1}先用)</span>`
           : '';
 
         return `
-          <div class='td-mgr-row ${needReg ? 'is-active' : ''}'>
+          <div class='td-mgr-row ${v.ignored ? 'is-ignored' : (needReg ? 'is-active' : '')}'>
             <div class='td-mgr-row-head'>
               <div style='display:flex;align-items:center;gap:5px;min-width:0;flex:1;flex-wrap:wrap;'>
                 ${badge}
@@ -568,13 +666,14 @@ export const presetVarsUiModule = {
               <span class='td-src-badge'>读 ${v.reads.length} · 改 ${v.assigns.length}</span>
             </div>
             <div class='td-var-locs'>
-              ${formatLocBadges(v.inits, '初始化于') || `<div class='td-var-loc is-miss'><strong>初始化状态：</strong>未在基准初始化条目中找到（缺少 ${escapeHtml(initMacro)}）</div>`}
+              ${formatLocBadges(v.inits, '初始化于') || `<div class='td-var-loc ${v.ignored ? '' : 'is-miss'}'><strong>初始化状态：</strong>未在基准初始化条目中找到（缺少 ${escapeHtml(initMacro)}）</div>`}
               ${formatLocBadges(v.assigns, '赋值/修改')}
               ${formatLocBadges(v.reads, '读取引用') || "<div class='td-var-loc'><strong>读取引用：</strong>预设内暂无读取（可能由世界书或正则读取）</div>"}
             </div>
             <div class='td-mgr-row-actions'>
               ${needReg ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-one' data-vkey='${escapeHtml(v.key)}'>一键初始化</button>` : ''}
               ${isUnusedInit ? `<button type='button' class='td-btn sm primary' data-action='pv-ref-one' data-vkey='${escapeHtml(v.key)}'>一键引用</button>` : ''}
+              <button type='button' class='td-btn sm ${v.ignored ? 'warn' : ''}' data-action='pv-toggle-ignore-var' data-vkey='${escapeHtml(v.key)}'>${v.ignored ? '取消忽略' : '忽略'}</button>
               <button type='button' class='td-btn sm' data-action='pv-copy-macro' data-macro='${escapeHtml(initMacro)}'>复制初始化宏</button>
               <button type='button' class='td-btn sm' data-action='pv-copy-macro' data-macro='${escapeHtml(readMacro)}'>复制读取宏</button>
             </div>
@@ -585,7 +684,7 @@ export const presetVarsUiModule = {
       if (filter === 'unused') {
         const unrefKeys = new Set(filteredVars.map((v) => v.key));
         const relatedEntries = report.entries.filter((em) => {
-          if (em.unreferencedVars.length === 0) return false;
+          if (em.ignored || em.unreferencedVars.length === 0) return false;
           if (!q) return true;
           return em.unreferencedVars.some((v) => unrefKeys.has(v.key))
             || em.name.toLowerCase().includes(q)
@@ -598,11 +697,25 @@ export const presetVarsUiModule = {
             </div>
             ${relatedEntries.map((em) => renderEntryCardHtml(em, needsInit, true)).join('')}`;
         }
+      } else if (filter === 'ignored') {
+        const ignoredEntriesList = report.stats.ignoredEntryList.filter((em) => !q
+          || em.name.toLowerCase().includes(q)
+          || `#${em.idx + 1}`.includes(q)
+          || [...em.initVars, ...em.assignVars, ...em.readVars].some((v) => v.name.toLowerCase().includes(q)));
+        if (ignoredEntriesList.length > 0) {
+          relatedEntriesHtml = `
+            <div class='td-scope-head'>
+              <span>已忽略条目 (${ignoredEntriesList.length})</span>
+            </div>
+            ${ignoredEntriesList.map((em) => renderEntryCardHtml(em, needsInit, false)).join('')}`;
+        }
       }
 
       listHtml = (varsHtml || relatedEntriesHtml)
         ? `${varsHtml}${relatedEntriesHtml}`
-        : "<div class='td-group-empty'>未检测到匹配的变量宏</div>";
+        : (filter === 'ignored'
+          ? "<div class='td-group-empty'>暂无已忽略的变量或条目</div>"
+          : "<div class='td-group-empty'>未检测到匹配的变量宏</div>");
     }
 
     const showRefBar = filter === 'unused';
@@ -610,8 +723,11 @@ export const presetVarsUiModule = {
       || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q))).length;
 
     const cntNeedInit = tab === 'entries' ? report.stats.entryNeedInit : report.stats.needInit;
-    const cntReady = tab === 'entries' ? report.stats.entryReady : report.stats.initialized;
     const cntUnref = tab === 'entries' ? report.stats.entryUnref : report.stats.unusedInit;
+    const cntIgnored = tab === 'entries'
+      ? report.stats.entryIgnored
+      : (report.stats.ignoredVars + report.stats.entryIgnored);
+    const hasAnyIgnored = ignoredState.vars.size > 0 || ignoredState.entries.size > 0;
 
     previewLayerEl.classList.add('is-open');
     previewLayerEl.innerHTML = `
@@ -644,9 +760,15 @@ export const presetVarsUiModule = {
           <div class='td-filter-bar td-snap-filter-bar'>
             <button type='button' class='td-chip ${filter === 'all' ? 'active' : ''}' data-action='pv-set-filter' data-filter='all'>全部</button>
             <button type='button' class='td-chip ${filter === 'unregistered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unregistered'>需处理 (${cntNeedInit})</button>
-            <button type='button' class='td-chip ${filter === 'registered' ? 'active' : ''}' data-action='pv-set-filter' data-filter='registered'>已就绪 (${cntReady})</button>
             <button type='button' class='td-chip ${filter === 'unused' ? 'active' : ''}' data-action='pv-set-filter' data-filter='unused'>未引用 (${cntUnref})</button>
+            <button type='button' class='td-chip ${filter === 'ignored' ? 'active' : ''}' data-action='pv-set-filter' data-filter='ignored'>已忽略 (${cntIgnored})</button>
           </div>
+
+          ${filter === 'ignored' && hasAnyIgnored ? `
+            <div class='td-pv-target-bar' style='justify-content:space-between;'>
+              <span style='font-size:11.5px;color:var(--td-text-muted);'>已忽略 ${ignoredState.vars.size} 个变量 · ${ignoredState.entries.size} 个条目</span>
+              <button type='button' class='td-btn sm warn' data-action='pv-clear-ignored'>全部取消忽略</button>
+            </div>` : ''}
 
           ${showRefBar ? `
             <div class='td-pv-target-bar'>
@@ -693,14 +815,34 @@ export const presetVarsUiModule = {
       return true;
     }
     if (action === 'pv-copy-missing') {
-      const report = analyzePresetVariables(data, vc.targetSpec || undefined);
+      const report = analyzePresetVariables(data, vc.targetSpec || undefined, getIgnoredPresetVarsState());
       const text = buildInitMacroListText(report.stats.needInitList);
       if (!text) { notify('info', '没有缺失初始化的变量'); return true; }
       copyToClipboard(text).then(() => notify('success', `已复制 ${report.stats.needInitList.length} 个初始化宏`)).catch(() => notify('error', '复制失败'));
       return true;
     }
+    if (action === 'pv-toggle-ignore-var') {
+      const vkey = actionEl.getAttribute('data-vkey');
+      const ignored = toggleIgnoredPresetVar(vkey);
+      uiCtx.renderPreviewModal();
+      notify('info', ignored ? '已忽略该变量（可在「已忽略」分类中恢复）' : '已取消忽略该变量');
+      return true;
+    }
+    if (action === 'pv-toggle-ignore-entry') {
+      const ekey = actionEl.getAttribute('data-ekey');
+      const ignored = toggleIgnoredPresetEntry(ekey);
+      uiCtx.renderPreviewModal();
+      notify('info', ignored ? '已忽略该条目（可在「已忽略」分类中恢复）' : '已取消忽略该条目');
+      return true;
+    }
+    if (action === 'pv-clear-ignored') {
+      clearIgnoredPresetVars();
+      uiCtx.renderPreviewModal();
+      notify('info', '已取消当前预设的所有变量/条目忽略');
+      return true;
+    }
     if (action === 'pv-reg-one' || action === 'pv-reg-entry' || action === 'pv-reg-all') {
-      const report = analyzePresetVariables(data, vc.targetSpec || undefined);
+      const report = analyzePresetVariables(data, vc.targetSpec || undefined, getIgnoredPresetVarsState());
       let specs = [];
       if (action === 'pv-reg-one') {
         const v = report.variables.find((x) => x.key === actionEl.getAttribute('data-vkey'));
@@ -732,7 +874,7 @@ export const presetVarsUiModule = {
       return true;
     }
     if (action === 'pv-ref-one' || action === 'pv-ref-entry' || action === 'pv-ref-all') {
-      const report = analyzePresetVariables(data, vc.targetSpec || undefined);
+      const report = analyzePresetVariables(data, vc.targetSpec || undefined, getIgnoredPresetVarsState());
       const q = (vc.query || '').trim().toLowerCase();
       let specs = [];
       if (action === 'pv-ref-one') {

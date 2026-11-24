@@ -641,9 +641,13 @@ export const mvuUiModule = {
             <div class='td-modal-head'><div class='td-modal-title'>检视 AI 变量更新 · 目标楼层 #${ai.targetFloor}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='mvuAiUpdate' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
             <div class='td-modal-body'>
               <div class='td-field'>
-                <div style='display:flex;justify-content:space-between;align-items:center;'>
+                <div style='display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;'>
                   <label class='td-label'>AI 生成的命令（可直接微调）</label>
-                  <button type='button' class='td-chip' data-action='mvu-ai-reparse'>重新解析</button>
+                  <div style='display:flex;align-items:center;gap:4px;'>
+                    <button type='button' class='td-icon-btn' data-action='mvu-ai-reply-undo' title='撤销' ${(ai.replyHistoryIdx ?? 0) <= 0 ? 'disabled' : ''}>${ICONS.undo}</button>
+                    <button type='button' class='td-icon-btn' data-action='mvu-ai-reply-redo' title='重做' ${!ai.replyHistory || (ai.replyHistoryIdx ?? 0) >= ai.replyHistory.length - 1 ? 'disabled' : ''}>${ICONS.redo}</button>
+                    <button type='button' class='td-chip' data-action='mvu-ai-reparse'>重新解析</button>
+                  </div>
                 </div>
                 <textarea class='td-textarea td-scroll' id='td-mvu-ai-reply' style='min-height:130px;'>${escapeHtml(ai.replyText || '')}</textarea>
               </div>
@@ -1094,6 +1098,9 @@ export const mvuUiModule = {
       }).then(async ({ rawReply }) => {
         ai.loading = false;
         ai.replyText = rawReply;
+        ai.replyHistory = [rawReply];
+        ai.replyHistoryIdx = 0;
+        ai.replyTimer = null;
         ai.step = 'review';
         try {
           const res = await parseMvuCommandsPreview(rawReply, ai._baseData);
@@ -1108,6 +1115,42 @@ export const mvuUiModule = {
         logError('AI 更新 MVU 失败', err);
         notify('error', err.message || String(err));
       });
+      return true;
+    }
+    if (action === 'mvu-ai-reply-undo' && state.previewCtx?.type === 'mvuAiUpdate') {
+      const ai = state.previewCtx;
+      const ta = previewLayerEl?.querySelector('#td-mvu-ai-reply');
+      if (ai.replyTimer) { clearTimeout(ai.replyTimer); ai.replyTimer = null; }
+      if (ta && Array.isArray(ai.replyHistory) && ai.replyHistory[ai.replyHistoryIdx] !== ta.value) {
+        ai.replyHistory = ai.replyHistory.slice(0, ai.replyHistoryIdx + 1);
+        ai.replyHistory.push(ta.value);
+        ai.replyHistoryIdx = ai.replyHistory.length - 1;
+      }
+      if (Array.isArray(ai.replyHistory) && ai.replyHistoryIdx > 0) {
+        ai.replyHistoryIdx--;
+        const val = ai.replyHistory[ai.replyHistoryIdx];
+        ai.replyText = val;
+        if (ta) ta.value = val;
+        const uBtn = previewLayerEl?.querySelector("[data-action='mvu-ai-reply-undo']");
+        const rBtn = previewLayerEl?.querySelector("[data-action='mvu-ai-reply-redo']");
+        if (uBtn) uBtn.disabled = ai.replyHistoryIdx <= 0;
+        if (rBtn) rBtn.disabled = ai.replyHistoryIdx >= ai.replyHistory.length - 1;
+      }
+      return true;
+    }
+    if (action === 'mvu-ai-reply-redo' && state.previewCtx?.type === 'mvuAiUpdate') {
+      const ai = state.previewCtx;
+      const ta = previewLayerEl?.querySelector('#td-mvu-ai-reply');
+      if (Array.isArray(ai.replyHistory) && ai.replyHistoryIdx < ai.replyHistory.length - 1) {
+        ai.replyHistoryIdx++;
+        const val = ai.replyHistory[ai.replyHistoryIdx];
+        ai.replyText = val;
+        if (ta) ta.value = val;
+        const uBtn = previewLayerEl?.querySelector("[data-action='mvu-ai-reply-undo']");
+        const rBtn = previewLayerEl?.querySelector("[data-action='mvu-ai-reply-redo']");
+        if (uBtn) uBtn.disabled = ai.replyHistoryIdx <= 0;
+        if (rBtn) rBtn.disabled = ai.replyHistoryIdx >= ai.replyHistory.length - 1;
+      }
       return true;
     }
     if (action === 'mvu-ai-reparse' && state.previewCtx?.type === 'mvuAiUpdate') {
@@ -1149,6 +1192,30 @@ export const mvuUiModule = {
     if (!target) return false;
     const id = target.id || '';
     if (id === 'td-mvu-search' && state.modal?.type === 'mvuViewer') { state.modal.query = target.value; uiCtx.renderModal(); return true; }
+    if (id === 'td-mvu-ai-reply' && state.previewCtx?.type === 'mvuAiUpdate') {
+      const ai = state.previewCtx;
+      const val = target.value;
+      ai.replyText = val;
+      if (ai.replyTimer) clearTimeout(ai.replyTimer);
+      const pushReply = () => {
+        ai.replyTimer = null;
+        if (!Array.isArray(ai.replyHistory)) { ai.replyHistory = [val]; ai.replyHistoryIdx = 0; }
+        else if (ai.replyHistory[ai.replyHistoryIdx] !== val) {
+          ai.replyHistory = ai.replyHistory.slice(0, ai.replyHistoryIdx + 1);
+          ai.replyHistory.push(val);
+          if (ai.replyHistory.length > 80) ai.replyHistory.shift();
+          ai.replyHistoryIdx = ai.replyHistory.length - 1;
+        }
+        const previewLayerEl = uiCtx.getPreviewLayer();
+        const uBtn = previewLayerEl?.querySelector("[data-action='mvu-ai-reply-undo']");
+        const rBtn = previewLayerEl?.querySelector("[data-action='mvu-ai-reply-redo']");
+        if (uBtn) uBtn.disabled = ai.replyHistoryIdx <= 0;
+        if (rBtn) rBtn.disabled = ai.replyHistoryIdx >= ai.replyHistory.length - 1;
+      };
+      if (e.inputType === 'insertFromPaste' || e.inputType === 'deleteByCut') pushReply();
+      else ai.replyTimer = setTimeout(pushReply, 300);
+      return true;
+    }
     if (id === 'td-mvu-ai-instruction' && state.previewCtx?.type === 'mvuAiUpdate') { state.previewCtx.instruction = target.value; return true; }
     if (id === 'td-mvu-rule-search' && state.previewCtx?.type === 'mvuAiUpdate') { state.previewCtx.ruleSearch = target.value; uiCtx.renderPreviewModal(); return true; }
     return false;

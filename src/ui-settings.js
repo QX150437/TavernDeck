@@ -675,7 +675,12 @@ export const settingsUiModule = {
     }
 
     if (action === 'open-select-popup') { state.selectPopup = { type: actionEl.getAttribute('data-select-type') }; renderSelectPopup(); return true; }
-    if (action === 'close-select-popup') { state.selectPopup = null; renderSelectPopup(); return true; }
+    if (action === 'close-select-popup') {
+      if (state.selectPopup?.timer) clearTimeout(state.selectPopup.timer);
+      state.selectPopup = null;
+      renderSelectPopup();
+      return true;
+    }
     if (action === 'move-by-number'
       && (state.selectPopup?.type === 'movePromptTarget' || state.selectPopup?.type === 'moveWbTarget')) {
       const val = Number(selectLayerEl?.querySelector('#td-move-idx-input')?.value);
