@@ -2,6 +2,7 @@ import {
   STORAGE_KEY, SCHEMA_VERSION,
   getST, hasTH, callTH, notify, genId, makeItemKey, cloneItemRef, logWarn, logError,
 } from './utils.js';
+import { pushDevLog, getDevLogsStorageInfo } from './dev-tools.js';
 
 const MERGE_DRAFTS_STORAGE_KEY = 'TavernDeck_mergeDrafts_v1';
 const SNAPSHOT_PAYLOADS_STORAGE_KEY = 'TavernDeck_snapshotPayloads_v1';
@@ -1184,7 +1185,8 @@ export function getStorageDiagnostics(devLogCount = 0) {
   const settingsBytes = getUtf8ByteLength(JSON.stringify(storeObj.settings || {}));
   const orbImageBytes = getUtf8ByteLength(storeObj.settings?.orbImage || '');
   const snapshotsMetaBytes = getUtf8ByteLength(JSON.stringify(storeObj.snapshots || []));
-  const mvuMap = storeObj.extensions?.mvuStarred || {};
+  const extObj = storeObj.extensions && typeof storeObj.extensions === 'object' ? storeObj.extensions : {};
+  const mvuMap = extObj.mvuStarred || {};
   const mvuBytes = getUtf8ByteLength(JSON.stringify(mvuMap));
 
   const mvuItems = Object.keys(mvuMap).map((chatKey) => {
@@ -1195,6 +1197,55 @@ export function getStorageDiagnostics(devLogCount = 0) {
       bytes: getUtf8ByteLength(JSON.stringify(list)),
     };
   }).sort((a, b) => b.bytes - a.bytes);
+
+  const aiDraftsMap = extObj.aiEditDrafts && typeof extObj.aiEditDrafts === 'object' ? extObj.aiEditDrafts : {};
+  const aiDraftsBytes = getUtf8ByteLength(JSON.stringify(aiDraftsMap));
+  const aiDraftItems = Object.keys(aiDraftsMap).map((draftKey) => {
+    const d = aiDraftsMap[draftKey] || {};
+    const label = draftKey.startsWith('preset::')
+      ? `预设 · ${draftKey.slice(8)}`
+      : (draftKey.startsWith('worldbook::') ? `世界书 · ${draftKey.slice(11)}` : draftKey);
+    return {
+      draftKey,
+      label,
+      selectedCount: Array.isArray(d.selected) ? d.selected.length : 0,
+      refCount: Array.isArray(d.refSelected) ? d.refSelected.length : 0,
+      instructionLen: typeof d.instruction === 'string' ? d.instruction.length : 0,
+      bytes: getUtf8ByteLength(JSON.stringify(d)),
+      updatedAt: Number(d.updatedAt) || 0,
+    };
+  }).sort((a, b) => b.bytes - a.bytes);
+
+  const aiTplsArr = Array.isArray(extObj.aiInstructionTemplates) ? extObj.aiInstructionTemplates : [];
+  const aiTplsBytes = getUtf8ByteLength(JSON.stringify(aiTplsArr));
+
+  const quickTplsArr = Array.isArray(extObj.quickTemplates) ? extObj.quickTemplates : [];
+  const quickTplsBytes = getUtf8ByteLength(JSON.stringify(quickTplsArr));
+
+  const ignoredMap = extObj.ignoredPresetVars && typeof extObj.ignoredPresetVars === 'object' ? extObj.ignoredPresetVars : {};
+  const ignoredVarsBytes = getUtf8ByteLength(JSON.stringify(ignoredMap));
+  const ignoredVarItems = Object.keys(ignoredMap).map((presetKey) => {
+    const raw = ignoredMap[presetKey] || {};
+    return {
+      presetKey,
+      varCount: Array.isArray(raw.vars) ? raw.vars.length : 0,
+      entryCount: Array.isArray(raw.entries) ? raw.entries.length : 0,
+      bytes: getUtf8ByteLength(JSON.stringify(raw)),
+    };
+  }).sort((a, b) => b.bytes - a.bytes);
+
+  const backendLogMetaMap = extObj.backendLogDays && typeof extObj.backendLogDays === 'object' ? extObj.backendLogDays : {};
+  const backendLogMetaBytes = getUtf8ByteLength(JSON.stringify(backendLogMetaMap));
+
+  const knownExtKeys = new Set([
+    'mvuStarred', 'aiEditDrafts', 'aiInstructionTemplates',
+    'quickTemplates', 'ignoredPresetVars', 'backendLogDays',
+  ]);
+  const otherExtKeys = Object.keys(extObj).filter((k) => !knownExtKeys.has(k));
+  const otherExtBytes = otherExtKeys.reduce(
+    (sum, k) => sum + getUtf8ByteLength(JSON.stringify({ [k]: extObj[k] })),
+    0,
+  );
 
   const snapList = Array.isArray(storeObj.snapshots) ? storeObj.snapshots : [];
   const snapById = new Map(snapList.map((s) => [s.id, s]));
@@ -1287,6 +1338,8 @@ export function getStorageDiagnostics(devLogCount = 0) {
   const aiCache = state._aiModelsCache && typeof state._aiModelsCache === 'object' ? state._aiModelsCache : {};
   const aiCacheEndpoints = Object.keys(aiCache).length;
   const aiCacheBytes = getUtf8ByteLength(JSON.stringify(aiCache));
+  const devLogStats = getDevLogsStorageInfo();
+  const extraLoadedBooksCount = Object.keys(state.extraLoadedBooks || {}).length;
 
   const autoUnpinnedCount = snapList.filter((s) => s && s.auto && !s.pinned).length;
   const fullUnpinnedCount = snapList.filter((s) => s && s.mode === 'full' && !s.pinned && (!!s.payloadFile || !!payloadMap[s.id])).length;
@@ -1304,6 +1357,18 @@ export function getStorageDiagnostics(devLogCount = 0) {
       snapshotCount: snapList.length,
       mvuBytes,
       mvuItems,
+      aiDraftsBytes,
+      aiDraftItems,
+      aiTplsBytes,
+      aiTplsCount: aiTplsArr.length,
+      quickTplsBytes,
+      quickTplsCount: quickTplsArr.length,
+      ignoredVarsBytes,
+      ignoredVarItems,
+      backendLogMetaBytes,
+      backendLogMetaCount: Object.keys(backendLogMetaMap).length,
+      otherExtBytes,
+      otherExtKeys,
     },
     backend: {
       available: hasTH('uploadTavernFile') && hasTH('getTavernFile') && hasTH('deleteTavernFile'),
@@ -1353,7 +1418,11 @@ export function getStorageDiagnostics(devLogCount = 0) {
       } : null,
     },
     memory: {
-      devLogCount,
+      devLogCount: devLogCount || devLogStats.count,
+      devLogBytes: devLogStats.bytes,
+      opStepCount: devLogStats.opStepCount,
+      pendingBackendLogCount: pendingBackendLogs.length,
+      extraLoadedBooksCount,
       aiCacheEndpoints,
       aiCacheBytes,
     },
@@ -1414,6 +1483,59 @@ export function clearAllMvuStarred() {
   return count;
 }
 
+export function clearAiEditDraftItem(draftKey) {
+  const map = state.store?.extensions?.aiEditDrafts;
+  if (!map || !Object.prototype.hasOwnProperty.call(map, draftKey)) return false;
+  delete map[draftKey];
+  if (Object.keys(map).length === 0) delete state.store.extensions.aiEditDrafts;
+  saveStore(state.store);
+  return true;
+}
+
+export function clearAllAiEditDrafts() {
+  const map = state.store?.extensions?.aiEditDrafts;
+  if (!map) return 0;
+  const count = Object.keys(map).length;
+  delete state.store.extensions.aiEditDrafts;
+  saveStore(state.store);
+  return count;
+}
+
+export function clearAiInstructionTemplates() {
+  if (!state.store?.extensions) return 0;
+  const list = state.store.extensions.aiInstructionTemplates;
+  const count = Array.isArray(list) ? list.length : 0;
+  state.store.extensions.aiInstructionTemplates = [];
+  saveStore(state.store);
+  return count;
+}
+
+export function clearQuickTemplates() {
+  if (!state.store?.extensions?.quickTemplates) return 0;
+  const count = Array.isArray(state.store.extensions.quickTemplates) ? state.store.extensions.quickTemplates.length : 0;
+  delete state.store.extensions.quickTemplates;
+  saveStore(state.store);
+  return count;
+}
+
+export function clearIgnoredPresetVarsItem(presetKey) {
+  const map = state.store?.extensions?.ignoredPresetVars;
+  if (!map || !Object.prototype.hasOwnProperty.call(map, presetKey)) return false;
+  delete map[presetKey];
+  if (Object.keys(map).length === 0) delete state.store.extensions.ignoredPresetVars;
+  saveStore(state.store);
+  return true;
+}
+
+export function clearAllIgnoredPresetVars() {
+  const map = state.store?.extensions?.ignoredPresetVars;
+  if (!map) return 0;
+  const count = Object.keys(map).length;
+  delete state.store.extensions.ignoredPresetVars;
+  saveStore(state.store);
+  return count;
+}
+
 export async function cleanAutoBackupSnapshots() {
   const list = state.store.snapshots || [];
   const kept = [];
@@ -1439,10 +1561,8 @@ export async function slimAllUnpinnedFullSnapshots() {
   if (targets.length === 0) return 0;
 
   await Promise.all(targets.map(async (s) => {
-    if (s.payloadFile && hasTH('deleteTavernFile')) {
-      try { await callTH('deleteTavernFile', s.payloadFile); } catch (e) {
-        logWarn(`瘦身删除后端文件「${s.payloadFile}」失败`, e);
-      }
+    if (s.payloadFile) {
+      await deleteBackendFileByName(s.payloadFile);
       delete s.payloadFile;
     }
     if (Object.prototype.hasOwnProperty.call(map, s.id)) {
@@ -1596,11 +1716,14 @@ export function flushBackendLogQueue() {
         };
         saveStore(state.store, { silent: true });
       } catch (err) {
-        console.debug('[TavernDeck] 写入后端日志文件失败:', err);
+        if (pendingBackendLogs.length < 200) {
+          pendingBackendLogs.push(...items.slice(0, 200 - pendingBackendLogs.length));
+        }
+        pushDevLog('WARN', `写入 ${date} 后端日志文件失败: ${err?.message || err}`, { skipPersist: true });
       }
     }
   }).catch((err) => {
-    console.debug('[TavernDeck] 后端日志队列异常:', err);
+    pushDevLog('WARN', `后端日志持久化队列异常: ${err?.message || err}`, { skipPersist: true });
   });
   return backendLogTaskChain;
 }

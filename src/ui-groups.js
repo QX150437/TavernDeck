@@ -300,9 +300,9 @@ export function updatePickerList() {
             const isAnchor = isRange && anchorKey === item.key;
             const folderSub = item.folder ? `[${item.folder}] ` : '';
             return `
-              <div class='td-picker-row ${checked ? 'checked' : ''} ${isAnchor ? 'range-anchor' : ''}' data-action='toggle-pick' data-item-key='${escapeHtml(item.key)}'>
+              <div class='td-picker-row ${checked ? 'checked' : ''} ${isAnchor ? 'range-anchor' : ''}' data-item-key='${escapeHtml(item.key)}'>
                 <div class='td-picker-left'>
-                  <input class='td-checkbox' type='checkbox' ${checked ? 'checked' : ''} tabindex='-1' />
+                  <input class='td-checkbox' type='checkbox' data-action='toggle-pick' data-item-key='${escapeHtml(item.key)}' ${checked ? 'checked' : ''} />
                   <span class='td-item-name' title='${escapeHtml(folderSub + item.name)}'>${escapeHtml(folderSub + item.name)}</span>
                   ${isAnchor ? "<span class='td-mode-tag single'>起点</span>" : ''}
                   ${item.enabled ? "<span class='td-mode-tag multi'>启用</span>" : ''}
@@ -336,14 +336,14 @@ export const groupsUiModule = {
       const showBindOpt = m.mode !== 'rename';
       const bindChecked = typeof m.bindToCurrent === 'boolean' ? m.bindToCurrent : (getBoundSchemeIds(state.presetName).length > 0);
       m.bindToCurrent = bindChecked;
-      modalLayerEl.innerHTML = `<div class='td-modal td-modal-sm'><div class='td-modal-head'><div class='td-modal-title'>${title}</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div><div class='td-modal-body'><div class='td-field'><label class='td-label'>方案名称</label><input class='td-input' id='td-scheme-name-input' type='text' placeholder='例如：日常聊天、战斗模式、纯文风...' value='${escapeHtml(m.name || '')}' /></div>${showBindOpt ? `<label class='td-setting-row' style='cursor:pointer;'><div><div class='td-setting-title'>同时绑定到当前预设</div><div class='td-setting-desc'>${escapeHtml(state.presetName)}</div></div><input class='td-checkbox' id='td-scheme-bind-check' type='checkbox' ${bindChecked ? 'checked' : ''} /></label>` : ''}</div><div class='td-modal-foot'><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='submit-scheme-form'>确定</button></div></div>`;
+      modalLayerEl.innerHTML = `<div class='td-modal td-modal-sm'><div class='td-modal-head'><div class='td-modal-title'>${title}</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div><div class='td-modal-body'><div class='td-field'><label class='td-label'>方案名称</label><input class='td-input' id='td-scheme-name-input' type='text' placeholder='例如：日常聊天、战斗模式、纯文风...' value='${escapeHtml(m.name || '')}' /></div>${showBindOpt ? `<div class='td-setting-row'><div><div class='td-setting-title'>同时绑定到当前预设</div><div class='td-setting-desc'>${escapeHtml(state.presetName)}</div></div><input class='td-checkbox' id='td-scheme-bind-check' type='checkbox' ${bindChecked ? 'checked' : ''} /></div>` : ''}</div><div class='td-modal-foot'><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='submit-scheme-form'>确定</button></div></div>`;
       uiCtx.syncOverlayBounds();
       return true;
     }
 
     if (m.type === 'bindings') {
       const pool = ensureSchemesPool(), selectedSet = m.selectedIds;
-      const rowsHtml = pool.map((s) => `<div class='td-picker-row ${selectedSet.has(s.id) ? 'checked' : ''}' data-action='toggle-bind-scheme' data-scheme-id='${escapeHtml(s.id)}'><div class='td-picker-left'><input class='td-checkbox' type='checkbox' ${selectedSet.has(s.id) ? 'checked' : ''} tabindex='-1' /><span class='td-item-name'>${escapeHtml(s.name)}</span></div><span class='td-count-tag'>${(s.groups || []).length} 个分组</span></div>`).join('');
+      const rowsHtml = pool.map((s) => `<div class='td-picker-row ${selectedSet.has(s.id) ? 'checked' : ''}'><div class='td-picker-left'><input class='td-checkbox' type='checkbox' data-action='toggle-bind-scheme' data-scheme-id='${escapeHtml(s.id)}' ${selectedSet.has(s.id) ? 'checked' : ''} /><span class='td-item-name'>${escapeHtml(s.name)}</span></div><span class='td-count-tag'>${(s.groups || []).length} 个分组</span></div>`).join('');
       modalLayerEl.innerHTML = `<div class='td-modal'><div class='td-modal-head'><div class='td-modal-title'>预设方案绑定 · ${escapeHtml(state.presetName)}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='bindings' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div><div class='td-modal-body'><div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>勾选要绑定到当前预设的方案（支持多选，同一方案也可被多个预设共用）。若全部不选，则控制台默认列出全部方案。</div><div style='display:flex;flex-direction:column;gap:6px;'>${rowsHtml}</div></div><div class='td-modal-foot'><button class='td-btn' style='margin-right:auto;' data-action='clear-bindings'>全部不选(显示全部)</button><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='save-bindings'>保存绑定</button></div></div>`;
       uiCtx.syncOverlayBounds();
       return true;
@@ -442,8 +442,8 @@ export const groupsUiModule = {
       const sid = actionEl.getAttribute('data-scheme-id'); if (!sid) return true;
       const set = state.modal.selectedIds, willCheck = !set.has(sid);
       if (willCheck) set.add(sid); else set.delete(sid);
-      actionEl.classList.toggle('checked', willCheck);
-      const cb = actionEl.querySelector('.td-checkbox'); if (cb) cb.checked = willCheck;
+      actionEl.checked = willCheck;
+      actionEl.closest('.td-picker-row')?.classList.toggle('checked', willCheck);
       return true;
     }
     if (action === 'clear-bindings' && state.modal?.type === 'bindings') {
@@ -639,7 +639,6 @@ export const groupsUiModule = {
     }
     if (action === 'load-all-worldbooks' && state.modal?.type === 'picker') { refreshWorldbookCatalog(true).then(() => { if (state.modal?.type === 'picker') updatePickerList(); }); return true; }
     if (action === 'toggle-pick' && state.modal?.type === 'picker') {
-      if (e.target.closest("[data-action='preview-entry']")) return true;
       const m = state.modal, item = state.catalog.byKey.get(itemKey); if (!item) return true;
       const map = m.selectedMap;
       if (m.selectMode === 'range') {
@@ -662,8 +661,8 @@ export const groupsUiModule = {
       const willCheck = !(map.has(itemKey) || (!!item.legacyKey && map.has(item.legacyKey)));
       if (item.legacyKey) map.delete(item.legacyKey);
       if (willCheck) map.set(itemKey, cloneItemRef(item.ref)); else map.delete(itemKey);
-      actionEl.classList.toggle('checked', willCheck);
-      const cb = actionEl.querySelector('.td-checkbox'); if (cb) cb.checked = willCheck;
+      actionEl.checked = willCheck;
+      actionEl.closest('.td-picker-row')?.classList.toggle('checked', willCheck);
       const countEl = modalLayerEl.querySelector("[data-role='picker-count']"); if (countEl) countEl.textContent = `已选 ${map.size} 项`;
       const selectedChipEl = modalLayerEl.querySelector("[data-action='set-picker-filter'][data-filter='selected']");
       if (selectedChipEl) selectedChipEl.textContent = `已勾选 (${map.size})`;

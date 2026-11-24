@@ -7,6 +7,9 @@ import {
   exportStoreData, importStoreData, deleteSnapshotPayload,
   getStorageDiagnostics, cleanOrphanSnapshotPayloads, repairMissingSnapshotPayloads,
   clearMvuStarredChat, clearAllMvuStarred, cleanAutoBackupSnapshots,
+  clearAiEditDraftItem, clearAllAiEditDrafts,
+  clearAiInstructionTemplates, clearQuickTemplates,
+  clearIgnoredPresetVarsItem, clearAllIgnoredPresetVars,
   migrateLocalSnapshotsToBackend,
   flushBackendLogQueue, getBackendLogDayDetail, deleteBackendLogDay, clearAllBackendLogDays,
 } from './store.js';
@@ -90,6 +93,25 @@ export const toolsUiModule = {
               <button type='button' class='td-btn sm danger' data-action='storage-clear-mvu-chat' data-chat-key='${escapeHtml(it.chatKey)}'>清除</button>
             </div>`).join('');
 
+      const aiDraftRowsHtml = gv.aiDraftItems.length === 0
+        ? "<div style='font-size:11.5px;color:var(--td-text-dim);padding:4px 2px;'>暂无 AI 编辑指令草稿</div>"
+        : gv.aiDraftItems.map((it) => `
+            <div class='td-storage-row'>
+              <div class='td-storage-info'>
+                <div class='td-storage-title'>${escapeHtml(it.label)}</div>
+                <div class='td-storage-sub'>指令 ${it.instructionLen} 字 · 待编辑 ${it.selectedCount} 项 · 参考 ${it.refCount} 项 · ${formatByteSize(it.bytes)}</div>
+              </div>
+              <button type='button' class='td-btn sm danger' data-action='storage-clear-ai-draft' data-draft-key='${escapeHtml(it.draftKey)}'>清除</button>
+            </div>`).join('');
+
+      const ignoredVarRowsHtml = gv.ignoredVarItems.length === 0
+        ? "<div style='font-size:11.5px;color:var(--td-text-dim);padding:4px 2px;'>暂无变量检测忽略记录</div>"
+        : gv.ignoredVarItems.map((it) => `
+            <div class='td-storage-row'>
+              <span style='flex:1;min-width:0;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' title='${escapeHtml(it.presetKey)}'>${escapeHtml(it.presetKey)} (${it.varCount} 变量 / ${it.entryCount} 条目 · ${formatByteSize(it.bytes)})</span>
+              <button type='button' class='td-btn sm danger' data-action='storage-clear-ignored-var' data-preset-key='${escapeHtml(it.presetKey)}'>清除</button>
+            </div>`).join('');
+
       modalLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
@@ -140,6 +162,34 @@ export const toolsUiModule = {
                   <span style='flex:1;font-size:12.5px;'>快照轻量索引元数据 (${gv.snapshotCount} 条)</span>
                   <span class='td-src-badge'>${formatByteSize(gv.snapshotsMetaBytes)}</span>
                 </div>
+                <div class='td-storage-row'>
+                  <span style='flex:1;font-size:12.5px;'>后端日志按天索引 (${gv.backendLogMetaCount} 天)</span>
+                  <span class='td-src-badge'>${formatByteSize(gv.backendLogMetaBytes)}</span>
+                </div>
+                <div class='td-storage-row'>
+                  <span style='flex:1;font-size:12.5px;'>AI 指令模板 (${gv.aiTplsCount} 条)</span>
+                  <span class='td-src-badge'>${formatByteSize(gv.aiTplsBytes)}</span>
+                  ${gv.aiTplsCount > 0 ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-ai-tpls'>清空</button>` : ''}
+                </div>
+                <div class='td-storage-row'>
+                  <span style='flex:1;font-size:12.5px;'>快捷插入自定义模板 (${gv.quickTplsCount} 条)</span>
+                  <span class='td-src-badge'>${formatByteSize(gv.quickTplsBytes)}</span>
+                  ${gv.quickTplsCount > 0 ? `<button type='button' class='td-btn sm danger' data-action='storage-clear-quick-tpls'>清空</button>` : ''}
+                </div>
+                <details class='td-attr-diff-box' ${m.aiDraftsOpen ? 'open' : ''}>
+                  <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='aiDraftsOpen'>
+                    <span>AI 编辑指令与勾选草稿 (${gv.aiDraftItems.length} 项 · ${formatByteSize(gv.aiDraftsBytes)})</span>
+                    ${gv.aiDraftItems.length > 0 ? `<button type='button' class='td-btn sm danger' onclick='event.stopPropagation()' data-action='storage-clear-ai-drafts-all'>清空全部</button>` : ''}
+                  </summary>
+                  <div class='td-storage-sublist' style='padding:6px;max-height:200px;overflow-y:auto;border-top:1px solid var(--td-border);'>${aiDraftRowsHtml}</div>
+                </details>
+                <details class='td-attr-diff-box' ${m.ignoredVarsOpen ? 'open' : ''}>
+                  <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='ignoredVarsOpen'>
+                    <span>变量检测忽略记录 (${gv.ignoredVarItems.length} 个预设 · ${formatByteSize(gv.ignoredVarsBytes)})</span>
+                    ${gv.ignoredVarItems.length > 0 ? `<button type='button' class='td-btn sm danger' onclick='event.stopPropagation()' data-action='storage-clear-ignored-vars-all'>清空全部</button>` : ''}
+                  </summary>
+                  <div class='td-storage-sublist' style='padding:6px;max-height:180px;overflow-y:auto;border-top:1px solid var(--td-border);'>${ignoredVarRowsHtml}</div>
+                </details>
                 <details class='td-attr-diff-box' ${m.mvuOpen ? 'open' : ''}>
                   <summary class='td-attr-diff-head' data-action='storage-toggle-sec' data-sec='mvuOpen'>
                     <span>MVU 加精记录 (${gv.mvuItems.length} 个聊天 · ${formatByteSize(gv.mvuBytes)})</span>
@@ -147,6 +197,11 @@ export const toolsUiModule = {
                   </summary>
                   <div class='td-storage-sublist' style='padding:6px;border-top:1px solid var(--td-border);'>${mvuRowsHtml}</div>
                 </details>
+                ${gv.otherExtBytes > 0 ? `
+                  <div class='td-storage-row'>
+                    <span style='flex:1;font-size:12.5px;'>其他扩展字段 (${escapeHtml(gv.otherExtKeys.join(', '))})</span>
+                    <span class='td-src-badge'>${formatByteSize(gv.otherExtBytes)}</span>
+                  </div>` : ''}
               </div>
             </div>
 
@@ -227,13 +282,22 @@ export const toolsUiModule = {
               </div>
               <div class='td-storage-sublist'>
                 <div class='td-storage-row'>
-                  <span style='flex:1;font-size:12.5px;'>运行日志缓冲区 (${mem.devLogCount} / 200 条)</span>
+                  <span style='flex:1;font-size:12.5px;'>运行日志与操作轨迹 (${mem.devLogCount} / 200 条 · ${mem.opStepCount} 步 · ${formatByteSize(mem.devLogBytes)})</span>
                   <button type='button' class='td-btn sm' data-action='open-logs'>查看</button>
                   <button type='button' class='td-btn sm danger' data-action='storage-clear-logs'>清空</button>
                 </div>
+                ${mem.pendingBackendLogCount > 0 ? `
+                  <div class='td-storage-row'>
+                    <span style='flex:1;font-size:12.5px;'>待写入后端日志队列 (${mem.pendingBackendLogCount} 条)</span>
+                    <button type='button' class='td-btn sm primary' data-action='storage-refresh'>立即写入</button>
+                  </div>` : ''}
                 <div class='td-storage-row'>
                   <span style='flex:1;font-size:12.5px;'>AI 拉取的模型列表缓存 (${mem.aiCacheEndpoints} 个接口 · ${formatByteSize(mem.aiCacheBytes)})</span>
                   <button type='button' class='td-btn sm danger' data-action='storage-clear-ai-cache' ${mem.aiCacheEndpoints === 0 ? 'disabled' : ''}>清空</button>
+                </div>
+                <div class='td-storage-row'>
+                  <span style='flex:1;font-size:12.5px;'>已临时加载未绑定世界书索引 (${mem.extraLoadedBooksCount} 本)</span>
+                  <button type='button' class='td-btn sm danger' data-action='storage-clear-extra-books' ${mem.extraLoadedBooksCount === 0 ? 'disabled' : ''}>清空</button>
                 </div>
               </div>
             </div>
@@ -247,6 +311,9 @@ export const toolsUiModule = {
     if (m.type === 'logs') {
       const levelFilter = m.filter || 'ALL';
       const allLogs = getDevLogs('ALL');
+      const errCount = allLogs.filter((l) => l.level === 'ERR').length;
+      const warnCount = allLogs.filter((l) => l.level === 'WARN').length;
+      const infoCount = allLogs.filter((l) => l.level === 'INFO').length;
       const logs = getDevLogs(levelFilter);
 
       modalLayerEl.innerHTML = `
@@ -255,9 +322,9 @@ export const toolsUiModule = {
           <div class='td-modal-body td-picker-body'>
             <div class='td-filter-bar'>
               <button class='td-chip ${levelFilter === 'ALL' ? 'active' : ''}' data-action='logs-set-filter' data-filter='ALL'>全部 (${allLogs.length})</button>
-              <button class='td-chip ${levelFilter === 'ERR' ? 'active' : ''}' data-action='logs-set-filter' data-filter='ERR'>错误</button>
-              <button class='td-chip ${levelFilter === 'WARN' ? 'active' : ''}' data-action='logs-set-filter' data-filter='WARN'>警告</button>
-              <button class='td-chip ${levelFilter === 'INFO' ? 'active' : ''}' data-action='logs-set-filter' data-filter='INFO'>信息</button>
+              <button class='td-chip ${levelFilter === 'ERR' ? 'active' : ''}' data-action='logs-set-filter' data-filter='ERR'>错误 (${errCount})</button>
+              <button class='td-chip ${levelFilter === 'WARN' ? 'active' : ''}' data-action='logs-set-filter' data-filter='WARN'>警告 (${warnCount})</button>
+              <button class='td-chip ${levelFilter === 'INFO' ? 'active' : ''}' data-action='logs-set-filter' data-filter='INFO'>信息 (${infoCount})</button>
             </div>
             <div style='display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;'>
               <button class='td-btn sm' data-action='logs-refresh'>${ICONS.refresh} 刷新</button>
@@ -405,7 +472,15 @@ export const toolsUiModule = {
     const modalLayerEl = uiCtx.getModalLayer();
 
     if (action === 'open-storage-manager') {
-      state.modal = { type: 'storageManager', backendOpen: true, logsOpen: true, payloadsOpen: false, mvuOpen: false };
+      state.modal = {
+        type: 'storageManager',
+        backendOpen: true,
+        logsOpen: true,
+        payloadsOpen: false,
+        mvuOpen: false,
+        aiDraftsOpen: false,
+        ignoredVarsOpen: false,
+      };
       uiCtx.renderModal();
       flushBackendLogQueue().then(() => { if (state.modal?.type === 'storageManager') uiCtx.renderModal(); });
       return true;
@@ -419,6 +494,8 @@ export const toolsUiModule = {
       if (sec === 'backendOpen') state.modal.backendOpen = state.modal.backendOpen === false;
       else if (sec === 'logsOpen') state.modal.logsOpen = state.modal.logsOpen === false;
       else if (sec === 'payloadsOpen') state.modal.payloadsOpen = !state.modal.payloadsOpen;
+      else if (sec === 'aiDraftsOpen') state.modal.aiDraftsOpen = !state.modal.aiDraftsOpen;
+      else if (sec === 'ignoredVarsOpen') state.modal.ignoredVarsOpen = !state.modal.ignoredVarsOpen;
       else if (sec === 'mvuOpen') state.modal.mvuOpen = !state.modal.mvuOpen;
       return true;
     }
@@ -639,13 +716,87 @@ export const toolsUiModule = {
     if (action === 'storage-clear-logs') {
       clearDevLogs();
       uiCtx.renderModal();
-      notify('info', '运行日志已清空');
+      notify('info', '运行日志已清空', { skipLog: true });
       return true;
     }
     if (action === 'storage-clear-ai-cache') {
       state._aiModelsCache = {};
       uiCtx.renderModal();
       notify('info', '已清空 AI 模型列表内存缓存');
+      return true;
+    }
+    if (action === 'storage-clear-extra-books') {
+      state.extraLoadedBooks = {};
+      uiCtx.renderModal();
+      notify('info', '已清空未绑定世界书缓存索引');
+      return true;
+    }
+    if (action === 'storage-clear-ai-draft') {
+      const dk = actionEl.getAttribute('data-draft-key');
+      if (dk && clearAiEditDraftItem(dk)) {
+        uiCtx.renderModal();
+        notify('info', '已清除该条目的 AI 编辑草稿');
+      }
+      return true;
+    }
+    if (action === 'storage-clear-ai-drafts-all') {
+      openConfirm({
+        title: '清空 AI 编辑草稿确认',
+        message: '确定要清空所有预设与世界书的 AI 编辑指令及勾选草稿吗？',
+        confirmText: '确认清空',
+        onConfirm: () => {
+          const cnt = clearAllAiEditDrafts();
+          uiCtx.renderModal();
+          notify('info', `已清空 ${cnt} 项 AI 编辑草稿`);
+        },
+      });
+      return true;
+    }
+    if (action === 'storage-clear-ai-tpls') {
+      openConfirm({
+        title: '清空 AI 指令模板确认',
+        message: '确定要清空所有 AI 编辑常用指令模板吗？',
+        confirmText: '确认清空',
+        onConfirm: () => {
+          const cnt = clearAiInstructionTemplates();
+          uiCtx.renderModal();
+          notify('info', `已清空 ${cnt} 条 AI 指令模板`);
+        },
+      });
+      return true;
+    }
+    if (action === 'storage-clear-quick-tpls') {
+      openConfirm({
+        title: '清空快捷插入模板确认',
+        message: '确定要清空所有「我的模板」快捷插入自定义模板吗？',
+        confirmText: '确认清空',
+        onConfirm: () => {
+          const cnt = clearQuickTemplates();
+          uiCtx.renderModal();
+          notify('info', `已清空 ${cnt} 条快捷插入模板`);
+        },
+      });
+      return true;
+    }
+    if (action === 'storage-clear-ignored-var') {
+      const pk = actionEl.getAttribute('data-preset-key');
+      if (pk && clearIgnoredPresetVarsItem(pk)) {
+        uiCtx.renderModal();
+        notify('info', `已清除预设「${pk}」的变量忽略记录`);
+      }
+      return true;
+    }
+    if (action === 'storage-clear-ignored-vars-all') {
+      openConfirm({
+        title: '清空变量忽略记录确认',
+        message: '确定要清空所有预设的变量初始化检测忽略记录吗？',
+        confirmText: '确认清空',
+        onConfirm: () => {
+          const cnt = clearAllIgnoredPresetVars();
+          uiCtx.renderModal();
+          notify('info', `已清空 ${cnt} 个预设的变量忽略记录`);
+        },
+      });
       return true;
     }
 

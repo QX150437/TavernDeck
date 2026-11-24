@@ -39,7 +39,7 @@ import { mergeDialogsUiModule } from './ui-merge-dialogs.js';
 import { mergePanelUiModule, updateDualMergeBody } from './ui-merge-panel.js';
 import { presetsUiModule } from './ui-presets.js';
 import { worldbooksUiModule } from './ui-worldbooks.js';
-import { aiAssistantUiModule } from './ui-ai-assistant.js';
+import { aiAssistantUiModule, flushAiEditDraft } from './ui-ai-assistant.js';
 import { mvuUiModule } from './ui-mvu.js';
 import { settingsUiModule, renderSelectPopup } from './ui-settings.js';
 import { toolsUiModule } from './ui-tools.js';
@@ -556,6 +556,9 @@ function handleRootClick(e) {
   }
   const requestClosePreview = () => {
     const doClose = () => {
+      if (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit') {
+        flushAiEditDraft(previewLayerEl);
+      }
       if (state.previewCtx?.returnPreviewCtx) {
         state.previewCtx = state.previewCtx.returnPreviewCtx;
         renderPreviewModal();
@@ -839,13 +842,19 @@ function handleRootKeydown(e) {
 function onHostWandClick(e) { if (e.target?.closest?.('#extensionsMenuButton')) setTimeout(syncExtensionButton, 0); }
 
 function onHostBeforeUnload() {
-  if (previewLayerEl) flushActiveMergeDraft(previewLayerEl);
+  if (previewLayerEl) {
+    flushActiveMergeDraft(previewLayerEl);
+    flushAiEditDraft(previewLayerEl);
+  }
   flushBackendLogQueue();
 }
 
 function onHostVisibilityChange() {
   if (document.visibilityState === 'hidden') {
-    if (previewLayerEl) flushActiveMergeDraft(previewLayerEl);
+    if (previewLayerEl) {
+      flushActiveMergeDraft(previewLayerEl);
+      flushAiEditDraft(previewLayerEl);
+    }
     flushBackendLogQueue();
   }
 }

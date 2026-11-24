@@ -339,9 +339,9 @@ export function renderPresetMergeCustomModal(previewLayerEl, icons) {
           <label class='td-label'>缝合后条目名称</label>
           <input class='td-input' id='td-merge-custom-name' type='text' value='${escapeHtml(d.name)}' />
         </div>
-        <label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'>
+        <div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'>
           <input type='checkbox' class='td-checkbox' id='td-merge-custom-enabled' ${d.enabled ? 'checked' : ''} /><span>启用</span>
-        </label>
+        </div>
       </div>
       <div class='td-form-grid'>
         <div class='td-field'>
@@ -455,9 +455,9 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
           <label class='td-label'>缝合后条目标题</label>
           <input class='td-input' id='td-wbm-custom-name' type='text' value='${escapeHtml(d.name)}' />
         </div>
-        <label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'>
+        <div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'>
           <input type='checkbox' class='td-checkbox' id='td-wbm-custom-enabled' ${d.enabled ? 'checked' : ''} /><span>启用</span>
-        </label>
+        </div>
       </div>
       <div class='td-form-grid'>
         <div class='td-field'>
@@ -527,8 +527,8 @@ export function renderWbMergeCustomModal(previewLayerEl, icons) {
             </div>
           </div>
           <div style='display:flex;gap:12px;flex-wrap:wrap;align-items:center;'>
-            <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbm-custom-previn' ${d.preventIncoming ? 'checked' : ''} /> 禁止被递归</label>
-            <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbm-custom-prevout' ${d.preventOutgoing ? 'checked' : ''} /> 禁止递归其他</label>
+            <span style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbm-custom-previn' ${d.preventIncoming ? 'checked' : ''} /> 禁止被递归</span>
+            <span style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbm-custom-prevout' ${d.preventOutgoing ? 'checked' : ''} /> 禁止递归其他</span>
             <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'>延迟递归级数<input class='td-input' id='td-wbm-custom-delayuntil' type='number' placeholder='无' style='width:72px;height:28px;font-size:12px;' value='${escapeHtml(d.delayUntil)}' /></label>
           </div>
         </div>

@@ -13,6 +13,7 @@ import {
 } from './ui-common.js';
 import { renderQuickInsertHtml } from './ui-snippets.js';
 import { renderSearchableTextareaHtml, bindEditorSearchEvents } from './ui-editor-search.js';
+import { createAiEditPreviewCtx } from './ui-ai-assistant.js';
 
 function syncPresetDetailDirty(m) {
   if (!m || m.type !== 'presetDetail') return false;
@@ -243,7 +244,7 @@ export const presetsUiModule = {
             <div class='td-modal-head-actions'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='open-help' data-help-key='pmPromptEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body'>
-            <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(p.name || '')}' /></div><label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-pm-p-enabled' ${p.enabled ? 'checked' : ''} /><span>启用</span></label></div>
+            <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(p.name || '')}' /></div><div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-pm-p-enabled' ${p.enabled ? 'checked' : ''} /><span>启用</span></div></div>
             <div class='td-form-grid'>
               <div class='td-field'><label class='td-label'>角色身份 (Role)</label><select class='td-select' id='td-pm-p-role'><option value='system' ${p.role === 'system' ? 'selected' : ''}>System</option><option value='user' ${p.role === 'user' ? 'selected' : ''}>User</option><option value='assistant' ${p.role === 'assistant' ? 'selected' : ''}>Assistant</option></select></div>
               <div class='td-field'><label class='td-label'>插入位置</label><select class='td-select' id='td-pm-p-postype'><option value='relative' ${!isInChat ? 'selected' : ''}>相对位置 (Relative)</option><option value='in_chat' ${isInChat ? 'selected' : ''}>聊天深度 (In-Chat @D)</option></select></div>
@@ -407,9 +408,9 @@ export const presetsUiModule = {
         const orderIdx = checked ? dc.selectedKeys.indexOf(it.key) + 1 : 0;
         const isBase = checked && (dc.baseKey ? dc.baseKey === it.key : orderIdx === 1);
         return `
-          <div class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:40px;padding:7px 10px;' data-action='pm-diff-toggle-key' data-key='${escapeHtml(it.key)}'>
+          <div class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:40px;padding:7px 10px;'>
             <div class='td-picker-left'>
-              <input type='checkbox' class='td-checkbox' ${checked ? 'checked' : ''} tabindex='-1' />
+              <input type='checkbox' class='td-checkbox' data-action='pm-diff-toggle-key' data-key='${escapeHtml(it.key)}' ${checked ? 'checked' : ''} />
               <span class='td-idx-badge'>${escapeHtml(it.badge)}</span>
               <span class='td-item-name' style='font-size:13px;' title='${escapeHtml(it.name)}'>${escapeHtml(it.name)}</span>
             </div>
@@ -722,7 +723,7 @@ export const presetsUiModule = {
     }
     if (action === 'pm-open-ai-edit' && state.modal?.type === 'presetDetail') {
       state.previewKey = null; state.snapshotDetailId = null;
-      state.previewCtx = { type: 'pmAiEdit', step: 'setup', selectedKeys: new Set(), refSelectedKeys: new Set(), refExpanded: false, refSearch: '', instruction: '', search: '', loading: false, results: [] };
+      state.previewCtx = createAiEditPreviewCtx('pmAiEdit');
       uiCtx.renderPreviewModal();
       return true;
     }
@@ -761,7 +762,6 @@ export const presetsUiModule = {
         return true;
       }
       if (action === 'pm-diff-toggle-key') {
-        if (e.target.closest("[data-action='pm-diff-set-base']")) return true;
         const k = actionEl.getAttribute('data-key');
         if (!k) return true;
         const idx = dc.selectedKeys.indexOf(k);

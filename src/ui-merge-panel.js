@@ -128,14 +128,14 @@ function renderDualMidBarHtml(session) {
             ${isPreset ? `
               <div class='td-dual-param-row'>
                 <span style='color:var(--td-text-muted);font-weight:600;'>参数同步：</span>
-                <label class='td-dual-param-chk'>
+                <span class='td-dual-param-chk'>
                   <input type='checkbox' class='td-checkbox sm' data-action='dual-toggle-param-dir' data-dir='a2b' ${pDir === 'a2b' ? 'checked' : ''} />
                   <span>A 参数 → B</span>
-                </label>
-                <label class='td-dual-param-chk'>
+                </span>
+                <span class='td-dual-param-chk'>
                   <input type='checkbox' class='td-checkbox sm' data-action='dual-toggle-param-dir' data-dir='b2a' ${pDir === 'b2a' ? 'checked' : ''} />
                   <span>B 参数 → A</span>
-                </label>
+                </span>
               </div>` : ''}
             <div class='td-dual-save-row'>
               <button type='button' class='td-btn sm ${session.sourceDirty ? 'warn' : ''}' data-action='dual-save-source'>保存 A</button>
@@ -475,7 +475,7 @@ export const mergePanelUiModule = {
       const s = m.session;
       if (s.v !== 3) {
         const titleStr = `${s.oldName} ⇄ ${s.newName}`;
-        modalLayerEl.innerHTML = `<div class='td-modal td-modal-tall'><div class='td-modal-head'><div class='td-modal-title td-title-clickable' data-action='show-full-title' data-full-title='${escapeHtml(titleStr)}'>${escapeHtml(titleStr)}</div><div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='toggle-merge-controls'>${ICONS.sliders} 筛选与批量</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div><div class='td-modal-body td-picker-body'><div class='td-picker-summary'><span data-role='merge-summary-text'></span></div><div class='td-picker-controls'><div class='td-filter-bar'><button class='td-chip' data-action='set-merge-filter' data-filter='diff'>差异</button><button class='td-chip' data-action='set-merge-filter' data-filter='conflict'>冲突</button><button class='td-chip' data-action='set-merge-filter' data-filter='added'>新增</button><button class='td-chip' data-action='set-merge-filter' data-filter='removed'>删除</button><button class='td-chip' data-action='set-merge-filter' data-filter='all'>全部</button></div><div class='td-filter-bar'><button class='td-btn sm' data-action='merge-batch-states'>仅迁移旧版开关</button><button class='td-btn sm' data-action='merge-batch-old'>全选保留旧版</button><button class='td-btn sm' data-action='merge-batch-new'>全选采用新版</button></div><input class='td-input' id='td-merge-search' type='text' value='${escapeHtml(s.query || '')}' /></div><div class='td-picker-list td-scroll' data-role='merge-list'></div></div><div class='td-modal-foot' style='flex-wrap:wrap;'><span data-role='pm-merge-dirty' style='width:100%;font-size:11.5px;font-weight:600;color:var(--td-single);display:none;'></span><label style='margin-right:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;'><input type='checkbox' class='td-checkbox' id='td-merge-settings-cb' ${s.migrateSettings ? 'checked' : ''} /><span>迁移旧版参数</span></label><button class='td-btn' data-action='merge-save-as'>另存为新预设</button><button class='td-btn primary' data-action='merge-apply-target'>覆盖新版预设</button></div></div>`;
+        modalLayerEl.innerHTML = `<div class='td-modal td-modal-tall'><div class='td-modal-head'><div class='td-modal-title td-title-clickable' data-action='show-full-title' data-full-title='${escapeHtml(titleStr)}'>${escapeHtml(titleStr)}</div><div style='display:flex;gap:4px;'><button class='td-btn sm' data-action='toggle-merge-controls'>${ICONS.sliders} 筛选与批量</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div><div class='td-modal-body td-picker-body'><div class='td-picker-summary'><span data-role='merge-summary-text'></span></div><div class='td-picker-controls'><div class='td-filter-bar'><button class='td-chip' data-action='set-merge-filter' data-filter='diff'>差异</button><button class='td-chip' data-action='set-merge-filter' data-filter='conflict'>冲突</button><button class='td-chip' data-action='set-merge-filter' data-filter='added'>新增</button><button class='td-chip' data-action='set-merge-filter' data-filter='removed'>删除</button><button class='td-chip' data-action='set-merge-filter' data-filter='all'>全部</button></div><div class='td-filter-bar'><button class='td-btn sm' data-action='merge-batch-states'>仅迁移旧版开关</button><button class='td-btn sm' data-action='merge-batch-old'>全选保留旧版</button><button class='td-btn sm' data-action='merge-batch-new'>全选采用新版</button></div><input class='td-input' id='td-merge-search' type='text' value='${escapeHtml(s.query || '')}' /></div><div class='td-picker-list td-scroll' data-role='merge-list'></div></div><div class='td-modal-foot' style='flex-wrap:wrap;'><span data-role='pm-merge-dirty' style='width:100%;font-size:11.5px;font-weight:600;color:var(--td-single);display:none;'></span><div style='margin-right:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-merge-settings-cb' ${s.migrateSettings ? 'checked' : ''} /><span>迁移旧版参数</span></div><button class='td-btn' data-action='merge-save-as'>另存为新预设</button><button class='td-btn primary' data-action='merge-apply-target'>覆盖新版预设</button></div></div>`;
         updateLegacyPresetMergeBody();
         uiCtx.syncOverlayBounds();
         return true;

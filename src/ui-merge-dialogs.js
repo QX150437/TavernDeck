@@ -112,10 +112,10 @@ export const mergeDialogsUiModule = {
                   <button type='button' class='td-chip ${sp.crossMode !== 'move' ? 'active' : ''}' data-action='mig-set-crossmode' data-mode='copy'>复制迁移</button>
                   <button type='button' class='td-chip ${sp.crossMode === 'move' ? 'active' : ''}' data-action='mig-set-crossmode' data-mode='move'>移动迁移</button>
                 </div>
-                <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;'>
+                <span style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'>
                   <input type='checkbox' class='td-checkbox' id='td-mig-overwrite-cb' ${sp.overwriteMatch ? 'checked' : ''} />
                   <span>替换同名/同ID</span>
-                </label>
+                </span>
               </div>` : ''}
             <div style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;'>
               <input class='td-input' id='td-mig-target-idx' type='number' min='1' max='${maxN}' value='${numVal}' style='width:74px;height:32px;font-size:13.5px;text-align:center;' />
@@ -215,7 +215,7 @@ export const mergeDialogsUiModule = {
           <div class='td-modal-body'>
             <div style='display:flex;gap:8px;align-items:center;'>
               <div class='td-field' style='flex:1;'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(d.name || '')}' /></div>
-              <label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-med-enabled' ${d.enabled ? 'checked' : ''} /><span>启用</span></label>
+              <div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-med-enabled' ${d.enabled ? 'checked' : ''} /><span>启用</span></div>
             </div>
             ${attrsHtml}
             <div class='td-field' style='flex:1;display:flex;flex-direction:column;'>

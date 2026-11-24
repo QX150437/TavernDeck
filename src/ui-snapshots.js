@@ -398,11 +398,11 @@ export const snapshotsUiModule = {
     const switchRowsHtml = diff.switchDiffs.map((d) => {
       const checked = sel.has(d.diffId);
       return `
-        <label class='td-diff-check-row'>
+        <div class='td-diff-check-row'>
           ${!isCompare && d.restorable ? `<input type='checkbox' class='td-checkbox' data-action='toggle-snap-diff-check' data-diff-id='${escapeHtml(d.diffId)}' ${checked ? 'checked' : ''} />` : ''}
           <span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>${escapeHtml(d.name)}</span>
           <span class='td-mode-tag ${d.to ? 'ok' : 'single'}'>${d.from ? '开' : '关'} → ${d.to ? '开' : '关'}</span>
-        </label>`;
+        </div>`;
     }).join('');
 
     const contentRowsHtml = diff.contentDiffs.map((d) => {
@@ -426,11 +426,11 @@ export const snapshotsUiModule = {
     const settingRowsHtml = diff.settingDiffs.map((d) => {
       const checked = sel.has(d.diffId);
       return `
-        <label class='td-diff-check-row'>
+        <div class='td-diff-check-row'>
           ${!isCompare && d.restorable ? `<input type='checkbox' class='td-checkbox' data-action='toggle-snap-diff-check' data-diff-id='${escapeHtml(d.diffId)}' ${checked ? 'checked' : ''} />` : ''}
           <span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>${escapeHtml(d.label)}</span>
           <span class='td-mode-tag multi' style='max-width:52%;overflow:hidden;text-overflow:ellipsis;'>${escapeHtml(String(d.from))} → ${escapeHtml(String(d.to))}</span>
-        </label>`;
+        </div>`;
     }).join('');
 
     const structRowsHtml = diff.structDiffs.map((d) => {
@@ -440,11 +440,11 @@ export const snapshotsUiModule = {
         ? (isCompare ? '仅目标快照有' : '快照独有(可补回)')
         : (isCompare ? '仅基准快照有' : '当前新增(快照无)');
       return `
-        <label class='td-diff-check-row'>
+        <div class='td-diff-check-row'>
           ${!isCompare && d.restorable ? `<input type='checkbox' class='td-checkbox' data-action='toggle-snap-diff-check' data-diff-id='${escapeHtml(d.diffId)}' ${checked ? 'checked' : ''} />` : ''}
           <span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>${escapeHtml(d.name)}</span>
           <span class='td-mode-tag ${isSnapOnly ? 'ok' : 'del'}'>${label}</span>
-        </label>`;
+        </div>`;
     }).join('');
 
     const bodyDiffsHtml = diff.missingBook

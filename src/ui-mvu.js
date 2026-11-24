@@ -689,10 +689,10 @@ export const mvuUiModule = {
               </div>
               <div style='display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:10px;background:var(--td-surface);border:1px solid var(--td-border);'>
                 <div style='display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;'>
-                  <label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;'>
+                  <div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;'>
                     <input type='checkbox' class='td-checkbox' id='td-mvu-ai-include-rules' ${ai.includeRules ? 'checked' : ''} ${ai.allRuleCandidates.length === 0 ? 'disabled' : ''} />
                     <span data-role='mvu-rule-summary'>附带世界书变量规则（${ai.ruleMode === 'manual' ? '手动' : '自动'}: ${ai.selectedRuleKeys.size}/${ai.allRuleCandidates.length} 条）</span>
-                  </label>
+                  </div>
                   ${ai.allRuleCandidates.length > 0 ? `
                     <div style='display:flex;gap:4px;'>
                       ${ai.ruleMode === 'manual' ? `<button type='button' class='td-chip' data-action='mvu-ai-rules-auto'>恢复自动</button>` : ''}
@@ -711,10 +711,10 @@ export const mvuUiModule = {
                         const chk = ai.selectedRuleKeys.has(r.key);
                         return `
                           <div class='td-picker-row ${chk ? 'checked' : ''}' style='min-height:36px;padding:5px 8px;'>
-                            <label class='td-picker-left' style='cursor:pointer;'>
+                            <div class='td-picker-left'>
                               <input type='checkbox' class='td-checkbox' data-action='mvu-ai-toggle-rule' data-key='${escapeHtml(r.key)}' ${chk ? 'checked' : ''} />
                               <span class='td-item-name' style='font-size:12.5px;' title='${escapeHtml(`${r.bookName} / ${r.name}`)}'>[${escapeHtml(r.bookName)}] ${escapeHtml(r.name)}</span>
-                            </label>
+                            </div>
                             <div style='display:flex;align-items:center;gap:4px;flex-shrink:0;'>
                               ${r.autoMatched ? "<span class='td-mode-tag ok'>自动匹配</span>" : (!r.enabled ? "<span class='td-src-badge'>未启用</span>" : '')}
                               <button type='button' class='td-icon-btn' data-action='mvu-ai-preview-rule' data-key='${escapeHtml(r.key)}' title='预览条目内容'>${ICONS.eye}</button>
@@ -724,10 +724,10 @@ export const mvuUiModule = {
                   </div>` : ''}
               </div>
               ${ai.truncatedSnippet ? `
-                <label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;'>
+                <div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;'>
                   <input type='checkbox' class='td-checkbox' id='td-mvu-ai-include-trunc' ${ai.includeTruncated ? 'checked' : ''} />
                   <span>附带最新消息中的更新命令/截断片段以补全</span>
-                </label>` : ''}
+                </div>` : ''}
             </div>
             <div class='td-field' style='flex:1;display:flex;flex-direction:column;'>
               <label class='td-label'>3. 补充说明（可选，留空则由 AI 自动根据剧情推算）</label>

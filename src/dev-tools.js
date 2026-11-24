@@ -8,9 +8,17 @@ let captureInstalled = false;
 let currentUiContext = '主面板';
 let persistLogHandler = null;
 
+const OWN_BASE_URL = (() => {
+  try {
+    return String(import.meta.url || '').replace(/\/src\/dev-tools\.js(?:[?#].*)?$/i, '/').toLowerCase();
+  } catch (e) {
+    return '';
+  }
+})();
+
 const OWN_FILES = [
-  'taverndeck', 'index.js', 'utils.js', 'store.js', 'dev-tools.js', 'native-ui.js',
-  'catalog.js', 'snapshot.js', 'preset-manager.js', 'preset-merge.js',
+  'taverndeck', 'dev-tools.js', 'native-ui.js',
+  'src/catalog.js', 'src/snapshot.js', 'preset-manager.js', 'preset-merge.js',
   'worldbook-manager.js', 'worldbook-merge.js', 'ai-preset-edit.js', 'merge-ui.js',
   'ui-app.js', 'ui-views.js', 'ui-common.js', 'ui-drag.js', 'ui-groups.js',
   'ui-snapshots.js', 'ui-presets.js', 'ui-preset-vars.js', 'ui-worldbooks.js',
@@ -20,6 +28,8 @@ const OWN_FILES = [
 
 function isOwnSource(text) {
   const s = String(text || '').toLowerCase();
+  if (!s) return false;
+  if (OWN_BASE_URL && s.includes(OWN_BASE_URL)) return true;
   return OWN_FILES.some((f) => s.includes(f));
 }
 
@@ -150,6 +160,20 @@ export function getDevLogs(levelFilter = 'ALL') {
 
 export function clearDevLogs() {
   logBuffer.length = 0;
+}
+
+export function getDevLogsStorageInfo() {
+  let bytes = 0;
+  try {
+    const str = JSON.stringify(logBuffer) + JSON.stringify(opStepBuffer);
+    bytes = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(str).length : str.length;
+  } catch (e) {}
+  return {
+    count: logBuffer.length,
+    maxCount: MAX_LOGS,
+    opStepCount: opStepBuffer.length,
+    bytes,
+  };
 }
 
 export function formatSingleLogReport(l) {

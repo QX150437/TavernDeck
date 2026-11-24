@@ -613,6 +613,7 @@
   font-size: 12px; padding: 5px 10px; border-radius: 99px; border: 1px solid var(--td-border-strong);
   background: var(--td-bg-solid); color: var(--td-text-muted); cursor: pointer;
 }
+.td-chip:disabled { opacity: 0.45; cursor: not-allowed; }
 .td-chip.active { background: var(--td-accent); color: #fff; border-color: var(--td-accent); }
 .td-chip.range-on { background: var(--td-single); color: #fff; border-color: var(--td-single); font-weight: 700; }
 .td-range-hint {
@@ -627,7 +628,7 @@
 }
 .td-picker-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; min-height: 46px;
-  border-radius: 11px; border: 1px solid var(--td-border); background: var(--td-surface); cursor: pointer; flex-shrink: 0;
+  border-radius: 11px; border: 1px solid var(--td-border); background: var(--td-surface); flex-shrink: 0;
 }
 .td-picker-row.checked { background: var(--td-accent-soft); border-color: rgba(99, 102, 241, 0.45); }
 .td-picker-row.range-anchor { border: 2px solid var(--td-single) !important; background: var(--td-single-soft) !important; }
@@ -1130,7 +1131,7 @@
 }
 .td-diff-check-row {
   display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px;
-  background: var(--td-bg-solid); border: 1px solid var(--td-border); font-size: 12.5px; cursor: pointer;
+  background: var(--td-bg-solid); border: 1px solid var(--td-border); font-size: 12.5px;
 }
 .td-diff-check-card {
   display: flex; flex-direction: column; padding: 7px 8px; border-radius: 8px;
@@ -1272,7 +1273,7 @@
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11.5px;
 }
 .td-dual-param-chk {
-  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
   color: var(--td-text); font-weight: 600;
 }
 .td-checkbox.sm { width: 15px; height: 15px; }

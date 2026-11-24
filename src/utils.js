@@ -1,7 +1,7 @@
 export const APP_NAME = 'TavernDeck';
 export const APP_SHORT = 'TD';
 export const APP_CN = '酒馆总控台';
-export const APP_VERSION = 'v1.3.9';
+export const APP_VERSION = 'v1.4.1';
 export const STORAGE_KEY = 'TavernDeck';
 export const SCHEMA_VERSION = 3;
 export const ROOT_ID = 'tavern-deck-root';
@@ -21,17 +21,24 @@ export const SCOPE_LABELS = {
   character: '角色卡',
 };
 
+let lastDirectLogAt = 0;
+let lastDirectLogLevel = '';
+
 export function logInfo(msg, detail) {
   if (detail !== undefined) console.info(`[${APP_NAME}] ${msg}:`, detail);
   else console.info(`[${APP_NAME}] ${msg}`);
 }
 
 export function logWarn(msg, err) {
+  lastDirectLogAt = Date.now();
+  lastDirectLogLevel = 'warning';
   if (err !== undefined) console.warn(`[${APP_NAME}] ${msg}:`, err);
   else console.warn(`[${APP_NAME}] ${msg}`);
 }
 
 export function logError(msg, err) {
+  lastDirectLogAt = Date.now();
+  lastDirectLogLevel = 'error';
   if (err !== undefined) console.error(`[${APP_NAME}] ${msg}:`, err);
   else console.error(`[${APP_NAME}] ${msg}`);
 }
@@ -220,9 +227,17 @@ export function showToastElement({
 
 export function notify(type, message, opts = {}) {
   const kind = TOAST_ICONS[type] ? type : 'info';
-  if (kind === 'error') logError(message);
-  else if (kind === 'warning') logWarn(message);
-  else logInfo(message);
+  const isPairedDuplicate = (kind === 'error' || kind === 'warning')
+    && lastDirectLogLevel === kind
+    && (Date.now() - lastDirectLogAt) <= 50;
+  if (isPairedDuplicate) {
+    lastDirectLogAt = 0;
+    lastDirectLogLevel = '';
+  } else if (!opts?.skipLog) {
+    if (kind === 'error') logError(message);
+    else if (kind === 'warning') logWarn(message);
+    else logInfo(message);
+  }
 
   if (notifyRuntimeConfig.tdSilentToast && !opts?.forceShow && kind !== 'warning' && kind !== 'error') {
     return;

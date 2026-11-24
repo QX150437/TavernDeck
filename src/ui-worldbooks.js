@@ -18,6 +18,7 @@ import {
 } from './ui-common.js';
 import { renderQuickInsertHtml } from './ui-snippets.js';
 import { renderSearchableTextareaHtml, bindEditorSearchEvents } from './ui-editor-search.js';
+import { createAiEditPreviewCtx } from './ui-ai-assistant.js';
 
 function serializeWbEntries(entries) {
   return JSON.stringify(serializeRegExpDeep(entries || []));
@@ -255,7 +256,7 @@ export const worldbooksUiModule = {
             <div class='td-modal-head-actions'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='open-help' data-help-key='wbEntryEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body'>
-            <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>条目标题</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(e.name || '')}' /></div><label style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-wbe-enabled' ${e.enabled ? 'checked' : ''} /><span>启用</span></label></div>
+            <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>条目标题</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(e.name || '')}' /></div><div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-wbe-enabled' ${e.enabled ? 'checked' : ''} /><span>启用</span></div></div>
             <div class='td-form-grid'>
               <div class='td-field'><label class='td-label'>触发策略</label><select class='td-select' id='td-wbe-stype'><option value='selective' ${stype === 'selective' ? 'selected' : ''}>绿灯 (关键词)</option><option value='constant' ${stype === 'constant' ? 'selected' : ''}>蓝灯 (常驻)</option><option value='vectorized' ${stype === 'vectorized' ? 'selected' : ''}>向量化</option></select></div>
               <div class='td-field'><label class='td-label'>插入位置</label><select class='td-select' id='td-wbe-postype'>${posOpts}</select></div>
@@ -274,8 +275,8 @@ export const worldbooksUiModule = {
               <div class='td-field'><label class='td-label'>黏性 / 冷却 / 延迟</label><div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;'><input class='td-input' id='td-wbe-sticky' type='number' placeholder='黏' value='${escapeHtml(e.effect?.sticky ?? '')}' /><input class='td-input' id='td-wbe-cooldown' type='number' placeholder='冷' value='${escapeHtml(e.effect?.cooldown ?? '')}' /><input class='td-input' id='td-wbe-delay' type='number' placeholder='延' value='${escapeHtml(e.effect?.delay ?? '')}' /></div></div>
             </div>
             <div style='display:flex;gap:12px;flex-wrap:wrap;'>
-              <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-previn' ${e.recursion?.prevent_incoming ? 'checked' : ''} /> 禁止被递归激活</label>
-              <label style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-prevout' ${e.recursion?.prevent_outgoing ? 'checked' : ''} /> 禁止递归激活其他</label>
+              <span style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-previn' ${e.recursion?.prevent_incoming ? 'checked' : ''} /> 禁止被递归激活</span>
+              <span style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-prevout' ${e.recursion?.prevent_outgoing ? 'checked' : ''} /> 禁止递归激活其他</span>
             </div>
             <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:180px;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: e.content || '', minHeight: '140px' })}</div>
           </div>
@@ -546,7 +547,7 @@ export const worldbooksUiModule = {
     }
     if (action === 'wbd-open-ai-edit' && state.modal?.type === 'worldbookDetail') {
       state.previewKey = null; state.snapshotDetailId = null;
-      state.previewCtx = { type: 'wbAiEdit', step: 'setup', selectedKeys: new Set(), refSelectedKeys: new Set(), refExpanded: false, refSearch: '', instruction: '', search: '', loading: false, results: [] };
+      state.previewCtx = createAiEditPreviewCtx('wbAiEdit');
       uiCtx.renderPreviewModal();
       return true;
     }
