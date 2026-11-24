@@ -380,14 +380,31 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
     content: typeof it.prompt.content === 'string' ? it.prompt.content : '',
   }));
 
-  const refPayload = (referenceItems || []).map((it) => ({
-    index: it.index + 1,
-    listName: it.listName,
-    name: it.prompt.name || it.prompt.id,
-    role: it.prompt.role || 'system',
-    enabled: !!it.prompt.enabled,
-    content: typeof it.prompt.content === 'string' ? it.prompt.content : '',
-  }));
+  const refPayload = (referenceItems || []).map((it) => {
+    if (it.kind === 'worldbook' || it.entry) {
+      const e = it.entry || it;
+      return {
+        sourceType: 'worldbook',
+        sourceName: it.sourceName || it.bookName || '',
+        index: typeof it.index === 'number' ? it.index + 1 : undefined,
+        name: e.name || `条目 #${e.uid}`,
+        keys: formatKeysInput(e.strategy?.keys),
+        enabled: !!e.enabled,
+        content: typeof e.content === 'string' ? e.content : '',
+      };
+    }
+    const p = it.prompt || it;
+    return {
+      sourceType: 'preset',
+      sourceName: it.sourceName || '',
+      index: typeof it.index === 'number' ? it.index + 1 : undefined,
+      listName: it.listName || 'prompts',
+      name: p.name || p.id,
+      role: p.role || 'system',
+      enabled: !!p.enabled,
+      content: typeof p.content === 'string' ? p.content : '',
+    };
+  });
 
   const systemPrompt = [
     '你是一个专业的 SillyTavern (酒馆) 预设提示词工程助手。',
@@ -491,12 +508,31 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
     content: typeof it.entry.content === 'string' ? it.entry.content : '',
   }));
 
-  const refPayload = (referenceItems || []).map((it) => ({
-    index: it.index,
-    name: it.entry.name || `条目 #${it.entry.uid}`,
-    keys: formatKeysInput(it.entry.strategy?.keys),
-    content: typeof it.entry.content === 'string' ? it.entry.content : '',
-  }));
+  const refPayload = (referenceItems || []).map((it) => {
+    if (it.kind === 'preset' || it.prompt) {
+      const p = it.prompt || it;
+      return {
+        sourceType: 'preset',
+        sourceName: it.sourceName || '',
+        index: typeof it.index === 'number' ? it.index + 1 : undefined,
+        listName: it.listName || 'prompts',
+        name: p.name || p.id,
+        role: p.role || 'system',
+        enabled: !!p.enabled,
+        content: typeof p.content === 'string' ? p.content : '',
+      };
+    }
+    const e = it.entry || it;
+    return {
+      sourceType: 'worldbook',
+      sourceName: it.sourceName || it.bookName || '',
+      index: it.index,
+      name: e.name || `条目 #${e.uid}`,
+      keys: formatKeysInput(e.strategy?.keys),
+      enabled: !!e.enabled,
+      content: typeof e.content === 'string' ? e.content : '',
+    };
+  });
 
   const systemPrompt = [
     '你是一个专业的 SillyTavern (酒馆) 世界书 (Lorebook / World Info) 编写与编辑助手。',

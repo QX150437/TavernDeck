@@ -26,6 +26,171 @@ function getAiDraftKey(type) {
   return '';
 }
 
+function buildPresetRefItemsList(presetName, presetData) {
+  const out = [];
+  const seen = new Set();
+  const displayPreset = presetName === 'in_use'
+    ? `当前实时预设 (${state.presetName || 'in_use'})`
+    : presetName;
+  ['prompts', 'prompts_unused'].forEach((listName) => {
+    const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
+    list.forEach((p, idx) => {
+      if (!p) return;
+      const base = p.id ? `preset::${presetName}::${listName}::id::${p.id}` : `preset::${presetName}::${listName}::idx::${idx}`;
+      const refKey = seen.has(base) ? `${base}::${idx}` : base;
+      seen.add(refKey);
+      const badge = listName === 'prompts_unused' ? `[未添加 #${idx + 1}]` : `[主列表 #${idx + 1}]`;
+      const name = p.name || p.id || `条目 #${idx + 1}`;
+      out.push({
+        refKey,
+        kind: 'preset',
+        sourceName: presetName,
+        sourceLabel: `预设: ${displayPreset}`,
+        listName,
+        index: idx,
+        badge,
+        name,
+        label: `${badge} ${name}`,
+        enabled: !!p.enabled,
+        prompt: p,
+      });
+    });
+  });
+  return out;
+}
+
+function buildWorldbookRefItemsList(bookName, entries) {
+  const out = [];
+  const seen = new Set();
+  (Array.isArray(entries) ? entries : []).forEach((e, idx) => {
+    if (!e) return;
+    const base = (e.uid !== undefined && e.uid !== null)
+      ? `wb::${bookName}::uid::${e.uid}`
+      : `wb::${bookName}::idx::${idx}`;
+    const refKey = seen.has(base) ? `${base}::${idx}` : base;
+    seen.add(refKey);
+    const badge = `[#${idx + 1}]`;
+    const name = e.name || `条目 #${e.uid}`;
+    out.push({
+      refKey,
+      kind: 'worldbook',
+      sourceName: bookName,
+      sourceLabel: `世界书: ${bookName}`,
+      index: idx,
+      badge,
+      name,
+      label: `${badge} ${name}`,
+      enabled: !!e.enabled,
+      entry: e,
+    });
+  });
+  return out;
+}
+
+function getAllSavedPresetNames() {
+  const list = hasTH('getPresetNames') ? (callTH('getPresetNames') || []).filter((n) => n && n !== 'in_use') : [];
+  if (state.presetName && state.presetName !== 'in_use' && !list.includes(state.presetName)) {
+    list.unshift(state.presetName);
+  }
+  return list;
+}
+
+function getAllWorldbookNames() {
+  return hasTH('getWorldbookNames') ? (callTH('getWorldbookNames') || []) : [];
+}
+
+function getPresetRefItems(ai, presetName) {
+  if (!presetName) return [];
+  if (state.modal?.type === 'presetDetail' && state.modal.presetName === presetName) {
+    return buildPresetRefItemsList(presetName, state.modal.data);
+  }
+  ai.refCache = ai.refCache || { presets: {}, worldbooks: {} };
+  if (Array.isArray(ai.refCache.presets[presetName])) return ai.refCache.presets[presetName];
+  if (!hasTH('getPreset')) return [];
+  try {
+    const pData = callTH('getPreset', presetName);
+    const list = buildPresetRefItemsList(presetName, pData || {});
+    ai.refCache.presets[presetName] = list;
+    return list;
+  } catch (e) {
+    logWarn(`读取参考预设「${presetName}」失败`, e);
+    return [];
+  }
+}
+
+function getWorldbookRefItemsSync(ai, bookName) {
+  if (!bookName) return { items: [], loading: false };
+  if (state.modal?.type === 'worldbookDetail' && state.modal.bookName === bookName) {
+    return { items: buildWorldbookRefItemsList(bookName, state.modal.entries), loading: false };
+  }
+  ai.refCache = ai.refCache || { presets: {}, worldbooks: {} };
+  if (Array.isArray(ai.refCache.worldbooks[bookName])) {
+    return { items: ai.refCache.worldbooks[bookName], loading: false };
+  }
+  ai.refLoadingBooks = ai.refLoadingBooks || {};
+  if (!ai.refLoadingBooks[bookName] && hasTH('getWorldbook')) {
+    ai.refLoadingBooks[bookName] = true;
+    callTH('getWorldbook', bookName).then((entries) => {
+      ai.refCache.worldbooks[bookName] = buildWorldbookRefItemsList(bookName, entries || []);
+      delete ai.refLoadingBooks[bookName];
+      hydrateSelectedRefData(ai);
+      if (state.previewCtx === ai) uiCtx.renderPreviewModal();
+    }).catch((err) => {
+      delete ai.refLoadingBooks[bookName];
+      logWarn(`加载参考世界书「${bookName}」失败`, err);
+      if (state.previewCtx === ai) uiCtx.renderPreviewModal();
+    });
+  }
+  return { items: [], loading: !!ai.refLoadingBooks[bookName] };
+}
+
+function hydrateSelectedRefData(ai) {
+  if (!ai) return;
+  ai.refSelectedData = ai.refSelectedData instanceof Map ? ai.refSelectedData : new Map();
+  ai.refSelectedKeys.forEach((rk) => {
+    if (ai.refSelectedData.has(rk)) return;
+    if (rk.startsWith('preset::')) {
+      const sName = rk.slice(8).split('::')[0];
+      const hit = getPresetRefItems(ai, sName).find((x) => x.refKey === rk);
+      if (hit) ai.refSelectedData.set(rk, hit);
+    } else if (rk.startsWith('wb::')) {
+      const bName = rk.slice(4).split('::')[0];
+      const { items } = getWorldbookRefItemsSync(ai, bName);
+      const hit = items.find((x) => x.refKey === rk);
+      if (hit) ai.refSelectedData.set(rk, hit);
+    }
+  });
+}
+
+async function resolveAllSelectedReferenceItems(ai) {
+  hydrateSelectedRefData(ai);
+  const missingBooks = new Set();
+  ai.refSelectedKeys.forEach((rk) => {
+    if (!ai.refSelectedData.has(rk) && rk.startsWith('wb::')) {
+      const bName = rk.slice(4).split('::')[0];
+      if (bName) missingBooks.add(bName);
+    }
+  });
+  if (missingBooks.size > 0 && hasTH('getWorldbook')) {
+    ai.refCache = ai.refCache || { presets: {}, worldbooks: {} };
+    await Promise.all(Array.from(missingBooks).map(async (bName) => {
+      try {
+        const entries = await callTH('getWorldbook', bName);
+        ai.refCache.worldbooks[bName] = buildWorldbookRefItemsList(bName, entries || []);
+      } catch (e) {
+        logWarn(`加载参考世界书「${bName}」失败`, e);
+      }
+    }));
+    hydrateSelectedRefData(ai);
+  }
+  const out = [];
+  ai.refSelectedKeys.forEach((rk) => {
+    const it = ai.refSelectedData.get(rk);
+    if (it) out.push(it);
+  });
+  return out;
+}
+
 function encodeAiKeySet(type, keySet) {
   const out = [];
   if (!(keySet instanceof Set)) return out;
@@ -76,23 +241,51 @@ export function createAiEditPreviewCtx(type) {
   const selectedKeys = new Set();
   const refSelectedKeys = new Set();
 
+  const isPresetCtx = type === 'pmAiEdit' && state.modal?.type === 'presetDetail';
+  const curPresetName = isPresetCtx ? (state.modal.presetName || 'in_use') : (state.presetName || getAllSavedPresetNames()[0] || 'in_use');
+  const curBookName = (type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail')
+    ? (state.modal.bookName || '')
+    : (getAllWorldbookNames()[0] || '');
+
   if (rawDraft && typeof rawDraft === 'object') {
     (Array.isArray(rawDraft.selected) ? rawDraft.selected : []).forEach((t) => {
       const resolved = tokenMap.get(t);
       if (resolved) selectedKeys.add(resolved);
     });
     (Array.isArray(rawDraft.refSelected) ? rawDraft.refSelected : []).forEach((t) => {
+      if (typeof t === 'string' && (t.startsWith('preset::') || t.startsWith('wb::'))) {
+        refSelectedKeys.add(t);
+        return;
+      }
       const resolved = tokenMap.get(t);
-      if (resolved) refSelectedKeys.add(resolved);
+      if (resolved) {
+        if (isPresetCtx) {
+          const [ln, idxStr] = resolved.split('::');
+          const p = state.modal.data?.[ln]?.[Number(idxStr)];
+          if (p) refSelectedKeys.add(p.id ? `preset::${curPresetName}::${ln}::id::${p.id}` : `preset::${curPresetName}::${ln}::idx::${idxStr}`);
+        } else if (type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
+          const idx = Number(resolved);
+          const e = state.modal.entries?.[idx];
+          if (e) refSelectedKeys.add((e.uid !== undefined && e.uid !== null) ? `wb::${curBookName}::uid::${e.uid}` : `wb::${curBookName}::idx::${idx}`);
+        }
+      }
     });
   }
 
-  return {
+  const ctx = {
     type,
     draftKey,
     step: 'setup',
     selectedKeys,
     refSelectedKeys,
+    refSelectedData: new Map(),
+    refCache: { presets: {}, worldbooks: {} },
+    refLoadingBooks: {},
+    refSourceType: type === 'wbAiEdit' ? 'worldbook' : 'preset',
+    refSourceName: type === 'wbAiEdit' ? curBookName : curPresetName,
+    refLastPreset: curPresetName,
+    refLastWorldbook: curBookName,
+    refOnlySelected: false,
     refExpanded: false,
     refSearch: '',
     instruction: typeof rawDraft?.instruction === 'string' ? rawDraft.instruction : '',
@@ -100,6 +293,8 @@ export function createAiEditPreviewCtx(type) {
     loading: false,
     results: [],
   };
+  hydrateSelectedRefData(ctx);
+  return ctx;
 }
 
 export function persistAiEditDraft(ai) {
@@ -113,7 +308,7 @@ export function persistAiEditDraft(ai) {
 
   const instruction = typeof ai.instruction === 'string' ? ai.instruction : '';
   const selected = encodeAiKeySet(ai.type, ai.selectedKeys);
-  const refSelected = encodeAiKeySet(ai.type, ai.refSelectedKeys);
+  const refSelected = Array.from(ai.refSelectedKeys instanceof Set ? ai.refSelectedKeys : []);
 
   state.store.extensions = state.store.extensions || {};
   const drafts = (state.store.extensions.aiEditDrafts = state.store.extensions.aiEditDrafts || {});
@@ -248,6 +443,13 @@ function saveAiInstructionTemplates(list) {
 
 function ensureAiSetupDefaults(ai) {
   if (!(ai.refSelectedKeys instanceof Set)) ai.refSelectedKeys = new Set();
+  if (!(ai.refSelectedData instanceof Map)) ai.refSelectedData = new Map();
+  if (!ai.refCache) ai.refCache = { presets: {}, worldbooks: {} };
+  if (!ai.refLoadingBooks) ai.refLoadingBooks = {};
+  if (ai.refSourceType !== 'preset' && ai.refSourceType !== 'worldbook') {
+    ai.refSourceType = ai.type === 'wbAiEdit' ? 'worldbook' : 'preset';
+  }
+  if (typeof ai.refOnlySelected !== 'boolean') ai.refOnlySelected = false;
   if (typeof ai.refExpanded !== 'boolean') ai.refExpanded = false;
   if (typeof ai.refSearch !== 'string') ai.refSearch = '';
   if (typeof ai.tplExpanded !== 'boolean') ai.tplExpanded = false;
@@ -433,10 +635,88 @@ function renderInstructionTemplatesHtml(ai, templates) {
     </div>`;
 }
 
-function renderReferencePickerHtml(ai, items, itemLabelFn) {
+function renderReferencePickerHtml(ai) {
   const refOpen = !!ai.refExpanded;
   const rq = (ai.refSearch || '').trim().toLowerCase();
-  const visible = refOpen ? items.filter((it) => !rq || itemLabelFn(it).toLowerCase().includes(rq)) : [];
+  const srcType = ai.refSourceType === 'worldbook' ? 'worldbook' : 'preset';
+  const presetNames = getAllSavedPresetNames();
+  const bookNames = getAllWorldbookNames();
+  const editingPreset = state.modal?.type === 'presetDetail' ? state.modal.presetName : '';
+  const editingBook = state.modal?.type === 'worldbookDetail' ? state.modal.bookName : '';
+
+  let sourceOptionsHtml = '';
+  let sourceItems = [];
+  let isLoadingSource = false;
+
+  if (srcType === 'preset') {
+    const validPresetNames = editingPreset === 'in_use' ? ['in_use', ...presetNames] : presetNames;
+    if (!ai.refSourceName || !validPresetNames.includes(ai.refSourceName)) {
+      ai.refSourceName = editingPreset || (state.presetName && validPresetNames.includes(state.presetName) ? state.presetName : (validPresetNames[0] || 'in_use'));
+    }
+    ai.refLastPreset = ai.refSourceName;
+    if (refOpen) sourceItems = getPresetRefItems(ai, ai.refSourceName);
+    sourceOptionsHtml = validPresetNames.map((pn) => {
+      const isEditing = editingPreset === pn;
+      const baseLabel = pn === 'in_use' ? `当前实时预设 (${state.presetName || 'in_use'})` : pn;
+      const label = isEditing ? `${baseLabel} [当前编辑]` : baseLabel;
+      return `<option value='${escapeHtml(pn)}' ${pn === ai.refSourceName ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+  } else {
+    if (!ai.refSourceName || !bookNames.includes(ai.refSourceName)) {
+      ai.refSourceName = (editingBook && bookNames.includes(editingBook)) ? editingBook : (bookNames[0] || '');
+    }
+    ai.refLastWorldbook = ai.refSourceName;
+    if (refOpen && ai.refSourceName) {
+      const wbRes = getWorldbookRefItemsSync(ai, ai.refSourceName);
+      sourceItems = wbRes.items;
+      isLoadingSource = wbRes.loading;
+    }
+    sourceOptionsHtml = bookNames.length > 0
+      ? bookNames.map((bn) => {
+          const label = editingBook === bn ? `${bn} [当前编辑]` : bn;
+          return `<option value='${escapeHtml(bn)}' ${bn === ai.refSourceName ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+        }).join('')
+      : "<option value=''>（暂无可用世界书）</option>";
+  }
+
+  let listContentHtml = '';
+  if (refOpen) {
+    let displayList = [];
+    if (ai.refOnlySelected) {
+      hydrateSelectedRefData(ai);
+      ai.refSelectedKeys.forEach((rk) => {
+        const it = ai.refSelectedData.get(rk);
+        if (it) displayList.push(it);
+      });
+    } else {
+      displayList = sourceItems;
+    }
+    const visible = displayList.filter((it) => {
+      if (!rq) return true;
+      return `${it.sourceLabel} ${it.label}`.toLowerCase().includes(rq);
+    });
+
+    if (!ai.refOnlySelected && isLoadingSource) {
+      listContentHtml = "<div class='td-group-empty'>正在加载世界书条目...</div>";
+    } else if (visible.length === 0) {
+      listContentHtml = ai.refOnlySelected
+        ? "<div class='td-group-empty'>暂无已选参考条目</div>"
+        : "<div class='td-group-empty'>无匹配参考条目</div>";
+    } else {
+      listContentHtml = visible.map((it) => {
+        const checked = ai.refSelectedKeys.has(it.refKey);
+        const text = ai.refOnlySelected ? `[${it.sourceLabel}] ${it.label}` : it.label;
+        return `
+          <div class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:34px;padding:5px 8px;'>
+            <div class='td-picker-left'>
+              <input type='checkbox' class='td-checkbox' data-action='ai-toggle-ref' data-key='${escapeHtml(it.refKey)}' ${checked ? 'checked' : ''} />
+              <span class='td-item-name' style='font-size:12.5px;' title='${escapeHtml(text)}'>${escapeHtml(text)}</span>
+            </div>
+            <button type='button' class='td-icon-btn' data-action='ai-preview-ref-item' data-key='${escapeHtml(it.refKey)}' title='预览条目内容'>${ICONS.eye}</button>
+          </div>`;
+      }).join('');
+    }
+  }
 
   return `
     <div class='td-ai-ref-box'>
@@ -446,23 +726,21 @@ function renderReferencePickerHtml(ai, items, itemLabelFn) {
       </div>
       ${refOpen ? `
         <div class='td-ai-ref-body'>
-          <div style='display:flex;gap:5px;align-items:center;'>
-            <input class='td-input' id='td-ai-ref-search' type='text' placeholder='筛选参考条目...' value='${escapeHtml(ai.refSearch || '')}' style='flex:1;height:28px;font-size:12px;' />
-            <button type='button' class='td-chip sm' data-action='ai-ref-select-enabled'>全选启用</button>
-            <button type='button' class='td-chip sm' data-action='ai-ref-clear'>清空</button>
+          <div class='td-ai-ref-source-row'>
+            <div class='td-pv-seg'>
+              <button type='button' class='td-pv-seg-btn ${srcType === 'preset' ? 'active' : ''}' data-action='ai-ref-set-type' data-type='preset'>预设</button>
+              <button type='button' class='td-pv-seg-btn ${srcType === 'worldbook' ? 'active' : ''}' data-action='ai-ref-set-type' data-type='worldbook'>世界书</button>
+            </div>
+            <select class='td-select' id='td-ai-ref-source-name' style='height:28px;font-size:12px;'>${sourceOptionsHtml}</select>
           </div>
-          <div class='td-picker-list td-scroll' style='max-height:160px;min-height:80px;border:1px solid var(--td-border);border-radius:9px;padding:5px;'>
-            ${visible.map((it) => {
-              const checked = ai.refSelectedKeys.has(it.key);
-              return `
-                <div class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:34px;padding:5px 8px;'>
-                  <div class='td-picker-left'>
-                    <input type='checkbox' class='td-checkbox' data-action='ai-toggle-ref' data-key='${escapeHtml(it.key)}' ${checked ? 'checked' : ''} />
-                    <span class='td-item-name' style='font-size:12.5px;' title='${escapeHtml(itemLabelFn(it))}'>${escapeHtml(itemLabelFn(it))}</span>
-                  </div>
-                  <button type='button' class='td-icon-btn' data-action='ai-preview-item' data-key='${escapeHtml(it.key)}' title='预览条目内容'>${ICONS.eye}</button>
-                </div>`;
-            }).join('') || "<div class='td-group-empty'>无匹配参考条目</div>"}
+          <div style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;'>
+            <input class='td-input' id='td-ai-ref-search' type='text' placeholder='筛选参考条目...' value='${escapeHtml(ai.refSearch || '')}' style='flex:1;min-width:95px;height:28px;font-size:12px;' />
+            <button type='button' class='td-chip sm ${ai.refOnlySelected ? 'active' : ''}' data-action='ai-ref-toggle-selected-view' data-role='ai-ref-selected-chip'>已选 (${ai.refSelectedKeys.size})</button>
+            <button type='button' class='td-chip sm' data-action='ai-ref-select-enabled' ${ai.refOnlySelected ? 'disabled' : ''}>全选启用</button>
+            <button type='button' class='td-chip sm' data-action='ai-ref-clear' ${ai.refSelectedKeys.size === 0 ? 'disabled' : ''}>清空</button>
+          </div>
+          <div class='td-picker-list td-scroll' style='max-height:165px;min-height:80px;border:1px solid var(--td-border);border-radius:9px;padding:5px;'>
+            ${listContentHtml}
           </div>
         </div>` : ''}
     </div>`;
@@ -480,7 +758,7 @@ function renderAiEditSetupHtml({ title, ai, items, itemLabelFn }) {
       <div class='td-modal-head'><div class='td-modal-title'>${escapeHtml(title)}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='aiEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
       <div class='td-modal-body ${anySubExpanded ? '' : 'td-picker-body'}' style='gap:7px;'>
         ${renderCollapsibleAiApiBoxHtml(ai)}
-        ${renderReferencePickerHtml(ai, items, itemLabelFn)}
+        ${renderReferencePickerHtml(ai)}
         <div class='td-field' style='flex-shrink:0;gap:5px;'>
           <div class='td-ai-sec-row'>
             <label class='td-label' style='margin:0;'>修改 / 生成指令</label>
@@ -490,7 +768,7 @@ function renderAiEditSetupHtml({ title, ai, items, itemLabelFn }) {
             </div>
           </div>
           ${ai.tplExpanded ? renderInstructionTemplatesHtml(ai, templates) : ''}
-          <textarea class='td-textarea' id='td-ai-instruction' style='min-height:52px;height:56px;padding:7px 10px;font-size:13px;font-family:inherit;' placeholder='输入修改指令，或展开右上角指令模板；若仅选参考条目，可要求 AI 新增条目...'>${escapeHtml(ai.instruction || '')}</textarea>
+          <textarea class='td-textarea' id='td-ai-instruction' style='min-height:115px;height:130px;padding:8px 10px;font-size:13px;font-family:inherit;' placeholder='输入修改指令，或展开右上角指令模板；若仅选参考条目，可要求 AI 新增条目...'>${escapeHtml(ai.instruction || '')}</textarea>
         </div>
         <div class='td-field' style='flex:1;min-height:${anySubExpanded ? '200px' : '0'};display:flex;flex-direction:column;gap:5px;'>
           <div class='td-ai-sec-row'>
@@ -822,6 +1100,56 @@ export const aiAssistantUiModule = {
   handleClick(e, actionEl, action) {
     const previewLayerEl = uiCtx.getPreviewLayer();
 
+    if (action === 'ai-preview-ref-item' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      e.stopPropagation();
+      const ai = state.previewCtx;
+      const rk = actionEl.getAttribute('data-key') || '';
+      ensureAiSetupDefaults(ai);
+      hydrateSelectedRefData(ai);
+      let it = ai.refSelectedData.get(rk);
+      if (!it) {
+        if (rk.startsWith('preset::')) {
+          it = getPresetRefItems(ai, rk.slice(8).split('::')[0]).find((x) => x.refKey === rk);
+        } else if (rk.startsWith('wb::')) {
+          it = getWorldbookRefItemsSync(ai, rk.slice(4).split('::')[0]).items.find((x) => x.refKey === rk);
+        }
+      }
+      if (!it) return true;
+      if (it.kind === 'preset' && it.prompt) {
+        const p = it.prompt;
+        const posLabel = p.position?.type === 'in_chat' ? `@D${p.position.depth ?? 0}` : '相对位置';
+        state.selectPopup = {
+          type: 'aiItemPreview',
+          title: p.name || p.id,
+          metas: [
+            it.sourceLabel,
+            it.badge,
+            `状态: ${p.enabled ? '开启' : '关闭'}`,
+            `身份: ${p.role || 'system'}`,
+            posLabel,
+          ],
+          content: typeof p.content === 'string' ? p.content : '（此条目为内置占位符，无正文内容）',
+        };
+        uiCtx.renderSelectPopup();
+      } else if (it.kind === 'worldbook' && it.entry) {
+        const entry = it.entry;
+        const keysStr = formatKeysInput(entry.strategy?.keys);
+        state.selectPopup = {
+          type: 'aiItemPreview',
+          title: entry.name || `条目 #${entry.uid}`,
+          metas: [
+            it.sourceLabel,
+            it.badge,
+            `状态: ${entry.enabled ? '开启' : '关闭'}`,
+            keysStr ? `关键词: ${keysStr}` : '无关键词',
+          ],
+          content: entry.content || '',
+        };
+        uiCtx.renderSelectPopup();
+      }
+      return true;
+    }
+
     if (action === 'ai-preview-item' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       e.stopPropagation();
       const k = actionEl.getAttribute('data-key') || '';
@@ -932,38 +1260,80 @@ export const aiAssistantUiModule = {
       uiCtx.renderPreviewModal();
       return true;
     }
+    if (action === 'ai-ref-set-type' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      const ai = state.previewCtx;
+      ensureAiSetupDefaults(ai);
+      syncAiPreviewDraftInputs(previewLayerEl);
+      const nextType = actionEl.getAttribute('data-type') === 'worldbook' ? 'worldbook' : 'preset';
+      if (ai.refSourceType !== nextType) {
+        ai.refSourceType = nextType;
+        ai.refOnlySelected = false;
+        ai.refSourceName = nextType === 'worldbook' ? (ai.refLastWorldbook || '') : (ai.refLastPreset || '');
+        uiCtx.renderPreviewModal();
+      }
+      return true;
+    }
+    if (action === 'ai-ref-toggle-selected-view' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      const ai = state.previewCtx;
+      ensureAiSetupDefaults(ai);
+      syncAiPreviewDraftInputs(previewLayerEl);
+      ai.refOnlySelected = !ai.refOnlySelected;
+      uiCtx.renderPreviewModal();
+      return true;
+    }
     if (action === 'ai-toggle-ref' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      ensureAiSetupDefaults(state.previewCtx);
+      const ai = state.previewCtx;
+      ensureAiSetupDefaults(ai);
       const k = actionEl.getAttribute('data-key');
-      if (state.previewCtx.refSelectedKeys.has(k)) state.previewCtx.refSelectedKeys.delete(k);
-      else state.previewCtx.refSelectedKeys.add(k);
+      if (ai.refSelectedKeys.has(k)) {
+        ai.refSelectedKeys.delete(k);
+        ai.refSelectedData.delete(k);
+      } else {
+        ai.refSelectedKeys.add(k);
+        if (k.startsWith('preset::')) {
+          const hit = getPresetRefItems(ai, k.slice(8).split('::')[0]).find((x) => x.refKey === k);
+          if (hit) ai.refSelectedData.set(k, hit);
+        } else if (k.startsWith('wb::')) {
+          const hit = getWorldbookRefItemsSync(ai, k.slice(4).split('::')[0]).items.find((x) => x.refKey === k);
+          if (hit) ai.refSelectedData.set(k, hit);
+        }
+      }
+      persistAiEditDraft(ai);
+      if (ai.refOnlySelected) {
+        uiCtx.renderPreviewModal();
+        return true;
+      }
       const sumEl = previewLayerEl?.querySelector("[data-role='ai-ref-summary']");
-      if (sumEl) sumEl.textContent = `参考条目（默认折叠 · 已选 ${state.previewCtx.refSelectedKeys.size} 项）`;
-      actionEl.closest('.td-picker-row')?.classList.toggle('checked', state.previewCtx.refSelectedKeys.has(k));
-      persistAiEditDraft(state.previewCtx);
+      if (sumEl) sumEl.textContent = `参考条目（默认折叠 · 已选 ${ai.refSelectedKeys.size} 项）`;
+      const selChip = previewLayerEl?.querySelector("[data-role='ai-ref-selected-chip']");
+      if (selChip) selChip.textContent = `已选 (${ai.refSelectedKeys.size})`;
+      const clrBtn = previewLayerEl?.querySelector("[data-action='ai-ref-clear']");
+      if (clrBtn) clrBtn.disabled = ai.refSelectedKeys.size === 0;
+      actionEl.closest('.td-picker-row')?.classList.toggle('checked', ai.refSelectedKeys.has(k));
       return true;
     }
     if (action === 'ai-ref-select-enabled' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      ensureAiSetupDefaults(state.previewCtx);
-      if (state.previewCtx.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
-        ['prompts', 'prompts_unused'].forEach((ln) => {
-          (state.modal.data[ln] || []).forEach((p, idx) => {
-            if (p?.enabled) state.previewCtx.refSelectedKeys.add(`${ln}::${idx}`);
-          });
-        });
-      } else if (state.previewCtx.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
-        (state.modal.entries || []).forEach((ent, idx) => {
-          if (ent?.enabled) state.previewCtx.refSelectedKeys.add(String(idx));
-        });
-      }
-      persistAiEditDraft(state.previewCtx);
+      const ai = state.previewCtx;
+      ensureAiSetupDefaults(ai);
+      const items = ai.refSourceType === 'worldbook'
+        ? getWorldbookRefItemsSync(ai, ai.refSourceName).items
+        : getPresetRefItems(ai, ai.refSourceName);
+      items.forEach((it) => {
+        if (it.enabled) {
+          ai.refSelectedKeys.add(it.refKey);
+          ai.refSelectedData.set(it.refKey, it);
+        }
+      });
+      persistAiEditDraft(ai);
       uiCtx.renderPreviewModal();
       return true;
     }
     if (action === 'ai-ref-clear' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      ensureAiSetupDefaults(state.previewCtx);
-      state.previewCtx.refSelectedKeys.clear();
-      persistAiEditDraft(state.previewCtx);
+      const ai = state.previewCtx;
+      ensureAiSetupDefaults(ai);
+      ai.refSelectedKeys.clear();
+      ai.refSelectedData.clear();
+      persistAiEditDraft(ai);
       uiCtx.renderPreviewModal();
       return true;
     }
@@ -1046,46 +1416,46 @@ export const aiAssistantUiModule = {
 
       if (ai.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
         const selectedItems = [];
-        const referenceItems = [];
         ['prompts', 'prompts_unused'].forEach((listName) => {
           (state.modal.data[listName] || []).forEach((p, idx) => {
             const uk = `${listName}::${idx}`;
             if (ai.selectedKeys.has(uk)) selectedItems.push({ uidKey: uk, listName, index: idx, prompt: p });
-            if (ai.refSelectedKeys.has(uk)) referenceItems.push({ uidKey: uk, listName, index: idx, prompt: p });
           });
         });
         ai.loading = true;
         setAiRunBtnLoading(previewLayerEl, true);
-        runAiPresetEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results, summary, rawReply }) => {
-          ai.loading = false; ai.results = results; ai.summary = summary || ''; ai.rawReply = rawReply || ''; ai.step = 'review'; uiCtx.renderPreviewModal();
-          notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
-        }).catch((err) => {
-          ai.loading = false;
-          setAiRunBtnLoading(previewLayerEl, false);
-          logError('AI 编辑预设失败', err);
-          notify('error', err.message || String(err));
-        });
+        resolveAllSelectedReferenceItems(ai)
+          .then((referenceItems) => runAiPresetEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }))
+          .then(({ results, summary, rawReply }) => {
+            ai.loading = false; ai.results = results; ai.summary = summary || ''; ai.rawReply = rawReply || ''; ai.step = 'review'; uiCtx.renderPreviewModal();
+            notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
+          }).catch((err) => {
+            ai.loading = false;
+            setAiRunBtnLoading(previewLayerEl, false);
+            logError('AI 编辑预设失败', err);
+            notify('error', err.message || String(err));
+          });
         return true;
       }
 
       if (ai.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
         const selectedItems = [];
-        const referenceItems = [];
         (state.modal.entries || []).forEach((entry, idx) => {
           if (ai.selectedKeys.has(String(idx))) selectedItems.push({ index: idx, entry });
-          if (ai.refSelectedKeys.has(String(idx))) referenceItems.push({ index: idx, entry });
         });
         ai.loading = true;
         setAiRunBtnLoading(previewLayerEl, true);
-        runAiWorldbookEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results, summary, rawReply }) => {
-          ai.loading = false; ai.results = results; ai.summary = summary || ''; ai.rawReply = rawReply || ''; ai.step = 'review'; uiCtx.renderPreviewModal();
-          notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
-        }).catch((err) => {
-          ai.loading = false;
-          setAiRunBtnLoading(previewLayerEl, false);
-          logError('AI 编辑世界书失败', err);
-          notify('error', err.message || String(err));
-        });
+        resolveAllSelectedReferenceItems(ai)
+          .then((referenceItems) => runAiWorldbookEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }))
+          .then(({ results, summary, rawReply }) => {
+            ai.loading = false; ai.results = results; ai.summary = summary || ''; ai.rawReply = rawReply || ''; ai.step = 'review'; uiCtx.renderPreviewModal();
+            notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
+          }).catch((err) => {
+            ai.loading = false;
+            setAiRunBtnLoading(previewLayerEl, false);
+            logError('AI 编辑世界书失败', err);
+            notify('error', err.message || String(err));
+          });
         return true;
       }
     }
@@ -1307,6 +1677,17 @@ export const aiAssistantUiModule = {
     const id = target.id || '';
     if (state.selectPopup?.type === 'aiResultEdit' && (id === 'td-aire-enabled' || id === 'td-aire-role')) {
       pushAiEditSnapshot(uiCtx.getSelectLayer(), state.selectPopup, true);
+      return true;
+    }
+    if (id === 'td-ai-ref-source-name' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      const ai = state.previewCtx;
+      ensureAiSetupDefaults(ai);
+      syncAiPreviewDraftInputs(uiCtx.getPreviewLayer());
+      ai.refSourceName = target.value;
+      ai.refOnlySelected = false;
+      if (ai.refSourceType === 'worldbook') ai.refLastWorldbook = target.value;
+      else ai.refLastPreset = target.value;
+      uiCtx.renderPreviewModal();
       return true;
     }
     if (id === 'td-ai-proxy-preset' || id === 'td-ai-jailbreak-preset') {

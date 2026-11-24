@@ -731,7 +731,7 @@ export const mvuUiModule = {
             </div>
             <div class='td-field' style='flex:1;display:flex;flex-direction:column;'>
               <label class='td-label'>3. 补充说明（可选，留空则由 AI 自动根据剧情推算）</label>
-              <textarea class='td-textarea' id='td-mvu-ai-instruction' style='flex:1;min-height:85px;font-family:inherit;' placeholder='例如：刚刚角色花了50金币，好感度+3；或：只补全被截断的背包物品变更...'>${escapeHtml(ai.instruction || '')}</textarea>
+              <textarea class='td-textarea' id='td-mvu-ai-instruction' style='flex:1;min-height:120px;font-family:inherit;' placeholder='例如：刚刚角色花了50金币，好感度+3；或：只补全被截断的背包物品变更...'>${escapeHtml(ai.instruction || '')}</textarea>
             </div>
           </div>
           <div class='td-modal-foot'>
