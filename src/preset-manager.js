@@ -1,4 +1,4 @@
-import { callTH, hasTH, getST, notify, genId, downloadJsonFile, logWarn } from './utils.js';
+import { callTH, hasTH, getTH, getST, notify, genId, downloadJsonFile, logWarn } from './utils.js';
 import { hasUnsavedPresetChanges } from './preset-merge.js';
 import { state } from './store.js';
 
@@ -97,8 +97,60 @@ export async function renameSavedPresetSafe(oldName, newName) {
 
 export async function deleteSavedPresetSafe(name) {
   if (!name || name === 'in_use') throw new Error('不能删除当前实时预设');
+  const loadedBefore = hasTH('getLoadedPresetName') ? (callTH('getLoadedPresetName') || '') : '';
+  const wasLoaded = loadedBefore === name;
+  let fallbackTarget = '';
+
+  if (wasLoaded) {
+    const names = hasTH('getPresetNames') ? (callTH('getPresetNames') || []).filter((n) => n && n !== 'in_use') : [];
+    const idx = names.indexOf(name);
+    const remaining = names.filter((n) => n !== name);
+    if (remaining.length > 0) {
+      fallbackTarget = (idx >= 0 && idx < names.length - 1) ? names[idx + 1] : remaining[0];
+      callTH('loadPreset', fallbackTarget);
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  }
+
   const ok = await callTH('deletePreset', name);
-  if (!ok) throw new Error(`删除预设「${name}」失败`);
+  if (!ok) {
+    if (wasLoaded && fallbackTarget) {
+      try { callTH('loadPreset', loadedBefore); } catch (e) {}
+    }
+    throw new Error(`删除预设「${name}」失败`);
+  }
+
+  if (wasLoaded && fallbackTarget) {
+    const loadedAfter = hasTH('getLoadedPresetName') ? (callTH('getLoadedPresetName') || '') : '';
+    const target = (loadedAfter && loadedAfter !== 'in_use' && loadedAfter !== name) ? loadedAfter : fallbackTarget;
+    if (target) {
+      if (loadedAfter !== target) {
+        try {
+          callTH('loadPreset', target);
+          await new Promise((r) => setTimeout(r, 80));
+        } catch (e) {}
+      }
+      if (hasUnsavedPresetChanges(target)) {
+        try {
+          const fresh = getPresetDetail(target);
+          await callTH('replacePreset', 'in_use', fresh, { render: 'debounced' });
+        } catch (e) {
+          logWarn(`删除预设后同步「${target}」到实时预设失败`, e);
+        }
+      }
+      try {
+        const th = getTH();
+        if (typeof th?.builtin?.saveSettings === 'function') {
+          await th.builtin.saveSettings();
+        } else {
+          await getST()?.saveSettingsDebounced?.();
+        }
+      } catch (e) {
+        logWarn('删除预设后持久化酒馆设置失败', e);
+      }
+    }
+  }
+
   notify('info', `已删除预设「${name}」`);
 }
 
