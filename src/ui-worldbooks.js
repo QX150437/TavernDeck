@@ -140,20 +140,24 @@ export const worldbooksUiModule = {
 
       const rows = indexed.map(({ e, idx }) => {
         const stype = e.strategy?.type || 'selective';
-        const stBadge = stype === 'constant' ? '蓝灯' : (stype === 'vectorized' ? '向量' : '绿灯');
+        const stMeta = stype === 'constant'
+          ? { cls: 'is-constant', label: '蓝灯 (常驻)' }
+          : (stype === 'vectorized'
+            ? { cls: 'is-vectorized', label: '向量化' }
+            : { cls: 'is-selective', label: '绿灯 (关键词)' });
         const keysText = formatKeysInput(e.strategy?.keys);
         const checked = selectedSet.has(idx);
         return `
           <div class='td-mgr-row ${batchMode && checked ? 'is-active' : ''}' data-idx='${idx}'>
-            <div class='td-mgr-row-head'>
-              <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
+            <div class='td-mgr-row-head is-wrap-head'>
+              <div class='td-mgr-row-left'>
                 ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='wbd-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
                 <span class='td-idx-badge'>#${idx + 1}</span>
                 ${e.extra?.tdAiTag ? `<span class='td-mode-tag ok'>${escapeHtml(e.extra.tdAiTag)}</span>` : ''}
-                <span class='td-mgr-row-title' title='${escapeHtml(e.name || `条目 #${e.uid}`)}'>${escapeHtml(e.name || `条目 #${e.uid}`)}</span>
+                <span class='td-mgr-row-title is-wrap' title='${escapeHtml(e.name || `条目 #${e.uid}`)}'>${escapeHtml(e.name || `条目 #${e.uid}`)}</span>
               </div>
               <div style='display:flex;align-items:center;gap:7px;flex-shrink:0;'>
-                <span class='td-src-badge'>${stBadge} · 顺${e.position?.order ?? 100}</span>
+                <span class='td-src-badge td-wb-badge' title='${escapeHtml(stMeta.label)}'><span class='td-wb-led ${stMeta.cls}' aria-label='${escapeHtml(stMeta.label)}'></span><span>顺${e.position?.order ?? 100}</span></span>
                 <button type='button' class='td-switch sm ${e.enabled ? 'on' : ''}' data-action='wbd-toggle-entry' data-idx='${idx}'></button>
               </div>
             </div>

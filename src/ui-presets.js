@@ -131,19 +131,17 @@ export const presetsUiModule = {
         });
         const rows = indexed.map(({ p, idx }) => {
           const isSys = PRESET_SYSTEM_IDS.has(p.id);
-          const posLabel = p.position?.type === 'in_chat' ? `@D${p.position.depth ?? 0}` : '相对';
           const checked = selectedSet.has(idx);
           return `
             <div class='td-mgr-row ${batchMode && checked ? 'is-active' : ''}' data-idx='${idx}'>
-              <div class='td-mgr-row-head'>
-                <div style='display:flex;align-items:center;gap:7px;min-width:0;flex:1;'>
+              <div class='td-mgr-row-head is-wrap-head'>
+                <div class='td-mgr-row-left'>
                   ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='pm-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
                   <span class='td-idx-badge'>#${idx + 1}</span>
                   ${p.extra?.tdAiTag ? `<span class='td-mode-tag ok'>${escapeHtml(p.extra.tdAiTag)}</span>` : ''}
-                  <span class='td-mgr-row-title' title='${escapeHtml(p.name || p.id)}'>${escapeHtml(p.name || p.id)}</span>
+                  <span class='td-mgr-row-title is-wrap' title='${escapeHtml(p.name || p.id)}'>${escapeHtml(p.name || p.id)}</span>
                 </div>
                 <div style='display:flex;align-items:center;gap:7px;flex-shrink:0;'>
-                  <span class='td-src-badge'>${escapeHtml(p.role || 'system')} · ${posLabel}</span>
                   <button type='button' class='td-switch sm ${p.enabled ? 'on' : ''}' data-action='pm-toggle-prompt' data-list='${listName}' data-idx='${idx}'></button>
                 </div>
               </div>
