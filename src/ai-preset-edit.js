@@ -270,7 +270,7 @@ export function extractJailbreakPrompts(jailbreakPresetName) {
   }
 }
 
-export function extractJsonFromAiReply(rawText) {
+export function extractAiEditResponse(rawText) {
   const text = String(rawText || '').trim();
   if (!text) throw new Error('AI 返回内容为空');
 
@@ -278,29 +278,85 @@ export function extractJsonFromAiReply(rawText) {
     try { return JSON.parse(s); } catch (e) { return null; }
   };
 
-  let parsed = tryParse(text);
-  if (!parsed) {
-    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fence && fence[1]) parsed = tryParse(fence[1].trim());
+  let parsed = null;
+  let jsonSpanStart = -1;
+  let jsonSpanEnd = -1;
+
+  parsed = tryParse(text);
+  if (parsed && typeof parsed === 'object') {
+    jsonSpanStart = 0;
+    jsonSpanEnd = text.length;
+  } else {
+    parsed = null;
   }
+
+  if (!parsed) {
+    const fenceRe = /```(?:json)?\s*([\s\S]*?)```/ig;
+    let m;
+    while ((m = fenceRe.exec(text)) !== null) {
+      const cand = tryParse(m[1].trim());
+      if (cand && typeof cand === 'object') {
+        parsed = cand;
+        jsonSpanStart = m.index;
+        jsonSpanEnd = m.index + m[0].length;
+        break;
+      }
+    }
+  }
+
   if (!parsed) {
     const firstObj = text.indexOf('{');
     const lastObj = text.lastIndexOf('}');
     if (firstObj >= 0 && lastObj > firstObj) {
-      parsed = tryParse(text.slice(firstObj, lastObj + 1));
+      const cand = tryParse(text.slice(firstObj, lastObj + 1));
+      if (cand && typeof cand === 'object') {
+        parsed = cand;
+        jsonSpanStart = firstObj;
+        jsonSpanEnd = lastObj + 1;
+      }
     }
   }
+
   if (!parsed) {
     const firstArr = text.indexOf('[');
     const lastArr = text.lastIndexOf(']');
     if (firstArr >= 0 && lastArr > firstArr) {
-      parsed = tryParse(text.slice(firstArr, lastArr + 1));
+      const cand = tryParse(text.slice(firstArr, lastArr + 1));
+      if (cand && typeof cand === 'object') {
+        parsed = cand;
+        jsonSpanStart = firstArr;
+        jsonSpanEnd = lastArr + 1;
+      }
     }
   }
+
   if (!parsed || typeof parsed !== 'object') {
     throw new Error('AI 未返回有效的 JSON 结构，请尝试调整提示词或模型');
   }
-  return Array.isArray(parsed) ? parsed : (Array.isArray(parsed.entries) ? parsed.entries : null);
+
+  const entries = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.entries) ? parsed.entries : null);
+  const summaryParts = [];
+  if (!Array.isArray(parsed)) {
+    const jsonSummary = parsed.summary ?? parsed.guide ?? parsed.explanation ?? parsed.instructions ?? parsed.note ?? '';
+    if (typeof jsonSummary === 'string' && jsonSummary.trim()) {
+      summaryParts.push(jsonSummary.trim());
+    }
+  }
+  if (jsonSpanStart >= 0 && jsonSpanEnd > jsonSpanStart) {
+    const outside = `${text.slice(0, jsonSpanStart)}\n${text.slice(jsonSpanEnd)}`.trim();
+    if (outside && !summaryParts.some((p) => p === outside)) {
+      summaryParts.push(outside);
+    }
+  }
+
+  return {
+    entries,
+    summary: summaryParts.join('\n\n').trim(),
+  };
+}
+
+export function extractJsonFromAiReply(rawText) {
+  return extractAiEditResponse(rawText).entries;
 }
 
 export async function runAiPresetEdit({ selectedItems = [], referenceItems = [], instruction, apiCfg }) {
@@ -338,8 +394,8 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
     '用户会提供修改/编写指令、待编辑条目（可选）以及供上下文参考的条目（可选）。',
     '你可以修改待编辑条目（action: "update"），也可以根据用户指令新增条目（action: "add"）。',
     '输出要求：',
-    '1. 必须仅输出一个合法的 JSON 对象，不要包含额外解释文字。',
-    '2. 格式为：{"entries": [{"action": "update"|"add", "uidKey": "修改时填原样uidKey；新增时留空", "listName": "prompts"|"prompts_unused", "name": "条目名", "role": "system|user|assistant", "enabled": true, "content": "完整正文", "note": "简短说明"}]}',
+    '1. 请输出一个合法的 JSON 对象（推荐置于 ```json ... ``` 代码块中）；如需提供整体修改说明、结构设计思路、使用/配置指导信息或注意事项，请写入根字段 "summary"（也可在 JSON 代码块外补充说明文字）。',
+    '2. 格式为：{"summary": "整体说明与指导信息（可选）", "entries": [{"action": "update"|"add", "uidKey": "修改时填原样uidKey；新增时留空", "listName": "prompts"|"prompts_unused", "name": "条目名", "role": "system|user|assistant", "enabled": true, "content": "完整正文", "note": "本条目的修改说明或指导"}]}',
     '3. 修改原条目时必须完整保留 uidKey，不得遗漏或篡改；不要把只读参考条目当作原条目输出为 update（除非需求明确要求新增条目）。',
   ].join('\n');
 
@@ -357,7 +413,7 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
   recordOpStep('发送 AI 预设编辑请求', `待编辑 ${inputPayload.length} 项 / 参考 ${refPayload.length} 项`);
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
   const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
-  const list = extractJsonFromAiReply(replyText);
+  const { entries: list, summary } = extractAiEditResponse(replyText);
   if (!list || list.length === 0) {
     throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
   }
@@ -412,7 +468,7 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
   if (results.length === 0) {
     throw new Error('AI 未返回有效条目结果，请重试');
   }
-  return { rawReply: replyText, results };
+  return { rawReply: replyText, summary, results };
 }
 
 export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = [], instruction, apiCfg }) {
@@ -447,8 +503,8 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
     '用户会提供修改/编写指令、待编辑世界书条目（可选）以及参考条目（可选）。',
     '你可以修改待编辑条目（action: "update"），也可以根据需求新增世界书条目（action: "add"）。',
     '输出要求：',
-    '1. 必须仅输出一个合法的 JSON 对象，不要包含额外解释文字。',
-    '2. 格式为：{"entries": [{"action": "update"|"add", "index": 原样数字index(新增填-1), "uid": 原样数字uid(新增填-1), "name": "条目标题", "enabled": true, "keys": "逗号分隔的关键词字符串", "content": "完整正文", "note": "简短说明"}]}',
+    '1. 请输出一个合法的 JSON 对象（推荐置于 ```json ... ``` 代码块中）；如需提供整体修改说明、触发策略建议、使用/配置指导信息或注意事项，请写入根字段 "summary"（也可在 JSON 代码块外补充说明文字）。',
+    '2. 格式为：{"summary": "整体说明与指导信息（可选）", "entries": [{"action": "update"|"add", "index": 原样数字index(新增填-1), "uid": 原样数字uid(新增填-1), "name": "条目标题", "enabled": true, "keys": "逗号分隔的关键词字符串", "content": "完整正文", "note": "本条目的修改说明或指导"}]}',
     '3. 修改原条目时必须完整保留 index 与 uid；若不需更改关键词，请原样保留 keys 字段。',
   ].join('\n');
 
@@ -466,7 +522,7 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
   recordOpStep('发送 AI 世界书编辑请求', `待编辑 ${inputPayload.length} 项 / 参考 ${refPayload.length} 项`);
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
   const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
-  const list = extractJsonFromAiReply(replyText);
+  const { entries: list, summary } = extractAiEditResponse(replyText);
   if (!list || list.length === 0) {
     throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
   }
@@ -518,7 +574,7 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
   if (results.length === 0) {
     throw new Error('AI 未返回有效世界书条目结果，请重试');
   }
-  return { rawReply: replyText, results };
+  return { rawReply: replyText, summary, results };
 }
 
 export async function runAiMvuUpdate({

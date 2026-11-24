@@ -1427,8 +1427,8 @@
 }
 .td-var-loc-btn {
   border: 1px solid var(--td-border-strong); background: var(--td-bg-solid); color: var(--td-text);
-  border-radius: 6px; padding: 1px 6px; font-size: 11px; line-height: 1.4;
-  cursor: pointer; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-radius: 6px; padding: 2px 6px; font-size: 11px; line-height: 1.4;
+  cursor: pointer; max-width: 100%; white-space: normal; word-break: break-word; overflow-wrap: anywhere; text-align: left;
 }
 .td-var-loc-btn:hover {
   border-color: var(--td-accent); color: var(--td-accent);

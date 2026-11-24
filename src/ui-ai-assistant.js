@@ -395,8 +395,91 @@ export function setAiRunBtnLoading(previewLayerEl, loading, selector = "[data-ac
   btn.textContent = loading ? 'AI 处理中，请稍候...' : idleText;
 }
 
+function formatAiNotesText(pc) {
+  if (!pc) return '';
+  const blocks = [];
+  if (pc.summary && pc.summary.trim()) {
+    blocks.push(`【整体说明与指导信息】\n${pc.summary.trim()}`);
+  }
+  const noted = (pc.results || []).filter((r) => r && typeof r.note === 'string' && r.note.trim());
+  if (noted.length > 0) {
+    blocks.push(`【逐条说明 (${noted.length} 项)】\n${noted.map((r, i) => `${i + 1}. ${r.newName || '未命名条目'}\n   ${r.note.trim()}`).join('\n')}`);
+  }
+  if (blocks.length === 0 && pc.rawReply && pc.rawReply.trim()) {
+    blocks.push(`【AI 原始返回】\n${pc.rawReply.trim()}`);
+  }
+  return blocks.join('\n\n');
+}
+
 export const aiAssistantUiModule = {
   renderSelectPopup(sp, selectLayerEl) {
+    if (sp.type === 'aiNotes') {
+      const pc = state.previewCtx;
+      if (!pc || (pc.type !== 'pmAiEdit' && pc.type !== 'wbAiEdit')) return false;
+      const summary = String(pc.summary || '').trim();
+      const notedItems = (pc.results || []).filter((r) => r && typeof r.note === 'string' && r.note.trim());
+      const rawReply = String(pc.rawReply || '').trim();
+
+      const summaryHtml = summary
+        ? `<div class='td-field'>
+             <label class='td-label'>整体说明与指导信息</label>
+             <div class='td-code-block' style='font-family:inherit;font-size:12.5px;line-height:1.6;'>${escapeHtml(summary)}</div>
+           </div>`
+        : '';
+
+      const itemNotesHtml = notedItems.length > 0
+        ? `<div class='td-field'>
+             <label class='td-label'>逐条修改 / 使用说明 (${notedItems.length})</label>
+             <div style='display:flex;flex-direction:column;gap:6px;'>
+               ${notedItems.map((r) => `
+                 <div class='td-mgr-row'>
+                   <div class='td-mgr-row-head is-wrap-head'>
+                     <div class='td-mgr-row-left'>
+                       <span class='td-mode-tag ${r.writeMode === 'add' ? 'ok' : 'multi'}'>${r.isAiNew ? 'AI新增' : (r.writeMode === 'add' ? '新增写入' : `#${r.index + 1}`)}</span>
+                       <span class='td-mgr-row-title is-wrap'>${escapeHtml(r.newName || '未命名条目')}</span>
+                     </div>
+                   </div>
+                   <div style='font-size:12px;color:var(--td-text-muted);line-height:1.5;white-space:pre-wrap;user-select:text;'>${escapeHtml(r.note.trim())}</div>
+                 </div>`).join('')}
+             </div>
+           </div>`
+        : '';
+
+      const emptyHtml = (!summary && notedItems.length === 0)
+        ? `<div class='td-group-empty'>本次 AI 未附带额外文字说明或指导信息（可展开下方查看原始回复）</div>`
+        : '';
+
+      const rawHtml = rawReply
+        ? `<details class='td-attr-diff-box'>
+             <summary class='td-attr-diff-head'><span>查看 AI 原始回复内容</span></summary>
+             <div style='padding:8px;border-top:1px solid var(--td-border);'>
+               <div class='td-code-block td-scroll' style='max-height:220px;overflow-y:auto;'>${escapeHtml(rawReply)}</div>
+             </div>
+           </details>`
+        : '';
+
+      selectLayerEl.innerHTML = `
+        <div class='td-modal td-modal-tall'>
+          <div class='td-modal-head'>
+            <div class='td-modal-title'>${ICONS.help} AI 返回说明与指导</div>
+            <div class='td-modal-head-actions'>
+              <button type='button' class='td-icon-btn' data-action='ai-copy-notes' title='复制全部说明'>${ICONS.copy}</button>
+              <button type='button' class='td-icon-btn' data-action='close-select-popup' title='关闭'>${ICONS.close}</button>
+            </div>
+          </div>
+          <div class='td-modal-body'>
+            ${summaryHtml}
+            ${itemNotesHtml}
+            ${emptyHtml}
+            ${rawHtml}
+          </div>
+          <div class='td-modal-foot'>
+            <button type='button' class='td-btn primary' data-action='close-select-popup'>关闭</button>
+          </div>
+        </div>`;
+      uiCtx.syncOverlayBounds();
+      return true;
+    }
     if (sp.type !== 'aiResultEdit') return false;
     const pc = state.previewCtx;
     const r = pc?.results?.[sp.rIdx];
@@ -513,10 +596,11 @@ export const aiAssistantUiModule = {
             </div>`;
         }).join('');
 
+        const hasAiNotes = !!(ai.summary && ai.summary.trim()) || (ai.results || []).some((x) => x.note && x.note.trim());
         previewLayerEl.classList.add('is-open');
         previewLayerEl.innerHTML = `
           <div class='td-modal td-modal-tall'>
-            <div class='td-modal-head'><div class='td-modal-title'>检视 AI 结果 (${acceptedList.length}/${(ai.results || []).length})</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='aiEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
+            <div class='td-modal-head'><div class='td-modal-title'>检视 AI 结果 (${acceptedList.length}/${(ai.results || []).length})</div><div class='td-modal-head-actions'><button type='button' class='td-btn xs ${hasAiNotes ? 'warn' : ''}' data-action='ai-open-notes' title='查看 AI 返回的说明与指导信息'>${ICONS.help} 说明</button><button class='td-icon-btn' data-action='open-help' data-help-key='aiEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
             <div class='td-modal-body td-picker-body'><div class='td-picker-list td-scroll'>${reviewRows}</div></div>
             <div class='td-modal-foot'><button class='td-btn' data-action='ai-back-setup'>返回修改需求</button><button class='td-btn primary' data-action='ai-apply-results'>${ICONS.check} 写回（改 ${modCnt} · 新增 ${addCnt}）</button></div>
           </div>`;
@@ -571,10 +655,11 @@ export const aiAssistantUiModule = {
             </div>`;
         }).join('');
 
+        const hasAiNotes = !!(ai.summary && ai.summary.trim()) || (ai.results || []).some((x) => x.note && x.note.trim());
         previewLayerEl.classList.add('is-open');
         previewLayerEl.innerHTML = `
           <div class='td-modal td-modal-tall'>
-            <div class='td-modal-head'><div class='td-modal-title'>检视 AI 世界书结果 (${acceptedList.length}/${(ai.results || []).length})</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='aiEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
+            <div class='td-modal-head'><div class='td-modal-title'>检视 AI 世界书结果 (${acceptedList.length}/${(ai.results || []).length})</div><div class='td-modal-head-actions'><button type='button' class='td-btn xs ${hasAiNotes ? 'warn' : ''}' data-action='ai-open-notes' title='查看 AI 返回的说明与指导信息'>${ICONS.help} 说明</button><button class='td-icon-btn' data-action='open-help' data-help-key='aiEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div></div>
             <div class='td-modal-body td-picker-body'><div class='td-picker-list td-scroll'>${reviewRows}</div></div>
             <div class='td-modal-foot'><button class='td-btn' data-action='ai-back-setup'>返回修改需求</button><button class='td-btn primary' data-action='ai-apply-results'>${ICONS.check} 写回（改 ${modCnt} · 新增 ${addCnt}）</button></div>
           </div>`;
@@ -813,8 +898,8 @@ export const aiAssistantUiModule = {
         });
         ai.loading = true;
         setAiRunBtnLoading(previewLayerEl, true);
-        runAiPresetEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results }) => {
-          ai.loading = false; ai.results = results; ai.step = 'review'; uiCtx.renderPreviewModal();
+        runAiPresetEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results, summary, rawReply }) => {
+          ai.loading = false; ai.results = results; ai.summary = summary || ''; ai.rawReply = rawReply || ''; ai.step = 'review'; uiCtx.renderPreviewModal();
           notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
         }).catch((err) => {
           ai.loading = false;
@@ -834,8 +919,8 @@ export const aiAssistantUiModule = {
         });
         ai.loading = true;
         setAiRunBtnLoading(previewLayerEl, true);
-        runAiWorldbookEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results }) => {
-          ai.loading = false; ai.results = results; ai.step = 'review'; uiCtx.renderPreviewModal();
+        runAiWorldbookEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }).then(({ results, summary, rawReply }) => {
+          ai.loading = false; ai.results = results; ai.summary = summary || ''; ai.rawReply = rawReply || ''; ai.step = 'review'; uiCtx.renderPreviewModal();
           notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
         }).catch((err) => {
           ai.loading = false;
@@ -845,6 +930,17 @@ export const aiAssistantUiModule = {
         });
         return true;
       }
+    }
+    if (action === 'ai-open-notes' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      state.selectPopup = { type: 'aiNotes' };
+      uiCtx.renderSelectPopup();
+      return true;
+    }
+    if (action === 'ai-copy-notes' && state.selectPopup?.type === 'aiNotes') {
+      const txt = formatAiNotesText(state.previewCtx);
+      if (!txt) { notify('info', '暂无可复制的说明内容'); return true; }
+      copyToClipboard(txt).then(() => notify('success', 'AI 说明已复制到剪贴板')).catch(() => notify('error', '复制失败'));
+      return true;
     }
     if (action === 'ai-edit-result' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       const rIdx = Number(actionEl.getAttribute('data-ridx'));

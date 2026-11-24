@@ -558,10 +558,10 @@ function renderEntryCardHtml(em, needsInit, highlightUnrefOnly = false) {
 
   return `
     <div class='td-mgr-row ${rowCls}'>
-      <div class='td-mgr-row-head'>
-        <div style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;'>
+      <div class='td-mgr-row-head is-wrap-head'>
+        <div class='td-mgr-row-left'>
           <span class='td-idx-badge'>${em.listName === 'prompts_unused' ? '池' : ''}#${em.idx + 1}</span>
-          <span class='td-mgr-row-title' title='${escapeHtml(em.name)}'>${escapeHtml(em.name)}</span>
+          <span class='td-mgr-row-title is-wrap' title='${escapeHtml(em.name)}'>${escapeHtml(em.name)}</span>
         </div>
         <div style='display:flex;gap:4px;align-items:center;flex-shrink:0;'>
           ${statusBadgeHtml}
@@ -656,14 +656,14 @@ export const presetVarsUiModule = {
 
         return `
           <div class='td-mgr-row ${v.ignored ? 'is-ignored' : (needReg ? 'is-active' : '')}'>
-            <div class='td-mgr-row-head'>
-              <div style='display:flex;align-items:center;gap:5px;min-width:0;flex:1;flex-wrap:wrap;'>
+            <div class='td-mgr-row-head is-wrap-head'>
+              <div class='td-mgr-row-left' style='gap:5px;flex-wrap:wrap;'>
                 ${badge}
                 ${v.isGlobal ? "<span class='td-src-badge'>全局</span>" : ''}
                 ${orderWarn}
-                <span class='td-mgr-row-title' style='font-family:ui-monospace,monospace;' title='${escapeHtml(v.name)}'>${escapeHtml(v.name)}</span>
+                <span class='td-mgr-row-title is-wrap' style='font-family:ui-monospace,monospace;flex:1 1 140px;' title='${escapeHtml(v.name)}'>${escapeHtml(v.name)}</span>
               </div>
-              <span class='td-src-badge'>读 ${v.reads.length} · 改 ${v.assigns.length}</span>
+              <span class='td-src-badge' style='flex-shrink:0;'>读 ${v.reads.length} · 改 ${v.assigns.length}</span>
             </div>
             <div class='td-var-locs'>
               ${formatLocBadges(v.inits, '初始化于') || `<div class='td-var-loc ${v.ignored ? '' : 'is-miss'}'><strong>初始化状态：</strong>未在基准初始化条目中找到（缺少 ${escapeHtml(initMacro)}）</div>`}
