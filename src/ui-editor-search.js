@@ -15,6 +15,35 @@ export function resetEditorSearch(targetId = 'td-edit-content') {
   searchStates.set(targetId, { query: '', caseSensitive: false, activeIdx: 0, matches: [] });
 }
 
+export function setEditorSearchQuery(targetId, query, containerEl, opts = {}) {
+  const root = containerEl || document;
+  const ta = root.querySelector(`#${targetId}`);
+  const inp = root.querySelector(`[data-role='editor-search-input'][data-target='${targetId}']`);
+  const st = getSearchState(targetId);
+  st.query = String(query || '');
+  st.caseSensitive = !!opts.caseSensitive;
+  st.activeIdx = 0;
+
+  if (inp) inp.value = st.query;
+  const caseBtn = root.querySelector(`[data-action='es-case'][data-target='${targetId}']`);
+  if (caseBtn) caseBtn.classList.toggle('active', st.caseSensitive);
+
+  if (ta && st.query) {
+    const matches = findMatches(ta.value || '', st.query, st.caseSensitive);
+    st.matches = matches;
+    if (typeof opts.preferredOffset === 'number' && opts.preferredOffset >= 0 && matches.length > 0) {
+      let bestIdx = matches.findIndex((m) => m.start === opts.preferredOffset);
+      if (bestIdx < 0) bestIdx = matches.findIndex((m) => m.start >= opts.preferredOffset);
+      if (bestIdx >= 0) st.activeIdx = bestIdx;
+    }
+  }
+
+  syncEditorSearchHighlights(targetId, root, false);
+  if (opts.scrollToActive !== false) {
+    requestAnimationFrame(() => syncEditorSearchHighlights(targetId, root, true));
+  }
+}
+
 function findMatches(text, query, caseSensitive) {
   if (!query) return [];
   const hay = caseSensitive ? text : text.toLowerCase();

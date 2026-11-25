@@ -13,7 +13,7 @@ import {
   editHistory, readPreviewSnapshot, updatePreviewHistoryButtons, pushEditSnapshot,
 } from './ui-common.js';
 import { renderQuickInsertHtml } from './ui-snippets.js';
-import { renderSearchableTextareaHtml, bindEditorSearchEvents } from './ui-editor-search.js';
+import { renderSearchableTextareaHtml, bindEditorSearchEvents, setEditorSearchQuery } from './ui-editor-search.js';
 import { createAiEditPreviewCtx } from './ui-ai-assistant.js';
 import {
   buildRegexAttrFieldsHtml, readRegexAttrFields, formatRegexAttrTags, openRegexTestPreview,
@@ -391,6 +391,16 @@ export const presetsUiModule = {
       editHistory.index = 0;
       updatePreviewHistoryButtons();
       uiCtx.syncOverlayBounds();
+      if (state.previewCtx.initialSearchQuery) {
+        const initQ = state.previewCtx.initialSearchQuery;
+        const initOff = state.previewCtx.initialSearchOffset;
+        delete state.previewCtx.initialSearchQuery;
+        delete state.previewCtx.initialSearchOffset;
+        setEditorSearchQuery('td-edit-content', initQ, previewLayerEl, {
+          preferredOffset: initOff,
+          scrollToActive: true,
+        });
+      }
       return true;
     }
 

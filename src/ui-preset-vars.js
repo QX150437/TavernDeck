@@ -1,4 +1,4 @@
-import { escapeHtml, notify, copyToClipboard } from './utils.js';
+import { escapeHtml, cssEscape, notify, copyToClipboard } from './utils.js';
 import { state, saveStore } from './store.js';
 import { buildNewPromptEntry } from './preset-manager.js';
 import { ICONS, uiCtx } from './ui-common.js';
@@ -87,8 +87,8 @@ function scanBalancedMacros(text, onMacro) {
       if (depth === 0) {
         const inner = s.slice(i + 2, j - 2);
         if (!/^\s*\/\//.test(inner)) {
-          onMacro(inner);
-          scanBalancedMacros(inner, onMacro);
+          onMacro(inner, i + 2);
+          scanBalancedMacros(inner, (subInner, subOffset) => onMacro(subInner, i + 2 + subOffset));
         }
         i = j;
         continue;
@@ -96,6 +96,29 @@ function scanBalancedMacros(text, onMacro) {
     }
     i++;
   }
+}
+
+function findVarMacroOffset(content, varName, preferredOp) {
+  const targetName = String(varName || '').trim();
+  if (!content || !targetName) return -1;
+  const targetOp = String(preferredOp || '').toLowerCase();
+  let exactOffset = -1;
+  let fallbackOffset = -1;
+  scanBalancedMacros(content, (inner, offset) => {
+    if (exactOffset >= 0) return;
+    const prefixMatch = inner.match(/^\s*(setvar|setglobalvar|getvar|getglobalvar|addvar|addglobalvar|incvar|incglobalvar|decvar|decglobalvar|hasvar|hasglobalvar)\s*::\s*/i);
+    if (!prefixMatch) return;
+    const op = prefixMatch[1].toLowerCase();
+    const rest = inner.slice(prefixMatch[0].length);
+    const parsedName = (op === 'setvar' || op === 'setglobalvar')
+      ? (rest.includes('::') ? rest.slice(0, rest.indexOf('::')).trim() : '')
+      : rest.split('::')[0].trim();
+    if (parsedName !== targetName) return;
+    const nameOffset = offset + prefixMatch[0].length;
+    if (targetOp && op === targetOp) exactOffset = nameOffset;
+    else if (fallbackOffset < 0) fallbackOffset = nameOffset;
+  });
+  return exactOffset >= 0 ? exactOffset : fallbackOffset;
 }
 
 function parseEntryMacros(content) {
@@ -491,8 +514,9 @@ function referenceVariablesToTarget(presetData, varSpecs, targetSpec) {
   return appendLines.length;
 }
 
-function formatLocBadges(locs, label) {
+function formatLocBadges(locs, label, varInfo) {
   if (!locs || locs.length === 0) return '';
+  const vName = varInfo?.name || '';
   const badges = locs.map((l) => {
     const prefix = l.listName === 'prompts_unused' ? '池' : '主';
     const stateTag = l.enabled ? '' : '·关';
@@ -501,24 +525,25 @@ function formatLocBadges(locs, label) {
       ? `=${l.initVal.length > 8 ? `${l.initVal.slice(0, 8)}…` : l.initVal}`
       : '';
     const valTip = l.initVal ? ` · 值: ${l.initVal}` : '';
-    const title = `${l.listName === 'prompts_unused' ? '未添加池' : '主列表'} #${l.idx + 1}「${l.name}」${l.enabled ? '' : '（未启用）'}${valTip}（点击编辑内容）`;
-    return `<button type='button' class='td-var-loc-btn ${l.enabled && l.listName === 'prompts' ? '' : 'is-dim'}' data-action='pv-edit-entry' data-list='${escapeHtml(l.listName)}' data-idx='${l.idx}' title='${escapeHtml(title)}'>${prefix}#${l.idx + 1} ${escapeHtml(l.name)}${escapeHtml(opTag)}${escapeHtml(shortVal)}${stateTag}</button>`;
+    const title = `${l.listName === 'prompts_unused' ? '未添加池' : '主列表'} #${l.idx + 1}「${l.name}」${l.enabled ? '' : '（未启用）'}${valTip}（点击编辑内容并高亮定位变量）`;
+    return `<button type='button' class='td-var-loc-btn ${l.enabled && l.listName === 'prompts' ? '' : 'is-dim'}' data-action='pv-edit-entry' data-list='${escapeHtml(l.listName)}' data-idx='${l.idx}' data-vname='${escapeHtml(vName)}' data-op='${escapeHtml(l.op || '')}' title='${escapeHtml(title)}'>${prefix}#${l.idx + 1} ${escapeHtml(l.name)}${escapeHtml(opTag)}${escapeHtml(shortVal)}${stateTag}</button>`;
   }).join('');
   return `<div class='td-var-loc'><strong>${escapeHtml(label)}：</strong><span class='td-var-loc-list'>${badges}</span></div>`;
 }
 
 function renderEntryCardHtml(em, needsInit, highlightUnrefOnly = false) {
   const allChips = [];
+  const makeVarChip = (v, cls, tip, label) => `<button type='button' class='td-mode-tag td-var-chip-btn ${cls}' data-action='pv-jump-var' data-vkey='${escapeHtml(v.key)}' title='${escapeHtml(`${tip}（点击定位到变量详情）`)}'>${label}</button>`;
   if (highlightUnrefOnly) {
     em.unreferencedVars.forEach((v) => {
       const roleText = em.initKeys.has(v.key) ? '初始化' : '赋值';
-      allChips.push(`<span class='td-mode-tag single' title='已初始化但预设内暂无读取'>未引用(${roleText}): ${escapeHtml(v.name)}</span>`);
+      allChips.push(makeVarChip(v, 'single', '已初始化但预设内暂无读取', `未引用(${roleText}): ${escapeHtml(v.name)}`));
     });
   } else {
     em.initVars.forEach((v) => {
       const cls = v.ignored ? 'is-ignored' : (v.status === 'unused_init' ? 'single' : 'ok');
       const suffix = v.ignored ? ' (已忽略)' : (v.status === 'unused_init' ? ' (未引用)' : '');
-      allChips.push(`<span class='td-mode-tag ${cls}' title='在本条目初始化'>初始化: ${escapeHtml(v.name)}${suffix}</span>`);
+      allChips.push(makeVarChip(v, cls, '在本条目初始化', `初始化: ${escapeHtml(v.name)}${suffix}`));
     });
     em.assignVars.forEach((v) => {
       const isMiss = needsInit(v);
@@ -535,13 +560,13 @@ function renderEntryCardHtml(em, needsInit, highlightUnrefOnly = false) {
         : (isMiss
           ? (v.status === 'inactive_init' ? ' (未生效)' : ' (未初始化)')
           : (v.status === 'unused_init' ? ' (未引用)' : ''));
-      allChips.push(`<span class='td-mode-tag ${tagCls}' title='${tip}'>赋值: ${escapeHtml(v.name)}${suffix}</span>`);
+      allChips.push(makeVarChip(v, tagCls, tip, `赋值: ${escapeHtml(v.name)}${suffix}`));
     });
     em.readVars.forEach((v) => {
       const isMiss = needsInit(v);
       const cls = v.ignored ? 'is-ignored' : (isMiss ? 'single' : 'multi');
       const suffix = v.ignored ? ' (已忽略)' : (isMiss ? ' (未初始化)' : '');
-      allChips.push(`<span class='td-mode-tag ${cls}' title='读取引用'>读取: ${escapeHtml(v.name)}${suffix}</span>`);
+      allChips.push(makeVarChip(v, cls, '读取引用', `读取: ${escapeHtml(v.name)}${suffix}`));
     });
   }
 
@@ -655,7 +680,7 @@ export const presetVarsUiModule = {
           : '';
 
         return `
-          <div class='td-mgr-row ${v.ignored ? 'is-ignored' : (needReg ? 'is-active' : '')}'>
+          <div class='td-mgr-row ${v.ignored ? 'is-ignored' : (needReg ? 'is-active' : '')}' data-vkey='${escapeHtml(v.key)}'>
             <div class='td-mgr-row-head is-wrap-head'>
               <div class='td-mgr-row-left' style='gap:5px;flex-wrap:wrap;'>
                 ${badge}
@@ -666,9 +691,9 @@ export const presetVarsUiModule = {
               <span class='td-src-badge' style='flex-shrink:0;'>读 ${v.reads.length} · 改 ${v.assigns.length}</span>
             </div>
             <div class='td-var-locs'>
-              ${formatLocBadges(v.inits, '初始化于') || `<div class='td-var-loc ${v.ignored ? '' : 'is-miss'}'><strong>初始化状态：</strong>未在基准初始化条目中找到（缺少 ${escapeHtml(initMacro)}）</div>`}
-              ${formatLocBadges(v.assigns, '赋值/修改')}
-              ${formatLocBadges(v.reads, '读取引用') || "<div class='td-var-loc'><strong>读取引用：</strong>预设内暂无读取（可能由世界书或正则读取）</div>"}
+              ${formatLocBadges(v.inits, '初始化于', v) || `<div class='td-var-loc ${v.ignored ? '' : 'is-miss'}'><strong>初始化状态：</strong>未在基准初始化条目中找到（缺少 ${escapeHtml(initMacro)}）</div>`}
+              ${formatLocBadges(v.assigns, '赋值/修改', v)}
+              ${formatLocBadges(v.reads, '读取引用', v) || "<div class='td-var-loc'><strong>读取引用：</strong>预设内暂无读取（可能由世界书或正则读取）</div>"}
             </div>
             <div class='td-mgr-row-actions'>
               ${needReg ? `<button type='button' class='td-btn sm primary' data-action='pv-reg-one' data-vkey='${escapeHtml(v.key)}'>一键初始化</button>` : ''}
@@ -917,10 +942,13 @@ export const presetVarsUiModule = {
     if (action === 'pv-edit-entry') {
       const ln = actionEl.getAttribute('data-list') || 'prompts';
       const idx = Number(actionEl.getAttribute('data-idx'));
+      const vName = actionEl.getAttribute('data-vname') || '';
+      const op = actionEl.getAttribute('data-op') || '';
       const p = data?.[ln]?.[idx];
       if (!p) { notify('warning', '未找到对应条目'); return true; }
       const previewLayerEl = uiCtx.getPreviewLayer();
       vc._pendingScrollTop = previewLayerEl?.querySelector('.td-picker-list')?.scrollTop || 0;
+      const macroOffset = vName && typeof p.content === 'string' ? findVarMacroOffset(p.content, vName, op) : -1;
       state.previewKey = null;
       state.snapshotDetailId = null;
       state.previewCtx = {
@@ -929,8 +957,45 @@ export const presetVarsUiModule = {
         idx,
         prompt: JSON.parse(JSON.stringify(p)),
         returnPreviewCtx: vc,
+        ...(vName ? { initialSearchQuery: vName, initialSearchOffset: macroOffset } : {}),
       };
       uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'pv-jump-var') {
+      const vkey = actionEl.getAttribute('data-vkey') || '';
+      if (!vkey) return true;
+      const report = analyzePresetVariables(data, vc.targetSpec || undefined, getIgnoredPresetVarsState());
+      const v = report.variables.find((x) => x.key === vkey);
+      if (!v) { notify('warning', '未找到对应变量'); return true; }
+      const needsInit = (item) => item.status === 'uninit_def' || item.status === 'uninit_ref' || item.status === 'inactive_init';
+      const f = vc.filter || 'all';
+      const visibleInCurFilter = f === 'all'
+        || (f === 'unregistered' && !v.ignored && needsInit(v))
+        || (f === 'unused' && !v.ignored && v.status === 'unused_init')
+        || (f === 'ignored' && v.ignored);
+      if (!visibleInCurFilter) vc.filter = 'all';
+      const q = (vc.query || '').trim().toLowerCase();
+      if (q) {
+        const matchesQ = v.name.toLowerCase().includes(q)
+          || [...v.inits, ...v.assigns, ...v.reads].some((l) => l.name.toLowerCase().includes(q));
+        if (!matchesQ) vc.query = '';
+      }
+      vc.tab = 'vars';
+      vc._pendingScrollTop = 0;
+      uiCtx.renderPreviewModal();
+      requestAnimationFrame(() => {
+        const box = uiCtx.getPreviewLayer()?.querySelector('.td-picker-list');
+        const row = box?.querySelector(`.td-mgr-row[data-vkey='${cssEscape(vkey)}']`);
+        if (box && row) {
+          const boxRect = box.getBoundingClientRect();
+          const rowRect = row.getBoundingClientRect();
+          box.scrollTo({ top: Math.max(0, box.scrollTop + (rowRect.top - boxRect.top) - 8), behavior: 'smooth' });
+          row.style.transition = 'box-shadow 0.25s ease';
+          row.style.boxShadow = '0 0 0 2px var(--td-accent)';
+          setTimeout(() => { if (row.isConnected) row.style.boxShadow = ''; }, 1600);
+        }
+      });
       return true;
     }
     if (action === 'pv-jump-entry') {
