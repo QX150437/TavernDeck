@@ -6,6 +6,7 @@ import {
   PRESET_SYSTEM_IDS, PRESET_SETTING_FIELDS, getPresetSummaryList, getPresetDetail,
   savePresetDetail, createNewPresetSafe, renameSavedPresetSafe, deleteSavedPresetSafe,
   exportPresetFile, buildNewPromptEntry,
+  getPresetRegexes, savePresetRegexes, buildDefaultPresetRegex,
 } from './preset-manager.js';
 import {
   ICONS, uiCtx, openConfirm, confirmDiscardDirtyModal,
@@ -14,13 +15,36 @@ import {
 import { renderQuickInsertHtml } from './ui-snippets.js';
 import { renderSearchableTextareaHtml, bindEditorSearchEvents } from './ui-editor-search.js';
 import { createAiEditPreviewCtx } from './ui-ai-assistant.js';
+import {
+  buildRegexAttrFieldsHtml, readRegexAttrFields, formatRegexAttrTags, openRegexTestPreview,
+} from './ui-regex-test.js';
 
 function syncPresetDetailDirty(m) {
   if (!m || m.type !== 'presetDetail') return false;
+  const dataChanged = typeof m.savedSnapshot === 'string' && JSON.stringify(m.data) !== m.savedSnapshot;
+  const regexChanged = typeof m.savedRegexSnapshot === 'string' && JSON.stringify(m.regexes || []) !== m.savedRegexSnapshot;
   if (typeof m.savedSnapshot === 'string') {
-    m.dirty = JSON.stringify(m.data) !== m.savedSnapshot;
+    m.dirty = dataChanged || regexChanged;
   }
   return !!m.dirty;
+}
+
+async function persistPresetDetailChanges(m) {
+  const dataChanged = typeof m.savedSnapshot !== 'string' || JSON.stringify(m.data) !== m.savedSnapshot;
+  const regexChanged = typeof m.savedRegexSnapshot === 'string' && JSON.stringify(m.regexes || []) !== m.savedRegexSnapshot;
+  if (dataChanged || !regexChanged) {
+    await savePresetDetail(m.presetName, m.data, true);
+  }
+  if (regexChanged) {
+    await savePresetRegexes(m.presetName, m.regexes || [], true);
+    try {
+      const refreshed = getPresetDetail(m.presetName);
+      if (refreshed?.extensions) m.data.extensions = refreshed.extensions;
+    } catch (e) {}
+  }
+  m.savedSnapshot = JSON.stringify(m.data);
+  m.savedRegexSnapshot = JSON.stringify(m.regexes || []);
+  m.dirty = false;
 }
 
 export const presetsUiModule = {
@@ -31,7 +55,8 @@ export const presetsUiModule = {
     let diffDetails = [];
     try {
       const baseData = m.savedSnapshot ? JSON.parse(m.savedSnapshot) : getPresetDetail(m.presetName);
-      diffDetails = describePresetChanges(baseData, m.data).lines;
+      const baseRegexes = m.savedRegexSnapshot ? JSON.parse(m.savedRegexSnapshot) : [];
+      diffDetails = describePresetChanges(baseData, m.data, baseRegexes, m.regexes || []).lines;
     } catch (err) {}
     openConfirm({
       title: '未保存修改确认',
@@ -43,10 +68,8 @@ export const presetsUiModule = {
         text: '保存并关闭',
         className: 'primary',
         onClick: () => {
-          savePresetDetail(m.presetName, m.data, true)
+          persistPresetDetailChanges(m)
             .then(() => {
-              m.savedSnapshot = JSON.stringify(m.data);
-              m.dirty = false;
               notify('success', `已保存预设「${m.presetName}」`);
               return refreshAllCatalogs();
             })
@@ -110,13 +133,71 @@ export const presetsUiModule = {
 
     if (m.type === 'presetDetail') {
       const data = m.data, tab = m.tab || 'prompts', q = (m.query || '').trim().toLowerCase();
+      const regexes = Array.isArray(m.regexes) ? m.regexes : (m.regexes = []);
       const listName = tab === 'unused' ? 'prompts_unused' : 'prompts';
       const list = Array.isArray(data[listName]) ? data[listName] : [];
       const batchMode = !!m.batchMode;
       const selectedSet = m.selectedIdx instanceof Set ? m.selectedIdx : (m.selectedIdx = new Set());
 
       let bodyHtml = '';
-      if (tab === 'settings') {
+      if (tab === 'regex') {
+        const indexedReg = regexes.map((r, idx) => ({ r, idx })).filter(({ r, idx }) => {
+          if (!q) return true;
+          return `#${idx + 1}`.includes(q)
+            || (r.script_name || '').toLowerCase().includes(q)
+            || (r.find_regex || '').toLowerCase().includes(q)
+            || (r.replace_string || '').toLowerCase().includes(q);
+        });
+        const regRows = indexedReg.map(({ r, idx }) => {
+          const checked = selectedSet.has(idx);
+          const attrTags = formatRegexAttrTags(r);
+          return `
+            <div class='td-mgr-row ${batchMode && checked ? 'is-active' : ''}' data-idx='${idx}'>
+              <div class='td-mgr-row-head is-wrap-head'>
+                <div class='td-mgr-row-left'>
+                  ${batchMode ? `<input type='checkbox' class='td-checkbox' data-action='pm-batch-check' data-idx='${idx}' ${checked ? 'checked' : ''} />` : ''}
+                  <span class='td-idx-badge'>#${idx + 1}</span>
+                  <span class='td-mgr-row-title is-wrap' title='${escapeHtml(r.script_name || r.id)}'>${escapeHtml(r.script_name || r.id)}</span>
+                </div>
+                <div style='display:flex;align-items:center;gap:7px;flex-shrink:0;'>
+                  <button type='button' class='td-switch sm ${r.enabled ? 'on' : ''}' data-action='pm-toggle-regex' data-idx='${idx}'></button>
+                </div>
+              </div>
+              ${(r.find_regex || attrTags.length > 0) ? `
+                <div class='td-mgr-row-sub' style='gap:4px;'>
+                  ${attrTags.map((t) => `<span class='td-src-badge'>${escapeHtml(t)}</span>`).join('')}
+                  ${r.find_regex ? `<span style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:120px;'>查找: ${escapeHtml(r.find_regex)}</span>` : ''}
+                </div>` : ''}
+              <div class='td-mgr-row-actions'>
+                <button class='td-btn sm primary' data-action='pm-edit-regex-content' data-idx='${idx}'>${ICONS.eye} 编辑内容</button>
+                <button class='td-btn sm' data-action='pm-edit-regex' data-idx='${idx}'>${ICONS.edit} 属性</button>
+                <button class='td-btn sm' data-action='pm-test-regex' data-idx='${idx}'>测试</button>
+                <button class='td-btn sm' data-action='pm-move-before' data-list='regex' data-idx='${idx}'>移动到...</button>
+                <button class='td-btn sm danger' data-action='pm-del-regex' data-idx='${idx}'>删除</button>
+              </div>
+            </div>`;
+        }).join('');
+        bodyHtml = `
+          <div class='td-compact-bar'>
+            <div class='td-search-input-wrap' style='flex:1;min-width:105px;'>
+              <input class='td-input' id='td-pm-detail-search' type='text' placeholder='搜索序号/名称/查找/替换...' value='${escapeHtml(m.query || '')}' style='height:30px;font-size:12.5px;padding:0 ${m.query ? '24px' : '9px'} 0 9px;border-radius:8px;' />
+              ${m.query ? `<button type='button' class='td-search-clear' data-action='pm-clear-detail-search' title='清空搜索' style='width:22px;height:22px;right:3px;'>${ICONS.close}</button>` : ''}
+            </div>
+            <div class='td-jump-group'>
+              <input class='td-input' id='td-pm-jump-idx' type='number' min='1' max='${Math.max(1, regexes.length)}' placeholder='#序号' value='${escapeHtml(m.jumpVal || '')}' />
+              <button type='button' class='td-btn xs' data-action='pm-jump-idx' title='跳转到指定序号'>跳转</button>
+            </div>
+            <button type='button' class='td-btn sm primary' data-action='pm-add-regex' style='min-height:30px;'>${ICONS.plus} 新增</button>
+          </div>
+          <div class='td-compact-actions'>
+            <button type='button' class='td-btn xs ${batchMode ? 'primary' : ''}' data-action='pm-toggle-batch'>${batchMode ? `退出批量 (${selectedSet.size})` : '批量移动'}</button>
+            ${batchMode ? `<button type='button' class='td-btn xs warn' data-action='pm-batch-move'>移动所选</button>` : ''}
+            <button type='button' class='td-btn xs' data-action='pm-open-diff-compare'>${ICONS.gitMerge} Diff 比对</button>
+            <button type='button' class='td-btn xs' data-action='pm-open-var-check'>${ICONS.code} 变量检测</button>
+            <button type='button' class='td-btn xs warn' data-action='pm-open-ai-edit'>${ICONS.sliders} AI 编辑</button>
+          </div>
+          <div class='td-picker-list td-scroll'>${regRows || "<div class='td-group-empty'>当前预设暂无正则条目</div>"}</div>`;
+      } else if (tab === 'settings') {
         const s = data.settings || {};
         const fieldsHtml = PRESET_SETTING_FIELDS.map((f) => {
           const val = s[f.key];
@@ -193,9 +274,10 @@ export const presetsUiModule = {
             <div class='td-modal-head-actions'><button class='td-btn sm' data-action='pm-open-snapshots'>${ICONS.camera} 快照</button><button class='td-btn sm' data-action='pm-back-list'>返回</button><button class='td-icon-btn' data-action='open-help' data-help-key='presetDetail' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body td-picker-body'>
-            <div class='td-source-tabs cols-3'>
+            <div class='td-source-tabs'>
               <button class='td-source-tab ${tab === 'prompts' ? 'active' : ''}' data-action='pm-detail-tab' data-tab='prompts'>提示词 (${data.prompts.length})</button>
               <button class='td-source-tab ${tab === 'unused' ? 'active' : ''}' data-action='pm-detail-tab' data-tab='unused'>未添加 (${data.prompts_unused.length})</button>
+              <button class='td-source-tab ${tab === 'regex' ? 'active' : ''}' data-action='pm-detail-tab' data-tab='regex'>正则 (${regexes.length})</button>
               <button class='td-source-tab ${tab === 'settings' ? 'active' : ''}' data-action='pm-detail-tab' data-tab='settings'>生成参数</button>
             </div>
             ${bodyHtml}
@@ -210,6 +292,85 @@ export const presetsUiModule = {
   },
 
   renderPreview(previewLayerEl) {
+    if (state.previewCtx?.type === 'pmRegexContentEdit' && state.modal?.type === 'presetDetail') {
+      const r = state.previewCtx.regex;
+      previewLayerEl.classList.add('is-open');
+      previewLayerEl.innerHTML = `
+        <div class='td-modal td-modal-tall'>
+          <div class='td-modal-head'>
+            <div class='td-modal-title'>编辑正则内容 · #${state.previewCtx.idx + 1} ${escapeHtml(r.script_name || r.id)}</div>
+            <div class='td-modal-head-actions'>
+              <button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button>
+              <button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button>
+              <button class='td-icon-btn' data-action='copy-preview' title='复制替换文本'>${ICONS.copy}</button>
+              <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+            </div>
+          </div>
+          <div class='td-modal-body'>
+            <div class='td-field'><label class='td-label'>正则名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(r.script_name || '')}' /></div>
+            <div class='td-field'><label class='td-label'>查找正则 (Find Regex)</label><input class='td-input' id='td-edit-find-regex' type='text' value='${escapeHtml(r.find_regex || '')}' /></div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:0;'>
+              <label class='td-label'>替换为 (Replace String · 支持撤销/重做)</label>
+              ${renderQuickInsertHtml('td-edit-replace-string')}
+              ${renderSearchableTextareaHtml({ id: 'td-edit-replace-string', value: r.replace_string || '', minHeight: '180px' })}
+            </div>
+          </div>
+          <div class='td-modal-foot'>
+            <button type='button' class='td-btn' data-action='pm-test-cur-regex' style='margin-right:auto;'>测试正则</button>
+            <button class='td-btn' data-action='close-preview'>取消</button>
+            <button class='td-btn primary' data-action='pm-save-regex-content'>${ICONS.save} 应用到预设</button>
+          </div>
+        </div>`;
+      bindEditorSearchEvents(previewLayerEl);
+      editHistory.stack = [readPreviewSnapshot()];
+      editHistory.index = 0;
+      updatePreviewHistoryButtons();
+      uiCtx.syncOverlayBounds();
+      return true;
+    }
+
+    if (state.previewCtx?.type === 'pmRegexEdit' && state.modal?.type === 'presetDetail') {
+      const r = state.previewCtx.regex;
+      const isNew = !!state.previewCtx.isNew;
+      previewLayerEl.classList.add('is-open');
+      previewLayerEl.innerHTML = `
+        <div class='td-modal td-modal-tall'>
+          <div class='td-modal-head'>
+            <div class='td-modal-title'>${isNew ? '新增预设正则' : `正则属性 · ${escapeHtml(r.script_name || r.id)}`}</div>
+            <div class='td-modal-head-actions'>
+              ${isNew ? `<button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button>` : ''}
+              <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+            </div>
+          </div>
+          <div class='td-modal-body'>
+            <div style='display:flex;gap:8px;align-items:center;'>
+              <div class='td-field' style='flex:1;'><label class='td-label'>正则名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(r.script_name || '')}' /></div>
+              <div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-pm-r-enabled' ${r.enabled ? 'checked' : ''} /><span>启用</span></div>
+            </div>
+            ${buildRegexAttrFieldsHtml(r, 'td-pm-r')}
+            ${isNew ? `
+              <div class='td-field'><label class='td-label'>查找正则 (Find Regex)</label><input class='td-input' id='td-edit-find-regex' type='text' value='${escapeHtml(r.find_regex || '')}' /></div>
+              <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:140px;'>
+                <label class='td-label'>替换为 (Replace String)</label>
+                ${renderQuickInsertHtml('td-edit-replace-string')}
+                ${renderSearchableTextareaHtml({ id: 'td-edit-replace-string', value: r.replace_string || '', minHeight: '120px' })}
+              </div>` : ''}
+          </div>
+          <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='pm-save-regex'>${ICONS.save} 确认</button></div>
+        </div>`;
+      if (isNew) {
+        bindEditorSearchEvents(previewLayerEl);
+        editHistory.stack = [readPreviewSnapshot()];
+        editHistory.index = 0;
+        updatePreviewHistoryButtons();
+      } else {
+        editHistory.stack = [];
+        editHistory.index = -1;
+      }
+      uiCtx.syncOverlayBounds();
+      return true;
+    }
+
     if (state.previewCtx?.type === 'pmContentEdit' && state.modal?.type === 'presetDetail') {
       const p = state.previewCtx.prompt;
       previewLayerEl.classList.add('is-open');
@@ -235,13 +396,18 @@ export const presetsUiModule = {
 
     if (state.previewCtx?.type === 'pmPromptEdit') {
       const p = state.previewCtx.prompt, isInChat = p.position?.type === 'in_chat';
+      const isNew = !!state.previewCtx.isNew;
       const isPlaceholder = PRESET_SYSTEM_IDS.has(p.id) && typeof p.content !== 'string';
       previewLayerEl.classList.add('is-open');
       previewLayerEl.innerHTML = `
-        <div class='td-modal td-modal-tall'>
+        <div class='td-modal ${isNew ? 'td-modal-tall' : ''}'>
           <div class='td-modal-head'>
-            <div class='td-modal-title'>${state.previewCtx.isNew ? '新增预设条目' : `条目属性 · ${escapeHtml(p.name || p.id)}`}</div>
-            <div class='td-modal-head-actions'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='open-help' data-help-key='pmPromptEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+            <div class='td-modal-title'>${isNew ? '新增预设条目' : `条目属性 · ${escapeHtml(p.name || p.id)}`}</div>
+            <div class='td-modal-head-actions'>
+              ${isNew ? `<button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button>` : ''}
+              <button class='td-icon-btn' data-action='open-help' data-help-key='pmPromptEdit' title='功能说明'>${ICONS.help}</button>
+              <button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button>
+            </div>
           </div>
           <div class='td-modal-body'>
             <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>条目名称</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(p.name || '')}' /></div><div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-pm-p-enabled' ${p.enabled ? 'checked' : ''} /><span>启用</span></div></div>
@@ -251,14 +417,19 @@ export const presetsUiModule = {
               <div class='td-field'><label class='td-label'>深度 (Depth, @D有效)</label><input class='td-input' id='td-pm-p-depth' type='number' value='${escapeHtml(p.position?.depth ?? 4)}' /></div>
               <div class='td-field'><label class='td-label'>顺序 (Order, @D有效)</label><input class='td-input' id='td-pm-p-order' type='number' value='${escapeHtml(p.position?.order ?? 100)}' /></div>
             </div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:180px;'><label class='td-label'>提示词正文 ${isPlaceholder ? '（占位符条目一般留空）' : '（支持撤销/重做）'}</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: typeof p.content === 'string' ? p.content : '', minHeight: '150px' })}</div>
+            ${isNew ? `<div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:180px;'><label class='td-label'>提示词正文 ${isPlaceholder ? '（占位符条目一般留空）' : '（支持撤销/重做）'}</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: typeof p.content === 'string' ? p.content : '', minHeight: '150px' })}</div>` : ''}
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='pm-save-prompt'>${ICONS.save} 确认</button></div>
         </div>`;
-      bindEditorSearchEvents(previewLayerEl);
-      editHistory.stack = [readPreviewSnapshot()];
-      editHistory.index = 0;
-      updatePreviewHistoryButtons();
+      if (isNew) {
+        bindEditorSearchEvents(previewLayerEl);
+        editHistory.stack = [readPreviewSnapshot()];
+        editHistory.index = 0;
+        updatePreviewHistoryButtons();
+      } else {
+        editHistory.stack = [];
+        editHistory.index = -1;
+      }
       uiCtx.syncOverlayBounds();
       return true;
     }
@@ -509,7 +680,21 @@ export const presetsUiModule = {
       const name = actionEl.getAttribute('data-name');
       try {
         const detailData = getPresetDetail(name);
-        state.modal = { type: 'presetDetail', presetName: name, data: detailData, savedSnapshot: JSON.stringify(detailData), tab: 'prompts', query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() };
+        const regexes = getPresetRegexes(name, detailData);
+        state.modal = {
+          type: 'presetDetail',
+          presetName: name,
+          data: detailData,
+          regexes,
+          savedSnapshot: JSON.stringify(detailData),
+          savedRegexSnapshot: JSON.stringify(regexes),
+          tab: 'prompts',
+          query: '',
+          dirty: false,
+          toolsOpen: false,
+          batchMode: false,
+          selectedIdx: new Set(),
+        };
         uiCtx.renderModal();
       }
       catch (err) { logError('读取预设详情失败', err); notify('error', err.message || String(err)); }
@@ -538,8 +723,9 @@ export const presetsUiModule = {
     if (action === 'pm-detail-tab' && state.modal?.type === 'presetDetail') { state.modal.tab = actionEl.getAttribute('data-tab') || 'prompts'; state.modal.selectedIdx = new Set(); uiCtx.renderModal(); return true; }
     if (action === 'pm-clear-detail-search' && state.modal?.type === 'presetDetail') { state.modal.query = ''; uiCtx.renderModal(); return true; }
     if (action === 'pm-jump-idx' && state.modal?.type === 'presetDetail') {
-      const listName = state.modal.tab === 'unused' ? 'prompts_unused' : 'prompts';
-      const list = state.modal.data[listName] || [];
+      const list = state.modal.tab === 'regex'
+        ? (state.modal.regexes || [])
+        : (state.modal.data[state.modal.tab === 'unused' ? 'prompts_unused' : 'prompts'] || []);
       const num = Number(modalLayerEl?.querySelector('#td-pm-jump-idx')?.value);
       if (Number.isNaN(num) || num < 1 || num > list.length) {
         notify('warning', `请输入 1 ~ ${list.length} 之间的有效序号`);
@@ -581,7 +767,9 @@ export const presetsUiModule = {
     if (action === 'pm-batch-move' && state.modal?.type === 'presetDetail') {
       const indices = Array.from(state.modal.selectedIdx || []);
       if (indices.length === 0) { notify('warning', '请先勾选要移动的条目'); return true; }
-      const listName = state.modal.tab === 'unused' ? 'prompts_unused' : 'prompts';
+      const listName = state.modal.tab === 'regex'
+        ? 'regex'
+        : (state.modal.tab === 'unused' ? 'prompts_unused' : 'prompts');
       state.selectPopup = { type: 'movePromptTarget', mode: 'move', listName, fromIndices: indices };
       uiCtx.renderSelectPopup();
       return true;
@@ -602,6 +790,131 @@ export const presetsUiModule = {
         const dirtyEl = modalLayerEl?.querySelector("[data-role='pm-dirty-label']");
         if (dirtyEl) dirtyEl.textContent = isDirty ? '有未保存修改' : '已同步';
       }
+      return true;
+    }
+    if (action === 'pm-toggle-regex' && state.modal?.type === 'presetDetail') {
+      const idx = Number(actionEl.getAttribute('data-idx'));
+      const r = state.modal.regexes?.[idx];
+      if (r) {
+        r.enabled = !r.enabled;
+        const isDirty = syncPresetDetailDirty(state.modal);
+        actionEl.classList.toggle('on', !!r.enabled);
+        const dirtyEl = modalLayerEl?.querySelector("[data-role='pm-dirty-label']");
+        if (dirtyEl) dirtyEl.textContent = isDirty ? '有未保存修改' : '已同步';
+      }
+      return true;
+    }
+    if (action === 'pm-add-regex' && state.modal?.type === 'presetDetail') {
+      state.previewKey = null; state.snapshotDetailId = null;
+      state.previewCtx = { type: 'pmRegexEdit', idx: -1, isNew: true, regex: buildDefaultPresetRegex({}) };
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'pm-edit-regex' && state.modal?.type === 'presetDetail') {
+      const idx = Number(actionEl.getAttribute('data-idx'));
+      const r = state.modal.regexes?.[idx];
+      if (!r) return true;
+      state.previewKey = null; state.snapshotDetailId = null;
+      state.previewCtx = { type: 'pmRegexEdit', idx, isNew: false, regex: JSON.parse(JSON.stringify(r)) };
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'pm-edit-regex-content' && state.modal?.type === 'presetDetail') {
+      const idx = Number(actionEl.getAttribute('data-idx'));
+      const r = state.modal.regexes?.[idx];
+      if (!r) return true;
+      state.previewKey = null; state.snapshotDetailId = null;
+      state.previewCtx = { type: 'pmRegexContentEdit', idx, regex: JSON.parse(JSON.stringify(r)) };
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'pm-save-regex-content' && state.previewCtx?.type === 'pmRegexContentEdit' && state.modal?.type === 'presetDetail') {
+      pushEditSnapshot(true);
+      const snap = readPreviewSnapshot();
+      const target = state.modal.regexes?.[state.previewCtx.idx];
+      if (target && snap) {
+        if (snap.name.trim()) target.script_name = snap.name.trim();
+        target.find_regex = snap.find_regex ?? '';
+        target.replace_string = snap.replace_string ?? '';
+        state.modal.dirty = true;
+      }
+      state.previewCtx = null;
+      uiCtx.renderPreviewModal();
+      uiCtx.renderModal();
+      return true;
+    }
+    if (action === 'pm-test-regex' && state.modal?.type === 'presetDetail') {
+      const idx = Number(actionEl.getAttribute('data-idx'));
+      const r = state.modal.regexes?.[idx];
+      if (!r) return true;
+      openRegexTestPreview({
+        title: `#${idx + 1} ${r.script_name || r.id}`,
+        findRegex: r.find_regex || '',
+        replaceString: r.replace_string || '',
+        trimStrings: r.trim_strings || [],
+        onApplyBack: (next) => {
+          const target = state.modal?.regexes?.[idx];
+          if (target) {
+            target.find_regex = next.find_regex;
+            target.replace_string = next.replace_string;
+            state.modal.dirty = true;
+            uiCtx.renderModal();
+          }
+        },
+      });
+      return true;
+    }
+    if (action === 'pm-test-cur-regex' && state.previewCtx?.type === 'pmRegexContentEdit' && state.modal?.type === 'presetDetail') {
+      const curCtx = state.previewCtx;
+      const snap = readPreviewSnapshot();
+      curCtx.regex.script_name = (snap?.name || '').trim() || curCtx.regex.script_name;
+      curCtx.regex.find_regex = snap?.find_regex ?? '';
+      curCtx.regex.replace_string = snap?.replace_string ?? '';
+      openRegexTestPreview({
+        title: curCtx.regex.script_name || `正则 #${curCtx.idx + 1}`,
+        findRegex: curCtx.regex.find_regex,
+        replaceString: curCtx.regex.replace_string,
+        trimStrings: curCtx.regex.trim_strings || [],
+        returnPreviewCtx: curCtx,
+        onApplyBack: (next) => {
+          curCtx.regex.find_regex = next.find_regex;
+          curCtx.regex.replace_string = next.replace_string;
+        },
+      });
+      return true;
+    }
+    if (action === 'pm-save-regex' && state.previewCtx?.type === 'pmRegexEdit' && state.modal?.type === 'presetDetail') {
+      if (state.previewCtx.isNew) pushEditSnapshot(true);
+      const snap = readPreviewSnapshot();
+      const r = JSON.parse(JSON.stringify(state.previewCtx.regex));
+      r.script_name = (snap?.name || '').trim() || r.script_name || '未命名正则';
+      r.enabled = !!previewLayerEl?.querySelector('#td-pm-r-enabled')?.checked;
+      Object.assign(r, readRegexAttrFields(previewLayerEl, 'td-pm-r'));
+      if (state.previewCtx.isNew || previewLayerEl?.querySelector('#td-edit-find-regex')) {
+        r.find_regex = snap?.find_regex ?? '';
+      }
+      if (state.previewCtx.isNew || previewLayerEl?.querySelector('#td-edit-replace-string')) {
+        r.replace_string = snap?.replace_string ?? '';
+      }
+      state.modal.regexes = Array.isArray(state.modal.regexes) ? state.modal.regexes : [];
+      if (state.previewCtx.isNew) state.modal.regexes.push(r);
+      else state.modal.regexes[state.previewCtx.idx] = r;
+      state.modal.dirty = true;
+      state.previewCtx = null;
+      uiCtx.renderPreviewModal();
+      uiCtx.renderModal();
+      return true;
+    }
+    if (action === 'pm-del-regex' && state.modal?.type === 'presetDetail') {
+      const idx = Number(actionEl.getAttribute('data-idx'));
+      const r = state.modal.regexes?.[idx];
+      if (!r) return true;
+      openConfirm({
+        title: '删除预设正则确认',
+        message: `确定要从当前预设中永久删除正则 #${idx + 1}「${r.script_name || r.id}」吗？`,
+        confirmText: '确认删除',
+        onConfirm: () => { state.modal.regexes.splice(idx, 1); state.modal.dirty = true; uiCtx.renderModal(); },
+      });
       return true;
     }
     if (action === 'pm-move-before' && state.modal?.type === 'presetDetail') {
@@ -672,7 +985,7 @@ export const presetsUiModule = {
       return true;
     }
     if (action === 'pm-save-prompt' && state.previewCtx?.type === 'pmPromptEdit' && state.modal?.type === 'presetDetail') {
-      pushEditSnapshot(true);
+      if (state.previewCtx.isNew) pushEditSnapshot(true);
       const snap = readPreviewSnapshot(), p = JSON.parse(JSON.stringify(state.previewCtx.prompt));
       p.name = (snap?.name || '').trim() || p.name || '未命名条目';
       p.enabled = !!previewLayerEl?.querySelector('#td-pm-p-enabled')?.checked;
@@ -683,8 +996,10 @@ export const presetsUiModule = {
           ? { type: 'in_chat', depth: Number(previewLayerEl?.querySelector('#td-pm-p-depth')?.value) || 0, order: Number(previewLayerEl?.querySelector('#td-pm-p-order')?.value) || 100 }
           : { type: 'relative' };
       }
-      const contentVal = snap?.content ?? '';
-      if (typeof p.content === 'string' || contentVal.length > 0 || !PRESET_SYSTEM_IDS.has(p.id)) p.content = contentVal;
+      if (previewLayerEl?.querySelector('#td-edit-content')) {
+        const contentVal = snap?.content ?? '';
+        if (typeof p.content === 'string' || contentVal.length > 0 || !PRESET_SYSTEM_IDS.has(p.id)) p.content = contentVal;
+      }
       const targetList = state.modal.data[state.previewCtx.listName];
       if (state.previewCtx.isNew) targetList.push(p); else targetList[state.previewCtx.idx] = p;
       state.modal.dirty = true; state.previewCtx = null; uiCtx.renderPreviewModal(); uiCtx.renderModal();
@@ -695,7 +1010,8 @@ export const presetsUiModule = {
       let diffRes = { hasChanges: false, count: 0, lines: [] };
       try {
         const baseData = m.savedSnapshot ? JSON.parse(m.savedSnapshot) : getPresetDetail(m.presetName);
-        diffRes = describePresetChanges(baseData, m.data);
+        const baseRegexes = m.savedRegexSnapshot ? JSON.parse(m.savedRegexSnapshot) : [];
+        diffRes = describePresetChanges(baseData, m.data, baseRegexes, m.regexes || []);
       } catch (err) {}
       const targetLabel = m.presetName === 'in_use' ? `实时预设 (${state.presetName})` : m.presetName;
       openConfirm({
@@ -707,9 +1023,9 @@ export const presetsUiModule = {
         confirmText: '确认保存',
         confirmClass: 'primary',
         onConfirm: () => {
-          savePresetDetail(m.presetName, m.data, true).then(() => {
-            m.savedSnapshot = JSON.stringify(m.data);
-            m.dirty = false; notify('success', `已保存预设「${m.presetName}」`); return refreshAllCatalogs();
+          persistPresetDetailChanges(m).then(() => {
+            notify('success', `已保存预设「${m.presetName}」`);
+            return refreshAllCatalogs();
           }).then(() => { uiCtx.renderMain(); uiCtx.renderModal(); }).catch((err) => { logError('保存预设详情失败', err); notify('error', `保存失败: ${err.message || err}`); });
         },
       });

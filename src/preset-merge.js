@@ -10,7 +10,7 @@ function formatPromptPosBrief(p) {
   return `@D${p.position.depth ?? 0}(顺${p.position.order ?? 100})`;
 }
 
-export function describePresetChanges(beforePreset, afterPreset) {
+export function describePresetChanges(beforePreset, afterPreset, beforeRegexes = null, afterRegexes = null) {
   const lines = [];
   const beforePrompts = Array.isArray(beforePreset?.prompts) ? beforePreset.prompts : [];
   const afterPrompts = Array.isArray(afterPreset?.prompts) ? afterPreset.prompts : [];
@@ -85,6 +85,47 @@ export function describePresetChanges(beforePreset, afterPreset) {
       lines.push(`[生成参数] ${lbl}: ${String(bSettings[k] ?? '未设置')} → ${String(aSettings[k] ?? '未设置')}`);
     }
   });
+
+  if (Array.isArray(beforeRegexes) && Array.isArray(afterRegexes)) {
+    const bRegMap = new Map(beforeRegexes.map((r, idx) => [r.id, { r, idx }]));
+    const aRegMap = new Map(afterRegexes.map((r, idx) => [r.id, { r, idx }]));
+    const matchedIdsA = [];
+    afterRegexes.forEach((ar, idx) => {
+      const hit = bRegMap.get(ar.id);
+      const name = ar.script_name || ar.id || `#${idx + 1}`;
+      if (!hit) {
+        lines.push(`[预设正则] 新增 #${idx + 1}「${name}」(${ar.enabled ? '开启' : '关闭'})`);
+        return;
+      }
+      matchedIdsA.push(ar.id);
+      const br = hit.r;
+      const changes = [];
+      if (!!br.enabled !== !!ar.enabled) changes.push(`开关: ${br.enabled ? '开' : '关'} → ${ar.enabled ? '开' : '关'}`);
+      if ((br.script_name || '') !== (ar.script_name || '')) changes.push(`名称:「${br.script_name || br.id}」→「${ar.script_name || ar.id}」`);
+      if ((br.find_regex || '') !== (ar.find_regex || '')) changes.push('查找正则已修改');
+      if ((br.replace_string || '') !== (ar.replace_string || '')) changes.push('替换文本已修改');
+      if (
+        JSON.stringify(br.source || null) !== JSON.stringify(ar.source || null)
+        || JSON.stringify(br.destination || null) !== JSON.stringify(ar.destination || null)
+        || !!br.run_on_edit !== !!ar.run_on_edit
+        || (br.min_depth ?? null) !== (ar.min_depth ?? null)
+        || (br.max_depth ?? null) !== (ar.max_depth ?? null)
+        || JSON.stringify(br.trim_strings || []) !== JSON.stringify(ar.trim_strings || [])
+      ) {
+        changes.push('作用范围/深度/修剪属性已修改');
+      }
+      if (changes.length > 0) lines.push(`[预设正则] #${idx + 1}「${name}」: ${changes.join('；')}`);
+    });
+    beforeRegexes.forEach((br, idx) => {
+      if (!aRegMap.has(br.id)) {
+        lines.push(`[预设正则] 删除原 #${idx + 1}「${br.script_name || br.id}」`);
+      }
+    });
+    const matchedIdsB = beforeRegexes.filter((br) => aRegMap.has(br.id)).map((br) => br.id);
+    if (matchedIdsA.length === matchedIdsB.length && matchedIdsA.some((id, i) => id !== matchedIdsB[i])) {
+      lines.push('[预设正则] 条目排列顺序已调整');
+    }
+  }
 
   return { hasChanges: lines.length > 0, count: lines.length, lines };
 }

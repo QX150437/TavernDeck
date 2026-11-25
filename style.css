@@ -1474,3 +1474,17 @@
   background: rgba(0, 0, 0, 0.22); border: 1px solid var(--td-border);
   white-space: pre-wrap; word-break: break-word; line-height: 1.45;
 }
+.td-regex-attr-checks {
+  display: flex; flex-wrap: wrap; gap: 8px 12px; padding: 7px 9px;
+  border-radius: 10px; background: var(--td-surface); border: 1px solid var(--td-border);
+}
+.td-regex-chk {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--td-text);
+}
+.td-regex-render-frame {
+  width: 100%; flex: 1; min-height: 170px; border-radius: 10px;
+  border: 1px solid var(--td-border-strong); background: var(--td-code-bg);
+}
+.td-regex-match-list {
+  flex: 1; min-height: 170px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
+}

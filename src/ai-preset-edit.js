@@ -370,17 +370,44 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
     throw new Error('请输入对条目的修改或生成指令');
   }
 
-  const inputPayload = (selectedItems || []).map((it) => ({
-    uidKey: it.uidKey,
-    index: it.index + 1,
-    id: it.prompt.id,
-    name: it.prompt.name || it.prompt.id,
-    role: it.prompt.role || 'system',
-    enabled: !!it.prompt.enabled,
-    content: typeof it.prompt.content === 'string' ? it.prompt.content : '',
-  }));
+  const inputPayload = (selectedItems || []).map((it) => {
+    if (it.itemType === 'regex' && it.regex) {
+      return {
+        itemType: 'regex',
+        uidKey: it.uidKey,
+        index: it.index + 1,
+        id: it.regex.id,
+        script_name: it.regex.script_name || it.regex.id,
+        enabled: !!it.regex.enabled,
+        find_regex: typeof it.regex.find_regex === 'string' ? it.regex.find_regex : '',
+        replace_string: typeof it.regex.replace_string === 'string' ? it.regex.replace_string : '',
+      };
+    }
+    return {
+      itemType: 'prompt',
+      uidKey: it.uidKey,
+      index: it.index + 1,
+      id: it.prompt.id,
+      name: it.prompt.name || it.prompt.id,
+      role: it.prompt.role || 'system',
+      enabled: !!it.prompt.enabled,
+      content: typeof it.prompt.content === 'string' ? it.prompt.content : '',
+    };
+  });
 
   const refPayload = (referenceItems || []).map((it) => {
+    if (it.kind === 'regex' || it.regex) {
+      const r = it.regex || it;
+      return {
+        sourceType: 'preset_regex',
+        sourceName: it.sourceName || '',
+        index: typeof it.index === 'number' ? it.index + 1 : undefined,
+        script_name: r.script_name || r.id,
+        enabled: !!r.enabled,
+        find_regex: typeof r.find_regex === 'string' ? r.find_regex : '',
+        replace_string: typeof r.replace_string === 'string' ? r.replace_string : '',
+      };
+    }
     if (it.kind === 'worldbook' || it.entry) {
       const e = it.entry || it;
       return {
@@ -407,13 +434,14 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
   });
 
   const systemPrompt = [
-    '你是一个专业的 SillyTavern (酒馆) 预设提示词工程助手。',
-    '用户会提供修改/编写指令、待编辑条目（可选）以及供上下文参考的条目（可选）。',
-    '你可以修改待编辑条目（action: "update"），也可以根据用户指令新增条目（action: "add"）。',
+    '你是一个专业的 SillyTavern (酒馆) 预设提示词与正则工程助手。',
+    '用户会提供修改/编写指令、待编辑条目（可能包含预设提示词条目 itemType:"prompt" 与预设正则条目 itemType:"regex"，可选）以及供上下文参考的条目（可选）。',
+    '你可以修改待编辑条目（action: "update"），也可以根据用户指令新增提示词条目或新增预设正则条目（action: "add"）。',
     '输出要求：',
     '1. 请输出一个合法的 JSON 对象（推荐置于 ```json ... ``` 代码块中）；如需提供整体修改说明、结构设计思路、使用/配置指导信息或注意事项，请写入根字段 "summary"（也可在 JSON 代码块外补充说明文字）。',
-    '2. 格式为：{"summary": "整体说明与指导信息（可选）", "entries": [{"action": "update"|"add", "uidKey": "修改时填原样uidKey；新增时留空", "listName": "prompts"|"prompts_unused", "name": "条目名", "role": "system|user|assistant", "enabled": true, "content": "完整正文", "note": "本条目的修改说明或指导"}]}',
-    '3. 修改原条目时必须完整保留 uidKey，不得遗漏或篡改；不要把只读参考条目当作原条目输出为 update（除非需求明确要求新增条目）。',
+    '2. 提示词条目格式：{"action": "update"|"add", "itemType": "prompt", "uidKey": "修改时填原样uidKey；新增时留空", "listName": "prompts"|"prompts_unused", "name": "条目名", "role": "system|user|assistant", "enabled": true, "content": "完整正文", "note": "说明"}',
+    '3. 预设正则条目格式：{"action": "update"|"add", "itemType": "regex", "uidKey": "修改时填原样uidKey；新增时留空", "script_name": "正则名称", "enabled": true, "find_regex": "查找正则表达式", "replace_string": "替换文本", "note": "说明"}',
+    '4. 修改原条目时必须完整保留 uidKey 与对应的 itemType，不得遗漏或篡改；不要把只读参考条目当作原条目输出为 update。',
   ].join('\n');
 
   const blocks = [`【指令需求】\n${cleanInstruction}`];
@@ -436,18 +464,83 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
   }
 
   const byUidKey = new Map((selectedItems || []).map((it) => [it.uidKey, it]));
+  const getItemId = (x) => (x.itemType === 'regex' ? x.regex?.id : x.prompt?.id);
   const results = [];
   list.forEach((out) => {
     if (!out || typeof out !== 'object') return;
     const explicitAdd = out.action === 'add' || out.isNew === true;
     const match = !explicitAdd
       ? (byUidKey.get(out.uidKey)
-        || (selectedItems || []).find((x) => out.id && x.prompt.id === out.id && (x.index + 1) === Number(out.index))
-        || (selectedItems || []).find((x) => out.id && x.prompt.id === out.id))
+        || (selectedItems || []).find((x) => out.id && getItemId(x) === out.id && (x.index + 1) === Number(out.index))
+        || (selectedItems || []).find((x) => out.id && getItemId(x) === out.id))
       : null;
+
+    const isRegex = match
+      ? match.itemType === 'regex'
+      : (out.itemType === 'regex'
+        || typeof out.find_regex === 'string'
+        || typeof out.findRegex === 'string'
+        || typeof out.replace_string === 'string'
+        || typeof out.replaceString === 'string');
+
+    if (isRegex) {
+      const rawName = typeof out.script_name === 'string' ? out.script_name : (typeof out.name === 'string' ? out.name : '');
+      const rawFind = out.find_regex ?? out.findRegex;
+      const rawRep = out.replace_string ?? out.replaceString;
+      if (!match) {
+        results.push({
+          itemType: 'regex',
+          uidKey: `ai_new::${results.length}`,
+          isAiNew: true,
+          writeMode: 'add',
+          targetList: 'regex',
+          listName: 'regex',
+          index: -1,
+          oldRegex: null,
+          newName: rawName.trim() || `AI 新增正则 #${results.length + 1}`,
+          newEnabled: typeof out.enabled === 'boolean' ? out.enabled : true,
+          newFindRegex: typeof rawFind === 'string' ? rawFind : '',
+          newReplaceString: typeof rawRep === 'string' ? rawRep : '',
+          newSource: { user_input: false, ai_output: true, slash_command: false, world_info: false, reasoning: false },
+          newDestination: { display: true, prompt: false },
+          newRunOnEdit: true,
+          newMinDepth: null,
+          newMaxDepth: null,
+          newTrimStrings: [],
+          note: typeof out.note === 'string' ? out.note : '',
+          accepted: true,
+        });
+      } else {
+        const mr = match.regex;
+        results.push({
+          itemType: 'regex',
+          uidKey: match.uidKey,
+          isAiNew: false,
+          writeMode: 'overwrite',
+          targetList: 'regex',
+          listName: 'regex',
+          index: match.index,
+          oldRegex: JSON.parse(JSON.stringify(mr)),
+          newName: rawName.trim() || (mr.script_name || mr.id),
+          newEnabled: typeof out.enabled === 'boolean' ? out.enabled : !!mr.enabled,
+          newFindRegex: typeof rawFind === 'string' ? rawFind : (mr.find_regex || ''),
+          newReplaceString: typeof rawRep === 'string' ? rawRep : (mr.replace_string || ''),
+          newSource: Object.assign({ user_input: false, ai_output: true, slash_command: false, world_info: false, reasoning: false }, mr.source || {}),
+          newDestination: Object.assign({ display: true, prompt: false }, mr.destination || {}),
+          newRunOnEdit: mr.run_on_edit !== undefined ? !!mr.run_on_edit : true,
+          newMinDepth: mr.min_depth ?? null,
+          newMaxDepth: mr.max_depth ?? null,
+          newTrimStrings: Array.isArray(mr.trim_strings) ? mr.trim_strings.slice() : [],
+          note: typeof out.note === 'string' ? out.note : '',
+          accepted: true,
+        });
+      }
+      return;
+    }
 
     if (!match) {
       results.push({
+        itemType: 'prompt',
         uidKey: `ai_new::${results.length}`,
         isAiNew: true,
         writeMode: 'add',
@@ -466,6 +559,7 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
     }
 
     results.push({
+      itemType: 'prompt',
       uidKey: match.uidKey,
       isAiNew: false,
       writeMode: 'overwrite',
@@ -509,6 +603,18 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
   }));
 
   const refPayload = (referenceItems || []).map((it) => {
+    if (it.kind === 'regex' || it.regex) {
+      const r = it.regex || it;
+      return {
+        sourceType: 'preset_regex',
+        sourceName: it.sourceName || '',
+        index: typeof it.index === 'number' ? it.index + 1 : undefined,
+        script_name: r.script_name || r.id,
+        enabled: !!r.enabled,
+        find_regex: typeof r.find_regex === 'string' ? r.find_regex : '',
+        replace_string: typeof r.replace_string === 'string' ? r.replace_string : '',
+      };
+    }
     if (it.kind === 'preset' || it.prompt) {
       const p = it.prompt || it;
       return {

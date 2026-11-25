@@ -252,6 +252,127 @@ export function buildNewPromptEntry(fields) {
   };
 }
 
+export function normalizePresetRegexList(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  return rawList.filter(Boolean).map((r) => {
+    if (typeof r.script_name === 'string' || typeof r.find_regex === 'string') {
+      return JSON.parse(JSON.stringify(r));
+    }
+    const placement = Array.isArray(r.placement) ? r.placement : [2];
+    return {
+      id: String(r.id || genId()),
+      script_name: String(r.scriptName || r.name || '未命名正则'),
+      enabled: r.disabled === undefined ? (r.enabled !== false) : !r.disabled,
+      find_regex: String(r.findRegex || ''),
+      replace_string: String(r.replaceString || ''),
+      trim_strings: Array.isArray(r.trimStrings) ? r.trimStrings.slice() : [],
+      source: {
+        user_input: placement.includes(1),
+        ai_output: placement.includes(2),
+        slash_command: placement.includes(3),
+        world_info: placement.includes(5),
+        reasoning: placement.includes(6),
+      },
+      destination: {
+        display: !r.promptOnly,
+        prompt: !r.markdownOnly,
+      },
+      run_on_edit: !!r.runOnEdit,
+      min_depth: r.minDepth ?? null,
+      max_depth: r.maxDepth ?? null,
+    };
+  });
+}
+
+export function getPresetRegexes(presetName, presetObj = null) {
+  if (hasTH('getTavernRegexes')) {
+    try {
+      const list = callTH('getTavernRegexes', { type: 'preset', name: presetName || 'in_use' });
+      if (Array.isArray(list)) return JSON.parse(JSON.stringify(list));
+    } catch (e) {
+      logWarn(`读取预设「${presetName}」正则列表失败，尝试回退读取`, e);
+    }
+  }
+  return normalizePresetRegexList(presetObj?.extensions?.regex_scripts);
+}
+
+export function buildDefaultPresetRegex(fields = {}) {
+  const src = fields.source || {};
+  const dst = fields.destination || {};
+  return {
+    id: fields.id || genId(),
+    script_name: String(fields.script_name || '新预设正则').trim() || '新预设正则',
+    enabled: fields.enabled !== false,
+    find_regex: String(fields.find_regex || ''),
+    replace_string: String(fields.replace_string || ''),
+    trim_strings: Array.isArray(fields.trim_strings) ? fields.trim_strings.slice() : [],
+    source: {
+      user_input: !!src.user_input,
+      ai_output: fields.source ? !!src.ai_output : true,
+      slash_command: !!src.slash_command,
+      world_info: !!src.world_info,
+      reasoning: !!src.reasoning,
+    },
+    destination: {
+      display: fields.destination ? !!dst.display : true,
+      prompt: !!dst.prompt,
+    },
+    run_on_edit: fields.run_on_edit !== undefined ? !!fields.run_on_edit : true,
+    min_depth: fields.min_depth ?? null,
+    max_depth: fields.max_depth ?? null,
+  };
+}
+
+export async function savePresetRegexes(presetName, regexList, syncInUse = true) {
+  const nextList = JSON.parse(JSON.stringify(Array.isArray(regexList) ? regexList : []));
+  if (hasTH('updateTavernRegexesWith')) {
+    await callTH('updateTavernRegexesWith', () => JSON.parse(JSON.stringify(nextList)), { type: 'preset', name: presetName });
+    if (syncInUse && presetName !== 'in_use') {
+      const loaded = hasTH('getLoadedPresetName') ? callTH('getLoadedPresetName') : '';
+      if (loaded === presetName) {
+        await callTH('updateTavernRegexesWith', () => JSON.parse(JSON.stringify(nextList)), { type: 'preset', name: 'in_use' });
+      }
+    }
+    return;
+  }
+  if (hasTH('updatePresetWith')) {
+    const toRaw = (r) => {
+      const placement = [];
+      if (r.source?.user_input) placement.push(1);
+      if (r.source?.ai_output) placement.push(2);
+      if (r.source?.slash_command) placement.push(3);
+      if (r.source?.world_info) placement.push(5);
+      if (r.source?.reasoning) placement.push(6);
+      return {
+        id: r.id || genId(),
+        scriptName: r.script_name || '',
+        findRegex: r.find_regex || '',
+        replaceString: r.replace_string || '',
+        trimStrings: Array.isArray(r.trim_strings) ? r.trim_strings : [],
+        placement: placement.length > 0 ? placement : [2],
+        disabled: !r.enabled,
+        markdownOnly: !(r.destination?.prompt),
+        promptOnly: !(r.destination?.display),
+        runOnEdit: !!r.run_on_edit,
+        minDepth: r.min_depth ?? null,
+        maxDepth: r.max_depth ?? null,
+      };
+    };
+    const applyFn = (preset) => {
+      preset.extensions = preset.extensions || {};
+      preset.extensions.regex_scripts = nextList.map(toRaw);
+      return preset;
+    };
+    await callTH('updatePresetWith', presetName, applyFn, { render: 'debounced' });
+    if (syncInUse && presetName !== 'in_use') {
+      const loaded = hasTH('getLoadedPresetName') ? callTH('getLoadedPresetName') : '';
+      if (loaded === presetName) {
+        await callTH('updatePresetWith', 'in_use', applyFn, { render: 'debounced' });
+      }
+    }
+  }
+}
+
 export const PRESET_SETTING_FIELDS = [
   { key: 'max_context', label: '最大上下文 (Tokens)', type: 'number', min: 512, max: 2000000, step: 512 },
   { key: 'max_completion_tokens', label: '最大回复长度 (Tokens)', type: 'number', min: 16, max: 200000, step: 32 },

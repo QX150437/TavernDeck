@@ -3,13 +3,21 @@ import {
   hasTH, callTH, getST, genId, copyToClipboard, logWarn, logError,
 } from './utils.js';
 import { state, saveStore } from './store.js';
-import { PRESET_SYSTEM_IDS, buildNewPromptEntry } from './preset-manager.js';
+import { PRESET_SYSTEM_IDS, buildNewPromptEntry, buildDefaultPresetRegex } from './preset-manager.js';
 import { buildDefaultWorldbookEntry } from './worldbook-manager.js';
 import {
   runAiPresetEdit, runAiWorldbookEdit,
   getAvailableApiTargets, fetchModelsForApiTarget, normalizeApiTargetValue,
 } from './ai-preset-edit.js';
 import { ICONS, uiCtx, openConfirm } from './ui-common.js';
+import {
+  getAllSavedPresetNames, getAllWorldbookNames, getPresetRefItems, getWorldbookRefItemsSync,
+  hydrateSelectedRefData, resolveAllSelectedReferenceItems, ensureAiRefDefaults,
+  renderReferencePickerHtml, handleAiRefClick, handleAiRefChange,
+} from './ui-ai-ref.js';
+import {
+  buildRegexAttrFieldsHtml, readRegexAttrFields, openRegexTestPreview,
+} from './ui-regex-test.js';
 
 let aiDraftSaveTimer = null;
 
@@ -26,177 +34,18 @@ function getAiDraftKey(type) {
   return '';
 }
 
-function buildPresetRefItemsList(presetName, presetData) {
-  const out = [];
-  const seen = new Set();
-  const displayPreset = presetName === 'in_use'
-    ? `当前实时预设 (${state.presetName || 'in_use'})`
-    : presetName;
-  ['prompts', 'prompts_unused'].forEach((listName) => {
-    const list = Array.isArray(presetData?.[listName]) ? presetData[listName] : [];
-    list.forEach((p, idx) => {
-      if (!p) return;
-      const base = p.id ? `preset::${presetName}::${listName}::id::${p.id}` : `preset::${presetName}::${listName}::idx::${idx}`;
-      const refKey = seen.has(base) ? `${base}::${idx}` : base;
-      seen.add(refKey);
-      const badge = listName === 'prompts_unused' ? `[未添加 #${idx + 1}]` : `[主列表 #${idx + 1}]`;
-      const name = p.name || p.id || `条目 #${idx + 1}`;
-      out.push({
-        refKey,
-        kind: 'preset',
-        sourceName: presetName,
-        sourceLabel: `预设: ${displayPreset}`,
-        listName,
-        index: idx,
-        badge,
-        name,
-        label: `${badge} ${name}`,
-        enabled: !!p.enabled,
-        prompt: p,
-      });
-    });
-  });
-  return out;
-}
-
-function buildWorldbookRefItemsList(bookName, entries) {
-  const out = [];
-  const seen = new Set();
-  (Array.isArray(entries) ? entries : []).forEach((e, idx) => {
-    if (!e) return;
-    const base = (e.uid !== undefined && e.uid !== null)
-      ? `wb::${bookName}::uid::${e.uid}`
-      : `wb::${bookName}::idx::${idx}`;
-    const refKey = seen.has(base) ? `${base}::${idx}` : base;
-    seen.add(refKey);
-    const badge = `[#${idx + 1}]`;
-    const name = e.name || `条目 #${e.uid}`;
-    out.push({
-      refKey,
-      kind: 'worldbook',
-      sourceName: bookName,
-      sourceLabel: `世界书: ${bookName}`,
-      index: idx,
-      badge,
-      name,
-      label: `${badge} ${name}`,
-      enabled: !!e.enabled,
-      entry: e,
-    });
-  });
-  return out;
-}
-
-function getAllSavedPresetNames() {
-  const list = hasTH('getPresetNames') ? (callTH('getPresetNames') || []).filter((n) => n && n !== 'in_use') : [];
-  if (state.presetName && state.presetName !== 'in_use' && !list.includes(state.presetName)) {
-    list.unshift(state.presetName);
-  }
-  return list;
-}
-
-function getAllWorldbookNames() {
-  return hasTH('getWorldbookNames') ? (callTH('getWorldbookNames') || []) : [];
-}
-
-function getPresetRefItems(ai, presetName) {
-  if (!presetName) return [];
-  if (state.modal?.type === 'presetDetail' && state.modal.presetName === presetName) {
-    return buildPresetRefItemsList(presetName, state.modal.data);
-  }
-  ai.refCache = ai.refCache || { presets: {}, worldbooks: {} };
-  if (Array.isArray(ai.refCache.presets[presetName])) return ai.refCache.presets[presetName];
-  if (!hasTH('getPreset')) return [];
-  try {
-    const pData = callTH('getPreset', presetName);
-    const list = buildPresetRefItemsList(presetName, pData || {});
-    ai.refCache.presets[presetName] = list;
-    return list;
-  } catch (e) {
-    logWarn(`读取参考预设「${presetName}」失败`, e);
-    return [];
-  }
-}
-
-function getWorldbookRefItemsSync(ai, bookName) {
-  if (!bookName) return { items: [], loading: false };
-  if (state.modal?.type === 'worldbookDetail' && state.modal.bookName === bookName) {
-    return { items: buildWorldbookRefItemsList(bookName, state.modal.entries), loading: false };
-  }
-  ai.refCache = ai.refCache || { presets: {}, worldbooks: {} };
-  if (Array.isArray(ai.refCache.worldbooks[bookName])) {
-    return { items: ai.refCache.worldbooks[bookName], loading: false };
-  }
-  ai.refLoadingBooks = ai.refLoadingBooks || {};
-  if (!ai.refLoadingBooks[bookName] && hasTH('getWorldbook')) {
-    ai.refLoadingBooks[bookName] = true;
-    callTH('getWorldbook', bookName).then((entries) => {
-      ai.refCache.worldbooks[bookName] = buildWorldbookRefItemsList(bookName, entries || []);
-      delete ai.refLoadingBooks[bookName];
-      hydrateSelectedRefData(ai);
-      if (state.previewCtx === ai) uiCtx.renderPreviewModal();
-    }).catch((err) => {
-      delete ai.refLoadingBooks[bookName];
-      logWarn(`加载参考世界书「${bookName}」失败`, err);
-      if (state.previewCtx === ai) uiCtx.renderPreviewModal();
-    });
-  }
-  return { items: [], loading: !!ai.refLoadingBooks[bookName] };
-}
-
-function hydrateSelectedRefData(ai) {
-  if (!ai) return;
-  ai.refSelectedData = ai.refSelectedData instanceof Map ? ai.refSelectedData : new Map();
-  ai.refSelectedKeys.forEach((rk) => {
-    if (ai.refSelectedData.has(rk)) return;
-    if (rk.startsWith('preset::')) {
-      const sName = rk.slice(8).split('::')[0];
-      const hit = getPresetRefItems(ai, sName).find((x) => x.refKey === rk);
-      if (hit) ai.refSelectedData.set(rk, hit);
-    } else if (rk.startsWith('wb::')) {
-      const bName = rk.slice(4).split('::')[0];
-      const { items } = getWorldbookRefItemsSync(ai, bName);
-      const hit = items.find((x) => x.refKey === rk);
-      if (hit) ai.refSelectedData.set(rk, hit);
-    }
-  });
-}
-
-async function resolveAllSelectedReferenceItems(ai) {
-  hydrateSelectedRefData(ai);
-  const missingBooks = new Set();
-  ai.refSelectedKeys.forEach((rk) => {
-    if (!ai.refSelectedData.has(rk) && rk.startsWith('wb::')) {
-      const bName = rk.slice(4).split('::')[0];
-      if (bName) missingBooks.add(bName);
-    }
-  });
-  if (missingBooks.size > 0 && hasTH('getWorldbook')) {
-    ai.refCache = ai.refCache || { presets: {}, worldbooks: {} };
-    await Promise.all(Array.from(missingBooks).map(async (bName) => {
-      try {
-        const entries = await callTH('getWorldbook', bName);
-        ai.refCache.worldbooks[bName] = buildWorldbookRefItemsList(bName, entries || []);
-      } catch (e) {
-        logWarn(`加载参考世界书「${bName}」失败`, e);
-      }
-    }));
-    hydrateSelectedRefData(ai);
-  }
-  const out = [];
-  ai.refSelectedKeys.forEach((rk) => {
-    const it = ai.refSelectedData.get(rk);
-    if (it) out.push(it);
-  });
-  return out;
-}
-
 function encodeAiKeySet(type, keySet) {
   const out = [];
   if (!(keySet instanceof Set)) return out;
   if (type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
     keySet.forEach((k) => {
       const [listName, idxStr] = String(k).split('::');
+      if (listName === 'regex') {
+        const r = state.modal.regexes?.[Number(idxStr)];
+        if (!r) return;
+        out.push(r.id ? `regex::id::${r.id}` : `regex::idx::${idxStr}`);
+        return;
+      }
       const p = state.modal.data?.[listName]?.[Number(idxStr)];
       if (!p) return;
       out.push(p.id ? `${listName}::id::${p.id}` : `${listName}::idx::${idxStr}`);
@@ -222,6 +71,12 @@ function buildAiTokenMap(type) {
         map.set(`${listName}::idx::${idx}`, k);
         map.set(k, k);
       });
+    });
+    (state.modal.regexes || []).forEach((r, idx) => {
+      const k = `regex::${idx}`;
+      if (r?.id) map.set(`regex::id::${r.id}`, k);
+      map.set(`regex::idx::${idx}`, k);
+      map.set(k, k);
     });
   } else if (type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
     (state.modal.entries || []).forEach((e, idx) => {
@@ -343,13 +198,11 @@ export function flushAiEditDraft(previewLayerEl) {
 import { renderQuickInsertHtml } from './ui-snippets.js';
 import { renderSearchableTextareaHtml, bindEditorSearchEvents, syncEditorSearchHighlights } from './ui-editor-search.js';
 
-function readAiResultEditSnapshot(selectLayerEl, aiType) {
+function readAiResultEditSnapshot(selectLayerEl, itemType) {
   const q = (sel) => selectLayerEl?.querySelector(sel);
   return {
     name: q('#td-aire-name')?.value ?? '',
-    enabled: !!q('#td-aire-enabled')?.checked,
-    role: aiType === 'pmAiEdit' ? (q('#td-aire-role')?.value || 'system') : '',
-    keys: aiType === 'wbAiEdit' ? (q('#td-aire-keys')?.value ?? '') : '',
+    findRegex: itemType === 'regex' ? (q('#td-aire-find-regex')?.value ?? '') : '',
     content: q('#td-aire-content')?.value ?? '',
   };
 }
@@ -357,9 +210,7 @@ function readAiResultEditSnapshot(selectLayerEl, aiType) {
 function aiEditSnapshotsEqual(a, b) {
   return !!a && !!b
     && a.name === b.name
-    && a.enabled === b.enabled
-    && a.role === b.role
-    && a.keys === b.keys
+    && a.findRegex === b.findRegex
     && a.content === b.content;
 }
 
@@ -375,22 +226,18 @@ function applyAiResultEditSnapshot(selectLayerEl, sp, snap) {
   if (!selectLayerEl || !snap) return;
   const q = (sel) => selectLayerEl.querySelector(sel);
   const nameEl = q('#td-aire-name');
-  const enEl = q('#td-aire-enabled');
-  const roleEl = q('#td-aire-role');
-  const keysEl = q('#td-aire-keys');
+  const findEl = q('#td-aire-find-regex');
   const contentEl = q('#td-aire-content');
   if (nameEl) nameEl.value = snap.name;
-  if (enEl) enEl.checked = !!snap.enabled;
-  if (roleEl && sp.aiType === 'pmAiEdit') roleEl.value = snap.role || 'system';
-  if (keysEl && sp.aiType === 'wbAiEdit') keysEl.value = snap.keys || '';
+  if (findEl && sp.itemType === 'regex') findEl.value = snap.findRegex || '';
   if (contentEl) contentEl.value = snap.content;
   syncEditorSearchHighlights('td-aire-content', selectLayerEl, false);
 }
 
 function pushAiEditSnapshot(selectLayerEl, sp, force = false) {
-  if (!sp || sp.type !== 'aiResultEdit') return;
+  if (!sp || sp.type !== 'aiResultContentEdit') return;
   if (sp.timer) { clearTimeout(sp.timer); sp.timer = null; }
-  const snap = readAiResultEditSnapshot(selectLayerEl, sp.aiType);
+  const snap = readAiResultEditSnapshot(selectLayerEl, sp.itemType);
   if (!Array.isArray(sp.history)) {
     sp.history = [snap];
     sp.historyIdx = 0;
@@ -411,7 +258,7 @@ function pushAiEditSnapshot(selectLayerEl, sp, force = false) {
 }
 
 function scheduleAiEditSnapshot(selectLayerEl, sp) {
-  if (!sp || sp.type !== 'aiResultEdit') return;
+  if (!sp || sp.type !== 'aiResultContentEdit') return;
   if (sp.timer) clearTimeout(sp.timer);
   sp.timer = setTimeout(() => {
     sp.timer = null;
@@ -442,16 +289,8 @@ function saveAiInstructionTemplates(list) {
 }
 
 function ensureAiSetupDefaults(ai) {
-  if (!(ai.refSelectedKeys instanceof Set)) ai.refSelectedKeys = new Set();
-  if (!(ai.refSelectedData instanceof Map)) ai.refSelectedData = new Map();
-  if (!ai.refCache) ai.refCache = { presets: {}, worldbooks: {} };
-  if (!ai.refLoadingBooks) ai.refLoadingBooks = {};
-  if (ai.refSourceType !== 'preset' && ai.refSourceType !== 'worldbook') {
-    ai.refSourceType = ai.type === 'wbAiEdit' ? 'worldbook' : 'preset';
-  }
-  if (typeof ai.refOnlySelected !== 'boolean') ai.refOnlySelected = false;
-  if (typeof ai.refExpanded !== 'boolean') ai.refExpanded = false;
-  if (typeof ai.refSearch !== 'string') ai.refSearch = '';
+  ensureAiRefDefaults(ai);
+  if (typeof ai.targetFilter !== 'string') ai.targetFilter = 'all';
   if (typeof ai.tplExpanded !== 'boolean') ai.tplExpanded = false;
   if (typeof ai.tplAddOpen !== 'boolean') ai.tplAddOpen = false;
 }
@@ -635,123 +474,30 @@ function renderInstructionTemplatesHtml(ai, templates) {
     </div>`;
 }
 
-function renderReferencePickerHtml(ai) {
-  const refOpen = !!ai.refExpanded;
-  const rq = (ai.refSearch || '').trim().toLowerCase();
-  const srcType = ai.refSourceType === 'worldbook' ? 'worldbook' : 'preset';
-  const presetNames = getAllSavedPresetNames();
-  const bookNames = getAllWorldbookNames();
-  const editingPreset = state.modal?.type === 'presetDetail' ? state.modal.presetName : '';
-  const editingBook = state.modal?.type === 'worldbookDetail' ? state.modal.bookName : '';
-
-  let sourceOptionsHtml = '';
-  let sourceItems = [];
-  let isLoadingSource = false;
-
-  if (srcType === 'preset') {
-    const validPresetNames = editingPreset === 'in_use' ? ['in_use', ...presetNames] : presetNames;
-    if (!ai.refSourceName || !validPresetNames.includes(ai.refSourceName)) {
-      ai.refSourceName = editingPreset || (state.presetName && validPresetNames.includes(state.presetName) ? state.presetName : (validPresetNames[0] || 'in_use'));
-    }
-    ai.refLastPreset = ai.refSourceName;
-    if (refOpen) sourceItems = getPresetRefItems(ai, ai.refSourceName);
-    sourceOptionsHtml = validPresetNames.map((pn) => {
-      const isEditing = editingPreset === pn;
-      const baseLabel = pn === 'in_use' ? `当前实时预设 (${state.presetName || 'in_use'})` : pn;
-      const label = isEditing ? `${baseLabel} [当前编辑]` : baseLabel;
-      return `<option value='${escapeHtml(pn)}' ${pn === ai.refSourceName ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-    }).join('');
-  } else {
-    if (!ai.refSourceName || !bookNames.includes(ai.refSourceName)) {
-      ai.refSourceName = (editingBook && bookNames.includes(editingBook)) ? editingBook : (bookNames[0] || '');
-    }
-    ai.refLastWorldbook = ai.refSourceName;
-    if (refOpen && ai.refSourceName) {
-      const wbRes = getWorldbookRefItemsSync(ai, ai.refSourceName);
-      sourceItems = wbRes.items;
-      isLoadingSource = wbRes.loading;
-    }
-    sourceOptionsHtml = bookNames.length > 0
-      ? bookNames.map((bn) => {
-          const label = editingBook === bn ? `${bn} [当前编辑]` : bn;
-          return `<option value='${escapeHtml(bn)}' ${bn === ai.refSourceName ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-        }).join('')
-      : "<option value=''>（暂无可用世界书）</option>";
-  }
-
-  let listContentHtml = '';
-  if (refOpen) {
-    let displayList = [];
-    if (ai.refOnlySelected) {
-      hydrateSelectedRefData(ai);
-      ai.refSelectedKeys.forEach((rk) => {
-        const it = ai.refSelectedData.get(rk);
-        if (it) displayList.push(it);
-      });
-    } else {
-      displayList = sourceItems;
-    }
-    const visible = displayList.filter((it) => {
-      if (!rq) return true;
-      return `${it.sourceLabel} ${it.label}`.toLowerCase().includes(rq);
-    });
-
-    if (!ai.refOnlySelected && isLoadingSource) {
-      listContentHtml = "<div class='td-group-empty'>正在加载世界书条目...</div>";
-    } else if (visible.length === 0) {
-      listContentHtml = ai.refOnlySelected
-        ? "<div class='td-group-empty'>暂无已选参考条目</div>"
-        : "<div class='td-group-empty'>无匹配参考条目</div>";
-    } else {
-      listContentHtml = visible.map((it) => {
-        const checked = ai.refSelectedKeys.has(it.refKey);
-        const text = ai.refOnlySelected ? `[${it.sourceLabel}] ${it.label}` : it.label;
-        return `
-          <div class='td-picker-row ${checked ? 'checked' : ''}' style='min-height:34px;padding:5px 8px;'>
-            <div class='td-picker-left'>
-              <input type='checkbox' class='td-checkbox' data-action='ai-toggle-ref' data-key='${escapeHtml(it.refKey)}' ${checked ? 'checked' : ''} />
-              <span class='td-item-name' style='font-size:12.5px;' title='${escapeHtml(text)}'>${escapeHtml(text)}</span>
-            </div>
-            <button type='button' class='td-icon-btn' data-action='ai-preview-ref-item' data-key='${escapeHtml(it.refKey)}' title='预览条目内容'>${ICONS.eye}</button>
-          </div>`;
-      }).join('');
-    }
-  }
-
-  return `
-    <div class='td-ai-ref-box'>
-      <div class='td-ai-ref-head'>
-        <span class='td-ai-compact-summary' data-role='ai-ref-summary'>参考条目（默认折叠 · 已选 ${ai.refSelectedKeys.size} 项）</span>
-        <button type='button' class='td-chip sm ${refOpen ? 'active' : ''}' data-action='ai-toggle-ref-box'>${refOpen ? '收起参考' : '展开参考'}</button>
-      </div>
-      ${refOpen ? `
-        <div class='td-ai-ref-body'>
-          <div class='td-ai-ref-source-row'>
-            <div class='td-pv-seg'>
-              <button type='button' class='td-pv-seg-btn ${srcType === 'preset' ? 'active' : ''}' data-action='ai-ref-set-type' data-type='preset'>预设</button>
-              <button type='button' class='td-pv-seg-btn ${srcType === 'worldbook' ? 'active' : ''}' data-action='ai-ref-set-type' data-type='worldbook'>世界书</button>
-            </div>
-            <select class='td-select' id='td-ai-ref-source-name' style='height:28px;font-size:12px;'>${sourceOptionsHtml}</select>
-          </div>
-          <div style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;'>
-            <input class='td-input' id='td-ai-ref-search' type='text' placeholder='筛选参考条目...' value='${escapeHtml(ai.refSearch || '')}' style='flex:1;min-width:95px;height:28px;font-size:12px;' />
-            <button type='button' class='td-chip sm ${ai.refOnlySelected ? 'active' : ''}' data-action='ai-ref-toggle-selected-view' data-role='ai-ref-selected-chip'>已选 (${ai.refSelectedKeys.size})</button>
-            <button type='button' class='td-chip sm' data-action='ai-ref-select-enabled' ${ai.refOnlySelected ? 'disabled' : ''}>全选启用</button>
-            <button type='button' class='td-chip sm' data-action='ai-ref-clear' ${ai.refSelectedKeys.size === 0 ? 'disabled' : ''}>清空</button>
-          </div>
-          <div class='td-picker-list td-scroll' style='max-height:165px;min-height:80px;border:1px solid var(--td-border);border-radius:9px;padding:5px;'>
-            ${listContentHtml}
-          </div>
-        </div>` : ''}
-    </div>`;
-}
-
 function renderAiEditSetupHtml({ title, ai, items, itemLabelFn }) {
   ensureAiSetupDefaults(ai);
   const templates = getAiInstructionTemplates();
   const q = (ai.search || '').trim().toLowerCase();
-  const visible = items.filter((it) => !q || itemLabelFn(it).toLowerCase().includes(q));
+  const tFilter = ai.type === 'pmAiEdit' ? (ai.targetFilter || 'all') : 'all';
+  const visible = items.filter((it) => {
+    if (ai.type === 'pmAiEdit') {
+      if (tFilter === 'prompts' && it.listName !== 'prompts') return false;
+      if (tFilter === 'unused' && it.listName !== 'prompts_unused') return false;
+      if (tFilter === 'regex' && it.listName !== 'regex') return false;
+      if (tFilter === 'selected' && !ai.selectedKeys.has(it.key)) return false;
+    }
+    return !q || itemLabelFn(it).toLowerCase().includes(q);
+  });
   const anySubExpanded = !!ai.apiExpanded || !!ai.refExpanded || !!ai.tplExpanded;
+  const regexCount = ai.type === 'pmAiEdit' ? items.filter((it) => it.listName === 'regex').length : 0;
+  const targetFilterBarHtml = ai.type === 'pmAiEdit' ? `
+    <div class='td-filter-bar'>
+      <button type='button' class='td-chip sm ${tFilter === 'all' ? 'active' : ''}' data-action='ai-set-target-filter' data-filter='all'>全部 (${items.length})</button>
+      <button type='button' class='td-chip sm ${tFilter === 'prompts' ? 'active' : ''}' data-action='ai-set-target-filter' data-filter='prompts'>主列表</button>
+      <button type='button' class='td-chip sm ${tFilter === 'unused' ? 'active' : ''}' data-action='ai-set-target-filter' data-filter='unused'>未添加</button>
+      <button type='button' class='td-chip sm ${tFilter === 'regex' ? 'active' : ''}' data-action='ai-set-target-filter' data-filter='regex'>正则 (${regexCount})</button>
+      <button type='button' class='td-chip sm ${tFilter === 'selected' ? 'active' : ''}' data-action='ai-set-target-filter' data-filter='selected' data-role='ai-target-selected-chip'>已选 (${ai.selectedKeys.size})</button>
+    </div>` : '';
 
   return `
     <div class='td-modal td-modal-tall'>
@@ -781,6 +527,7 @@ function renderAiEditSetupHtml({ title, ai, items, itemLabelFn }) {
               ${ai.search ? `<button type='button' class='td-search-clear' data-action='ai-clear-search' title='清空筛选' style='width:22px;height:22px;right:3px;'>${ICONS.close}</button>` : ''}
             </div>
           </div>
+          ${targetFilterBarHtml}
           <div class='td-picker-list td-scroll' style='border:1px solid var(--td-border);border-radius:10px;padding:5px;min-height:140px;'>
             ${visible.map((it) => {
               const checked = ai.selectedKeys.has(it.key);
@@ -896,79 +643,122 @@ export const aiAssistantUiModule = {
       uiCtx.syncOverlayBounds();
       return true;
     }
-    if (sp.type !== 'aiResultEdit') return false;
-    const pc = state.previewCtx;
-    const r = pc?.results?.[sp.rIdx];
-    if (!pc || !r || (pc.type !== 'pmAiEdit' && pc.type !== 'wbAiEdit')) return false;
+    if (sp.type === 'aiResultAttrEdit') {
+      const pc = state.previewCtx;
+      const r = pc?.results?.[sp.rIdx];
+      if (!pc || !r || (pc.type !== 'pmAiEdit' && pc.type !== 'wbAiEdit')) return false;
+      const isRegex = pc.type === 'pmAiEdit' && r.itemType === 'regex';
+      const isPresetPrompt = pc.type === 'pmAiEdit' && !isRegex;
 
-    if (!Array.isArray(sp.history) || sp.history.length === 0) {
-      sp.history = [{
-        name: r.newName || '',
-        enabled: !!r.newEnabled,
-        role: pc.type === 'pmAiEdit' ? (r.newRole || 'system') : '',
-        keys: pc.type === 'wbAiEdit' ? (r.newKeys || '') : '',
-        content: r.newContent || '',
-      }];
-      sp.historyIdx = 0;
-    }
-    const cur = sp.history[sp.historyIdx] || sp.history[0];
-    const isPreset = pc.type === 'pmAiEdit';
+      const attrBodyHtml = isRegex
+        ? buildRegexAttrFieldsHtml({
+            source: r.newSource || r.oldRegex?.source || {},
+            destination: r.newDestination || r.oldRegex?.destination || {},
+            run_on_edit: r.newRunOnEdit !== undefined ? r.newRunOnEdit : (r.oldRegex?.run_on_edit ?? true),
+            min_depth: r.newMinDepth !== undefined ? r.newMinDepth : (r.oldRegex?.min_depth ?? null),
+            max_depth: r.newMaxDepth !== undefined ? r.newMaxDepth : (r.oldRegex?.max_depth ?? null),
+            trim_strings: r.newTrimStrings !== undefined ? r.newTrimStrings : (r.oldRegex?.trim_strings || []),
+          }, 'td-aire-r')
+        : (isPresetPrompt
+          ? `<div class='td-field'>
+               <label class='td-label'>角色身份 (Role)</label>
+               <select class='td-select' id='td-aire-role'>
+                 <option value='system' ${r.newRole === 'system' ? 'selected' : ''}>System</option>
+                 <option value='user' ${r.newRole === 'user' ? 'selected' : ''}>User</option>
+                 <option value='assistant' ${r.newRole === 'assistant' ? 'selected' : ''}>Assistant</option>
+               </select>
+             </div>`
+          : `<div class='td-field'>
+               <label class='td-label'>主要关键词（逗号或换行分隔）</label>
+               <input class='td-input' id='td-aire-keys' type='text' value='${escapeHtml(r.newKeys || '')}' />
+             </div>`);
 
-    const extraFieldHtml = isPreset
-      ? `<div class='td-field'>
-           <label class='td-label'>角色身份 (Role)</label>
-           <select class='td-select' id='td-aire-role'>
-             <option value='system' ${cur.role === 'system' ? 'selected' : ''}>System</option>
-             <option value='user' ${cur.role === 'user' ? 'selected' : ''}>User</option>
-             <option value='assistant' ${cur.role === 'assistant' ? 'selected' : ''}>Assistant</option>
-           </select>
-         </div>`
-      : `<div class='td-field'>
-           <label class='td-label'>主要关键词（逗号或换行分隔）</label>
-           <input class='td-input' id='td-aire-keys' type='text' value='${escapeHtml(cur.keys || '')}' />
-         </div>`;
-
-    selectLayerEl.innerHTML = `
-      <div class='td-modal td-modal-tall'>
-        <div class='td-modal-head'>
-          <div class='td-modal-title'>手动编辑检视结果 · ${escapeHtml(cur.name || `结果 #${sp.rIdx + 1}`)}</div>
-          <div class='td-modal-head-actions'>
-            <button type='button' class='td-icon-btn' data-action='ai-edit-undo' title='撤销 (后退)' ${sp.historyIdx <= 0 ? 'disabled' : ''}>${ICONS.undo}</button>
-            <button type='button' class='td-icon-btn' data-action='ai-edit-redo' title='重做 (前进)' ${sp.historyIdx >= sp.history.length - 1 ? 'disabled' : ''}>${ICONS.redo}</button>
-            <button type='button' class='td-icon-btn' data-action='ai-edit-copy' title='复制正文'>${ICONS.copy}</button>
+      selectLayerEl.innerHTML = `
+        <div class='td-modal ${isRegex ? 'td-modal-tall' : 'td-modal-sm'}'>
+          <div class='td-modal-head'>
+            <div class='td-modal-title'>编辑属性 · ${escapeHtml(r.newName || `结果 #${sp.rIdx + 1}`)}</div>
             <button type='button' class='td-icon-btn' data-action='close-select-popup' title='关闭'>${ICONS.close}</button>
           </div>
-        </div>
-        <div class='td-modal-body'>
-          <div style='display:flex;gap:8px;align-items:center;'>
-            <div class='td-field' style='flex:1;'>
-              <label class='td-label'>条目名称</label>
+          <div class='td-modal-body'>
+            <div style='display:flex;gap:8px;align-items:center;'>
+              <div class='td-field' style='flex:1;'>
+                <label class='td-label'>${isRegex ? '正则名称' : '条目名称'}</label>
+                <input class='td-input' id='td-aire-name' type='text' value='${escapeHtml(r.newName || '')}' />
+              </div>
+              <div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'>
+                <input type='checkbox' class='td-checkbox' id='td-aire-enabled' ${r.newEnabled ? 'checked' : ''} /><span>启用</span>
+              </div>
+            </div>
+            ${attrBodyHtml}
+          </div>
+          <div class='td-modal-foot'>
+            <button type='button' class='td-btn' data-action='close-select-popup'>取消</button>
+            <button type='button' class='td-btn primary' data-action='ai-edit-attr-save'>${ICONS.save} 保存属性</button>
+          </div>
+        </div>`;
+      uiCtx.syncOverlayBounds();
+      return true;
+    }
+
+    if (sp.type === 'aiResultContentEdit') {
+      const pc = state.previewCtx;
+      const r = pc?.results?.[sp.rIdx];
+      if (!pc || !r || (pc.type !== 'pmAiEdit' && pc.type !== 'wbAiEdit')) return false;
+      const isRegex = pc.type === 'pmAiEdit' && (sp.itemType === 'regex' || r.itemType === 'regex');
+      sp.itemType = isRegex ? 'regex' : 'default';
+
+      if (!Array.isArray(sp.history) || sp.history.length === 0) {
+        sp.history = [{
+          name: r.newName || '',
+          findRegex: isRegex ? (r.newFindRegex || '') : '',
+          content: isRegex ? (r.newReplaceString || '') : (r.newContent || ''),
+        }];
+        sp.historyIdx = 0;
+      }
+      const cur = sp.history[sp.historyIdx] || sp.history[0];
+
+      selectLayerEl.innerHTML = `
+        <div class='td-modal td-modal-tall'>
+          <div class='td-modal-head'>
+            <div class='td-modal-title'>编辑内容 · ${escapeHtml(cur.name || `结果 #${sp.rIdx + 1}`)}</div>
+            <div class='td-modal-head-actions'>
+              <button type='button' class='td-icon-btn' data-action='ai-edit-undo' title='撤销 (后退)' ${sp.historyIdx <= 0 ? 'disabled' : ''}>${ICONS.undo}</button>
+              <button type='button' class='td-icon-btn' data-action='ai-edit-redo' title='重做 (前进)' ${sp.historyIdx >= sp.history.length - 1 ? 'disabled' : ''}>${ICONS.redo}</button>
+              <button type='button' class='td-icon-btn' data-action='ai-edit-copy' title='复制正文'>${ICONS.copy}</button>
+              <button type='button' class='td-icon-btn' data-action='close-select-popup' title='关闭'>${ICONS.close}</button>
+            </div>
+          </div>
+          <div class='td-modal-body'>
+            <div class='td-field'>
+              <label class='td-label'>${isRegex ? '正则名称' : '条目名称'}</label>
               <input class='td-input' id='td-aire-name' type='text' value='${escapeHtml(cur.name || '')}' />
             </div>
-            <div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'>
-              <input type='checkbox' class='td-checkbox' id='td-aire-enabled' ${cur.enabled ? 'checked' : ''} /><span>启用</span>
+            ${isRegex ? `
+              <div class='td-field'>
+                <label class='td-label'>查找正则 (Find Regex)</label>
+                <input class='td-input' id='td-aire-find-regex' type='text' value='${escapeHtml(cur.findRegex || '')}' />
+              </div>` : ''}
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:170px;'>
+              <label class='td-label'>${isRegex ? '替换为 (Replace String · 支持撤销/重做)' : '条目正文（支持撤销/重做）'}</label>
+              ${renderQuickInsertHtml('td-aire-content')}
+              ${renderSearchableTextareaHtml({ id: 'td-aire-content', value: cur.content || '', minHeight: '170px' })}
             </div>
           </div>
-          ${extraFieldHtml}
-          <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:170px;'>
-            <label class='td-label'>条目正文（支持顶部撤销/重做）</label>
-            ${renderQuickInsertHtml('td-aire-content')}
-            ${renderSearchableTextareaHtml({ id: 'td-aire-content', value: cur.content || '', minHeight: '170px' })}
+          <div class='td-modal-foot'>
+            <button type='button' class='td-btn' data-action='close-select-popup'>取消</button>
+            <button type='button' class='td-btn primary' data-action='ai-edit-content-save'>${ICONS.save} 保存内容</button>
           </div>
-        </div>
-        <div class='td-modal-foot'>
-          <button type='button' class='td-btn' data-action='close-select-popup'>取消</button>
-          <button type='button' class='td-btn primary' data-action='ai-edit-save'>${ICONS.save} 保存到检视结果</button>
-        </div>
-      </div>`;
-    bindEditorSearchEvents(selectLayerEl);
-    updateAiEditHistoryButtons(selectLayerEl, sp);
-    uiCtx.syncOverlayBounds();
-    return true;
+        </div>`;
+      bindEditorSearchEvents(selectLayerEl);
+      updateAiEditHistoryButtons(selectLayerEl, sp);
+      uiCtx.syncOverlayBounds();
+      return true;
+    }
+    return false;
   },
 
   onSnippetInsert(layerEl) {
-    if (state.selectPopup?.type === 'aiResultEdit') {
+    if (state.selectPopup?.type === 'aiResultContentEdit') {
       pushAiEditSnapshot(layerEl, state.selectPopup, true);
       return true;
     }
@@ -984,7 +774,14 @@ export const aiAssistantUiModule = {
         const addCnt = acceptedList.filter((x) => x.writeMode === 'add').length;
         const reviewRows = (ai.results || []).map((r, rIdx) => {
           const isAdd = r.writeMode === 'add';
-          const lines = computeLineDiff(isAdd ? '' : (r.oldPrompt?.content || ''), r.newContent || '');
+          const isRegex = r.itemType === 'regex';
+          const oldDiffTxt = isRegex
+            ? (isAdd ? '' : `查找正则: ${r.oldRegex?.find_regex || ''}\n---\n${r.oldRegex?.replace_string || ''}`)
+            : (isAdd ? '' : (r.oldPrompt?.content || ''));
+          const newDiffTxt = isRegex
+            ? `查找正则: ${r.newFindRegex || ''}\n---\n${r.newReplaceString || ''}`
+            : (r.newContent || '');
+          const lines = computeLineDiff(oldDiffTxt, newDiffTxt);
           const tagHtml = r.isAiNew
             ? "<span class='td-mode-tag ok'>AI 新增</span>"
             : (isAdd ? "<span class='td-mode-tag single'>新增写入</span>" : "<span class='td-mode-tag multi'>覆盖修改</span>");
@@ -994,18 +791,21 @@ export const aiAssistantUiModule = {
                 <div style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;'>
                   <input type='checkbox' class='td-checkbox' data-action='ai-toggle-accept' data-ridx='${rIdx}' ${r.accepted ? 'checked' : ''} />
                   ${tagHtml}
+                  ${isRegex ? "<span class='td-mode-tag single'>正则</span>" : ''}
                   ${r.manualEdited ? "<span class='td-mode-tag multi'>已手动编辑</span>" : ''}
                   ${!r.isAiNew ? `<span class='td-idx-badge'>#${r.index + 1}</span>` : ''}
                   <span class='td-mgr-row-title' title='${escapeHtml(r.newName)}'>${escapeHtml(r.newName)}</span>
                 </div>
-                <span class='td-src-badge'>${escapeHtml(r.newRole)} · ${r.newEnabled ? '开' : '关'}</span>
+                <span class='td-src-badge'>${isRegex ? '预设正则' : escapeHtml(r.newRole)} · ${r.newEnabled ? '开' : '关'}</span>
               </div>
               <div style='display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;'>
                 ${r.note ? `<span style='font-size:11.5px;color:var(--td-text-muted);flex:1;'>AI 说明：${escapeHtml(r.note)}</span>` : '<span></span>'}
                 <div style='display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;'>
-                  <button type='button' class='td-btn sm primary' data-action='ai-edit-result' data-ridx='${rIdx}'>${ICONS.edit} 手动编辑</button>
+                  <button type='button' class='td-btn sm primary' data-action='ai-edit-result-content' data-ridx='${rIdx}'>${ICONS.eye} 编辑内容</button>
+                  <button type='button' class='td-btn sm' data-action='ai-edit-result-attrs' data-ridx='${rIdx}'>${ICONS.edit} 属性</button>
+                  ${isRegex ? `<button type='button' class='td-btn sm' data-action='ai-test-regex' data-ridx='${rIdx}'>测试</button>` : ''}
                   ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
-                  ${isAdd ? `<button type='button' class='td-btn sm' data-action='ai-toggle-target-list' data-ridx='${rIdx}'>目标: ${r.targetList === 'prompts_unused' ? '未添加池' : '主列表'}</button>` : ''}
+                  ${isAdd && !isRegex ? `<button type='button' class='td-btn sm' data-action='ai-toggle-target-list' data-ridx='${rIdx}'>目标: ${r.targetList === 'prompts_unused' ? '未添加池' : '主列表'}</button>` : ''}
                 </div>
               </div>
               <div class='td-diff-box td-scroll'>${lines.map((l) => `<div class='td-diff-line ${l.type}'>${l.type === 'add' ? '+ ' : (l.type === 'del' ? '- ' : '  ')}${escapeHtml(l.text)}</div>`).join('')}</div>
@@ -1025,9 +825,11 @@ export const aiAssistantUiModule = {
       }
 
       const pList = state.modal.data.prompts || [], uList = state.modal.data.prompts_unused || [];
+      const rList = Array.isArray(state.modal.regexes) ? state.modal.regexes : [];
       const items = [
         ...pList.map((p, i) => ({ key: `prompts::${i}`, listName: 'prompts', index: i, label: `[主列表 #${i + 1}] ${p.name || p.id}` })),
         ...uList.map((p, i) => ({ key: `prompts_unused::${i}`, listName: 'prompts_unused', index: i, label: `[未添加 #${i + 1}] ${p.name || p.id}` })),
+        ...rList.map((r, i) => ({ key: `regex::${i}`, listName: 'regex', index: i, label: `[正则 #${i + 1}] ${r.script_name || r.id}` })),
       ];
       previewLayerEl.classList.add('is-open');
       previewLayerEl.innerHTML = renderAiEditSetupHtml({ title: 'AI 智能编辑预设条目', ai, items, itemLabelFn: (it) => it.label });
@@ -1063,7 +865,8 @@ export const aiAssistantUiModule = {
               <div style='display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;'>
                 ${r.note ? `<span style='font-size:11.5px;color:var(--td-text-muted);flex:1;'>AI 说明：${escapeHtml(r.note)}</span>` : '<span></span>'}
                 <div style='display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;'>
-                  <button type='button' class='td-btn sm primary' data-action='ai-edit-result' data-ridx='${rIdx}'>${ICONS.edit} 手动编辑</button>
+                  <button type='button' class='td-btn sm primary' data-action='ai-edit-result-content' data-ridx='${rIdx}'>${ICONS.eye} 编辑内容</button>
+                  <button type='button' class='td-btn sm' data-action='ai-edit-result-attrs' data-ridx='${rIdx}'>${ICONS.edit} 属性</button>
                   ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
                 </div>
               </div>
@@ -1100,53 +903,17 @@ export const aiAssistantUiModule = {
   handleClick(e, actionEl, action) {
     const previewLayerEl = uiCtx.getPreviewLayer();
 
-    if (action === 'ai-preview-ref-item' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      e.stopPropagation();
-      const ai = state.previewCtx;
-      const rk = actionEl.getAttribute('data-key') || '';
-      ensureAiSetupDefaults(ai);
-      hydrateSelectedRefData(ai);
-      let it = ai.refSelectedData.get(rk);
-      if (!it) {
-        if (rk.startsWith('preset::')) {
-          it = getPresetRefItems(ai, rk.slice(8).split('::')[0]).find((x) => x.refKey === rk);
-        } else if (rk.startsWith('wb::')) {
-          it = getWorldbookRefItemsSync(ai, rk.slice(4).split('::')[0]).items.find((x) => x.refKey === rk);
-        }
-      }
-      if (!it) return true;
-      if (it.kind === 'preset' && it.prompt) {
-        const p = it.prompt;
-        const posLabel = p.position?.type === 'in_chat' ? `@D${p.position.depth ?? 0}` : '相对位置';
-        state.selectPopup = {
-          type: 'aiItemPreview',
-          title: p.name || p.id,
-          metas: [
-            it.sourceLabel,
-            it.badge,
-            `状态: ${p.enabled ? '开启' : '关闭'}`,
-            `身份: ${p.role || 'system'}`,
-            posLabel,
-          ],
-          content: typeof p.content === 'string' ? p.content : '（此条目为内置占位符，无正文内容）',
-        };
-        uiCtx.renderSelectPopup();
-      } else if (it.kind === 'worldbook' && it.entry) {
-        const entry = it.entry;
-        const keysStr = formatKeysInput(entry.strategy?.keys);
-        state.selectPopup = {
-          type: 'aiItemPreview',
-          title: entry.name || `条目 #${entry.uid}`,
-          metas: [
-            it.sourceLabel,
-            it.badge,
-            `状态: ${entry.enabled ? '开启' : '关闭'}`,
-            keysStr ? `关键词: ${keysStr}` : '无关键词',
-          ],
-          content: entry.content || '',
-        };
-        uiCtx.renderSelectPopup();
-      }
+    if (handleAiRefClick(e, actionEl, action, {
+      previewLayerEl,
+      syncDraftInputs: syncAiPreviewDraftInputs,
+      persistDraft: persistAiEditDraft,
+    })) {
+      return true;
+    }
+    if (action === 'ai-set-target-filter' && state.previewCtx?.type === 'pmAiEdit') {
+      syncAiPreviewDraftInputs(previewLayerEl);
+      state.previewCtx.targetFilter = actionEl.getAttribute('data-filter') || 'all';
+      uiCtx.renderPreviewModal();
       return true;
     }
 
@@ -1155,6 +922,22 @@ export const aiAssistantUiModule = {
       const k = actionEl.getAttribute('data-key') || '';
       if (state.previewCtx.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
         const [listName, idxStr] = k.split('::');
+        if (listName === 'regex') {
+          const r = state.modal.regexes?.[Number(idxStr)];
+          if (!r) return true;
+          state.selectPopup = {
+            type: 'aiItemPreview',
+            title: r.script_name || r.id,
+            metas: [
+              `预设正则 #${Number(idxStr) + 1}`,
+              `状态: ${r.enabled ? '开启' : '关闭'}`,
+              r.run_on_edit ? '编辑时运行' : '',
+            ],
+            content: `查找正则 (Find Regex):\n${r.find_regex || ''}\n\n替换为 (Replace String):\n${r.replace_string || ''}`,
+          };
+          uiCtx.renderSelectPopup();
+          return true;
+        }
         const p = state.modal.data[listName]?.[Number(idxStr)];
         if (!p) return true;
         const posLabel = p.position?.type === 'in_chat' ? `@D${p.position.depth ?? 0}` : '相对位置';
@@ -1226,12 +1009,7 @@ export const aiAssistantUiModule = {
       });
       return true;
     }
-    if (action === 'ai-toggle-ref-box' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      syncAiPreviewDraftInputs(previewLayerEl);
-      state.previewCtx.refExpanded = !state.previewCtx.refExpanded;
-      uiCtx.renderPreviewModal();
-      return true;
-    }
+
     if (action === 'ai-toggle-tpl-box' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       syncAiPreviewDraftInputs(previewLayerEl);
       state.previewCtx.tplExpanded = !state.previewCtx.tplExpanded;
@@ -1260,83 +1038,7 @@ export const aiAssistantUiModule = {
       uiCtx.renderPreviewModal();
       return true;
     }
-    if (action === 'ai-ref-set-type' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      const ai = state.previewCtx;
-      ensureAiSetupDefaults(ai);
-      syncAiPreviewDraftInputs(previewLayerEl);
-      const nextType = actionEl.getAttribute('data-type') === 'worldbook' ? 'worldbook' : 'preset';
-      if (ai.refSourceType !== nextType) {
-        ai.refSourceType = nextType;
-        ai.refOnlySelected = false;
-        ai.refSourceName = nextType === 'worldbook' ? (ai.refLastWorldbook || '') : (ai.refLastPreset || '');
-        uiCtx.renderPreviewModal();
-      }
-      return true;
-    }
-    if (action === 'ai-ref-toggle-selected-view' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      const ai = state.previewCtx;
-      ensureAiSetupDefaults(ai);
-      syncAiPreviewDraftInputs(previewLayerEl);
-      ai.refOnlySelected = !ai.refOnlySelected;
-      uiCtx.renderPreviewModal();
-      return true;
-    }
-    if (action === 'ai-toggle-ref' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      const ai = state.previewCtx;
-      ensureAiSetupDefaults(ai);
-      const k = actionEl.getAttribute('data-key');
-      if (ai.refSelectedKeys.has(k)) {
-        ai.refSelectedKeys.delete(k);
-        ai.refSelectedData.delete(k);
-      } else {
-        ai.refSelectedKeys.add(k);
-        if (k.startsWith('preset::')) {
-          const hit = getPresetRefItems(ai, k.slice(8).split('::')[0]).find((x) => x.refKey === k);
-          if (hit) ai.refSelectedData.set(k, hit);
-        } else if (k.startsWith('wb::')) {
-          const hit = getWorldbookRefItemsSync(ai, k.slice(4).split('::')[0]).items.find((x) => x.refKey === k);
-          if (hit) ai.refSelectedData.set(k, hit);
-        }
-      }
-      persistAiEditDraft(ai);
-      if (ai.refOnlySelected) {
-        uiCtx.renderPreviewModal();
-        return true;
-      }
-      const sumEl = previewLayerEl?.querySelector("[data-role='ai-ref-summary']");
-      if (sumEl) sumEl.textContent = `参考条目（默认折叠 · 已选 ${ai.refSelectedKeys.size} 项）`;
-      const selChip = previewLayerEl?.querySelector("[data-role='ai-ref-selected-chip']");
-      if (selChip) selChip.textContent = `已选 (${ai.refSelectedKeys.size})`;
-      const clrBtn = previewLayerEl?.querySelector("[data-action='ai-ref-clear']");
-      if (clrBtn) clrBtn.disabled = ai.refSelectedKeys.size === 0;
-      actionEl.closest('.td-picker-row')?.classList.toggle('checked', ai.refSelectedKeys.has(k));
-      return true;
-    }
-    if (action === 'ai-ref-select-enabled' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      const ai = state.previewCtx;
-      ensureAiSetupDefaults(ai);
-      const items = ai.refSourceType === 'worldbook'
-        ? getWorldbookRefItemsSync(ai, ai.refSourceName).items
-        : getPresetRefItems(ai, ai.refSourceName);
-      items.forEach((it) => {
-        if (it.enabled) {
-          ai.refSelectedKeys.add(it.refKey);
-          ai.refSelectedData.set(it.refKey, it);
-        }
-      });
-      persistAiEditDraft(ai);
-      uiCtx.renderPreviewModal();
-      return true;
-    }
-    if (action === 'ai-ref-clear' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      const ai = state.previewCtx;
-      ensureAiSetupDefaults(ai);
-      ai.refSelectedKeys.clear();
-      ai.refSelectedData.clear();
-      persistAiEditDraft(ai);
-      uiCtx.renderPreviewModal();
-      return true;
-    }
+
     if (action === 'ai-toggle-tpl-add' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       syncAiPreviewDraftInputs(previewLayerEl);
       state.previewCtx.tplAddOpen = !state.previewCtx.tplAddOpen;
@@ -1398,12 +1100,18 @@ export const aiAssistantUiModule = {
       const k = actionEl.getAttribute('data-key');
       if (state.previewCtx.selectedKeys.has(k)) state.previewCtx.selectedKeys.delete(k);
       else state.previewCtx.selectedKeys.add(k);
+      persistAiEditDraft(state.previewCtx);
+      if (state.previewCtx.type === 'pmAiEdit' && state.previewCtx.targetFilter === 'selected') {
+        uiCtx.renderPreviewModal();
+        return true;
+      }
       const labelEl = previewLayerEl?.querySelector("[data-role='ai-selected-label']");
       if (labelEl) labelEl.textContent = `待编辑条目 (已选 ${state.previewCtx.selectedKeys.size})`;
+      const selChip = previewLayerEl?.querySelector("[data-role='ai-target-selected-chip']");
+      if (selChip) selChip.textContent = `已选 (${state.previewCtx.selectedKeys.size})`;
       const clrBtn = previewLayerEl?.querySelector("[data-action='ai-clear-selected']");
       if (clrBtn) clrBtn.disabled = state.previewCtx.selectedKeys.size === 0;
       actionEl.closest('.td-picker-row')?.classList.toggle('checked', state.previewCtx.selectedKeys.has(k));
-      persistAiEditDraft(state.previewCtx);
       return true;
     }
     if (action === 'ai-run' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
@@ -1419,8 +1127,12 @@ export const aiAssistantUiModule = {
         ['prompts', 'prompts_unused'].forEach((listName) => {
           (state.modal.data[listName] || []).forEach((p, idx) => {
             const uk = `${listName}::${idx}`;
-            if (ai.selectedKeys.has(uk)) selectedItems.push({ uidKey: uk, listName, index: idx, prompt: p });
+            if (ai.selectedKeys.has(uk)) selectedItems.push({ itemType: 'prompt', uidKey: uk, listName, index: idx, prompt: p });
           });
+        });
+        (state.modal.regexes || []).forEach((r, idx) => {
+          const uk = `regex::${idx}`;
+          if (ai.selectedKeys.has(uk)) selectedItems.push({ itemType: 'regex', uidKey: uk, listName: 'regex', index: idx, regex: r });
         });
         ai.loading = true;
         setAiRunBtnLoading(previewLayerEl, true);
@@ -1470,13 +1182,14 @@ export const aiAssistantUiModule = {
       copyToClipboard(txt).then(() => notify('success', 'AI 说明已复制到剪贴板')).catch(() => notify('error', '复制失败'));
       return true;
     }
-    if (action === 'ai-edit-result' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+    if (action === 'ai-edit-result-content' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       const rIdx = Number(actionEl.getAttribute('data-ridx'));
       const r = state.previewCtx.results?.[rIdx];
       if (!r) return true;
       state.selectPopup = {
-        type: 'aiResultEdit',
+        type: 'aiResultContentEdit',
         aiType: state.previewCtx.type,
+        itemType: r.itemType === 'regex' ? 'regex' : 'default',
         rIdx,
         history: null,
         historyIdx: 0,
@@ -1485,7 +1198,39 @@ export const aiAssistantUiModule = {
       uiCtx.renderSelectPopup();
       return true;
     }
-    if (action === 'ai-edit-undo' && state.selectPopup?.type === 'aiResultEdit') {
+    if (action === 'ai-edit-result-attrs' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      const rIdx = Number(actionEl.getAttribute('data-ridx'));
+      const r = state.previewCtx.results?.[rIdx];
+      if (!r) return true;
+      state.selectPopup = {
+        type: 'aiResultAttrEdit',
+        aiType: state.previewCtx.type,
+        itemType: r.itemType === 'regex' ? 'regex' : 'default',
+        rIdx,
+      };
+      uiCtx.renderSelectPopup();
+      return true;
+    }
+    if (action === 'ai-test-regex' && state.previewCtx?.type === 'pmAiEdit') {
+      const rIdx = Number(actionEl.getAttribute('data-ridx'));
+      const r = state.previewCtx.results?.[rIdx];
+      if (!r || r.itemType !== 'regex') return true;
+      const ai = state.previewCtx;
+      openRegexTestPreview({
+        title: r.newName || 'AI 正则结果',
+        findRegex: r.newFindRegex || '',
+        replaceString: r.newReplaceString || '',
+        trimStrings: r.newTrimStrings || r.oldRegex?.trim_strings || [],
+        returnPreviewCtx: ai,
+        onApplyBack: (next) => {
+          r.newFindRegex = next.find_regex;
+          r.newReplaceString = next.replace_string;
+          r.manualEdited = true;
+        },
+      });
+      return true;
+    }
+    if (action === 'ai-edit-undo' && state.selectPopup?.type === 'aiResultContentEdit') {
       const selectLayerEl = uiCtx.getSelectLayer();
       const sp = state.selectPopup;
       pushAiEditSnapshot(selectLayerEl, sp, true);
@@ -1496,7 +1241,7 @@ export const aiAssistantUiModule = {
       }
       return true;
     }
-    if (action === 'ai-edit-redo' && state.selectPopup?.type === 'aiResultEdit') {
+    if (action === 'ai-edit-redo' && state.selectPopup?.type === 'aiResultContentEdit') {
       const selectLayerEl = uiCtx.getSelectLayer();
       const sp = state.selectPopup;
       if (Array.isArray(sp.history) && sp.historyIdx < sp.history.length - 1) {
@@ -1506,33 +1251,62 @@ export const aiAssistantUiModule = {
       }
       return true;
     }
-    if (action === 'ai-edit-copy' && state.selectPopup?.type === 'aiResultEdit') {
+    if (action === 'ai-edit-copy' && state.selectPopup?.type === 'aiResultContentEdit') {
       const contentEl = uiCtx.getSelectLayer()?.querySelector('#td-aire-content');
       copyToClipboard(contentEl ? contentEl.value : '').then(() => notify('success', '正文已复制到剪贴板')).catch(() => notify('error', '复制失败'));
       return true;
     }
-    if (action === 'ai-edit-save' && state.selectPopup?.type === 'aiResultEdit') {
+    if (action === 'ai-edit-content-save' && state.selectPopup?.type === 'aiResultContentEdit') {
       const selectLayerEl = uiCtx.getSelectLayer();
       const sp = state.selectPopup;
       pushAiEditSnapshot(selectLayerEl, sp, true);
-      const snap = readAiResultEditSnapshot(selectLayerEl, sp.aiType);
+      const snap = readAiResultEditSnapshot(selectLayerEl, sp.itemType);
       const r = state.previewCtx?.results?.[sp.rIdx];
       if (r) {
         if (snap.name.trim()) r.newName = snap.name.trim();
-        r.newEnabled = !!snap.enabled;
-        if (sp.aiType === 'pmAiEdit') {
-          r.newRole = ['system', 'user', 'assistant'].includes(snap.role) ? snap.role : 'system';
-        } else if (sp.aiType === 'wbAiEdit') {
-          r.newKeys = snap.keys;
+        if (sp.aiType === 'pmAiEdit' && r.itemType === 'regex') {
+          r.newFindRegex = snap.findRegex;
+          r.newReplaceString = snap.content;
+        } else {
+          r.newContent = snap.content;
         }
-        r.newContent = snap.content;
         r.manualEdited = true;
       }
       if (sp.timer) { clearTimeout(sp.timer); sp.timer = null; }
       state.selectPopup = null;
       uiCtx.renderSelectPopup();
       uiCtx.renderPreviewModal();
-      notify('success', `已更新检视条目「${r?.newName || ''}」`);
+      notify('success', `已更新检视内容「${r?.newName || ''}」`);
+      return true;
+    }
+    if (action === 'ai-edit-attr-save' && state.selectPopup?.type === 'aiResultAttrEdit') {
+      const selectLayerEl = uiCtx.getSelectLayer();
+      const sp = state.selectPopup;
+      const r = state.previewCtx?.results?.[sp.rIdx];
+      if (r) {
+        const nameVal = (selectLayerEl?.querySelector('#td-aire-name')?.value ?? '').trim();
+        if (nameVal) r.newName = nameVal;
+        r.newEnabled = !!selectLayerEl?.querySelector('#td-aire-enabled')?.checked;
+        if (sp.aiType === 'pmAiEdit' && r.itemType === 'regex') {
+          const attrs = readRegexAttrFields(selectLayerEl, 'td-aire-r');
+          r.newSource = attrs.source;
+          r.newDestination = attrs.destination;
+          r.newRunOnEdit = attrs.run_on_edit;
+          r.newMinDepth = attrs.min_depth;
+          r.newMaxDepth = attrs.max_depth;
+          r.newTrimStrings = attrs.trim_strings;
+        } else if (sp.aiType === 'pmAiEdit') {
+          const roleVal = selectLayerEl?.querySelector('#td-aire-role')?.value || 'system';
+          r.newRole = ['system', 'user', 'assistant'].includes(roleVal) ? roleVal : 'system';
+        } else if (sp.aiType === 'wbAiEdit') {
+          r.newKeys = selectLayerEl?.querySelector('#td-aire-keys')?.value ?? '';
+        }
+        r.manualEdited = true;
+      }
+      state.selectPopup = null;
+      uiCtx.renderSelectPopup();
+      uiCtx.renderPreviewModal();
+      notify('success', `已更新检视属性「${r?.newName || ''}」`);
       return true;
     }
     if (action === 'ai-toggle-accept' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
@@ -1572,9 +1346,41 @@ export const aiAssistantUiModule = {
       let updated = 0;
       let added = 0;
       if (state.previewCtx.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
-        const addedByList = { prompts: [], prompts_unused: [] };
+        const addedByList = { prompts: [], prompts_unused: [], regex: [] };
         (state.previewCtx.results || []).forEach((r) => {
           if (!r.accepted) return;
+          if (r.itemType === 'regex') {
+            if (r.writeMode === 'add') {
+              const newReg = buildDefaultPresetRegex({
+                script_name: r.newName,
+                enabled: r.newEnabled,
+                find_regex: r.newFindRegex || '',
+                replace_string: r.newReplaceString || '',
+                source: r.newSource,
+                destination: r.newDestination,
+                run_on_edit: r.newRunOnEdit,
+                min_depth: r.newMinDepth,
+                max_depth: r.newMaxDepth,
+                trim_strings: r.newTrimStrings,
+              });
+              addedByList.regex.push(newReg);
+              added++;
+            } else {
+              const target = state.modal.regexes?.[r.index]; if (!target) return;
+              target.script_name = r.newName;
+              target.enabled = !!r.newEnabled;
+              target.find_regex = r.newFindRegex ?? '';
+              target.replace_string = r.newReplaceString ?? '';
+              if (r.newSource) target.source = JSON.parse(JSON.stringify(r.newSource));
+              if (r.newDestination) target.destination = JSON.parse(JSON.stringify(r.newDestination));
+              if (r.newRunOnEdit !== undefined) target.run_on_edit = !!r.newRunOnEdit;
+              if (r.newMinDepth !== undefined) target.min_depth = r.newMinDepth;
+              if (r.newMaxDepth !== undefined) target.max_depth = r.newMaxDepth;
+              if (Array.isArray(r.newTrimStrings)) target.trim_strings = r.newTrimStrings.slice();
+              updated++;
+            }
+            return;
+          }
           if (r.writeMode === 'add') {
             const targetList = r.targetList === 'prompts_unused' ? 'prompts_unused' : 'prompts';
             const newPrompt = buildNewPromptEntry({
@@ -1599,6 +1405,11 @@ export const aiAssistantUiModule = {
             state.modal.data[ln].unshift(...addedByList[ln]);
           }
         });
+        if (addedByList.regex.length > 0) {
+          state.modal.regexes = Array.isArray(state.modal.regexes) ? state.modal.regexes : [];
+          state.modal.regexes.unshift(...addedByList.regex);
+          state.modal.tab = 'regex';
+        }
         if (updated + added > 0) state.modal.dirty = true;
         state.previewCtx = null; uiCtx.renderPreviewModal(); uiCtx.renderModal();
         notify('success', `已写回预设草稿（修改 ${updated} 项，新增 ${added} 项置于顶部，请点击「保存预设」持久化）`);
@@ -1645,7 +1456,7 @@ export const aiAssistantUiModule = {
     const target = e.target;
     if (!target) return false;
     const id = target.id || '';
-    if (state.selectPopup?.type === 'aiResultEdit' && ['td-aire-name', 'td-aire-keys', 'td-aire-content'].includes(id)) {
+    if (state.selectPopup?.type === 'aiResultContentEdit' && ['td-aire-name', 'td-aire-find-regex', 'td-aire-content'].includes(id)) {
       const selectLayerEl = uiCtx.getSelectLayer();
       const isLarge = e.inputType === 'insertFromPaste' || e.inputType === 'deleteByCut';
       if (isLarge) pushAiEditSnapshot(selectLayerEl, state.selectPopup, true);
@@ -1675,19 +1486,8 @@ export const aiAssistantUiModule = {
     const target = e.target;
     if (!target) return false;
     const id = target.id || '';
-    if (state.selectPopup?.type === 'aiResultEdit' && (id === 'td-aire-enabled' || id === 'td-aire-role')) {
-      pushAiEditSnapshot(uiCtx.getSelectLayer(), state.selectPopup, true);
-      return true;
-    }
-    if (id === 'td-ai-ref-source-name' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
-      const ai = state.previewCtx;
-      ensureAiSetupDefaults(ai);
-      syncAiPreviewDraftInputs(uiCtx.getPreviewLayer());
-      ai.refSourceName = target.value;
-      ai.refOnlySelected = false;
-      if (ai.refSourceType === 'worldbook') ai.refLastWorldbook = target.value;
-      else ai.refLastPreset = target.value;
-      uiCtx.renderPreviewModal();
+
+    if (handleAiRefChange(target, { syncDraftInputs: syncAiPreviewDraftInputs })) {
       return true;
     }
     if (id === 'td-ai-proxy-preset' || id === 'td-ai-jailbreak-preset') {

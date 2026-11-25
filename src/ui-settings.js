@@ -159,7 +159,7 @@ function applyMoveTargetPick(sp, rawIdx) {
       notify('success', `已将 ${cnt} 个条目加入主列表`);
     }
   } else {
-    const list = m.data[sp.listName];
+    const list = sp.listName === 'regex' ? m.regexes : m.data[sp.listName];
     if (movePromptsBatchBeforeIndex(list, sp.fromIndices, beforeIdx)) {
       m.dirty = true;
       if (m.selectedIdx instanceof Set) m.selectedIdx.clear();
@@ -331,7 +331,9 @@ export function renderSelectPopup() {
     const isWb = sp.type === 'moveWbTarget';
     const targetList = isWb
       ? (state.modal.entries || [])
-      : (sp.mode === 'insertFromUnused' ? (state.modal.data.prompts || []) : (state.modal.data[sp.listName] || []));
+      : (sp.mode === 'insertFromUnused'
+        ? (state.modal.data.prompts || [])
+        : (sp.listName === 'regex' ? (state.modal.regexes || []) : (state.modal.data[sp.listName] || [])));
     const fromSet = new Set(sp.fromIndices || []);
     const isInsert = !isWb && sp.mode === 'insertFromUnused';
     const title = isInsert
@@ -340,7 +342,7 @@ export function renderSelectPopup() {
 
     const itemsHtml = targetList.map((item, idx) => {
       const isSelf = !isInsert && fromSet.has(idx);
-      const label = isWb ? (item.name || `条目 #${item.uid}`) : (item.name || item.id);
+      const label = isWb ? (item.name || `条目 #${item.uid}`) : (item.script_name || item.name || item.id);
       return `
         <button type='button' class='td-select-option ${isSelf ? 'active' : ''}' data-action='select-popup-pick' data-value='${idx}'>
           <span class='td-select-option-left'>

@@ -245,6 +245,7 @@ export const worldbooksUiModule = {
 
     if (state.previewCtx?.type === 'wbEntryEdit') {
       const e = state.previewCtx.entry, stype = e.strategy?.type || 'selective', secLogic = e.strategy?.keys_secondary?.logic || 'and_any';
+      const isNew = !!state.previewCtx.isNew;
       const posType = e.position?.type || 'after_character_definition', posRole = e.position?.role || 'system';
       const scanDepthVal = e.strategy?.scan_depth === 'same_as_global' || e.strategy?.scan_depth === undefined ? '' : String(e.strategy.scan_depth);
       const posOpts = WB_POSITION_OPTIONS.map((o) => `<option value='${o.v}' ${posType === o.v ? 'selected' : ''}>${o.t}</option>`).join('');
@@ -252,8 +253,8 @@ export const worldbooksUiModule = {
       previewLayerEl.innerHTML = `
         <div class='td-modal td-modal-tall'>
           <div class='td-modal-head'>
-            <div class='td-modal-title'>${state.previewCtx.isNew ? '新增世界书条目' : `编辑世界书条目 · ${escapeHtml(e.name || `#${e.uid}`)}`}</div>
-            <div class='td-modal-head-actions'><button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button><button class='td-icon-btn' data-action='open-help' data-help-key='wbEntryEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
+            <div class='td-modal-title'>${isNew ? '新增世界书条目' : `世界书属性 · ${escapeHtml(e.name || `#${e.uid}`)}`}</div>
+            <div class='td-modal-head-actions'>${isNew ? `<button class='td-icon-btn' data-action='preview-undo' title='撤销 (后退)' disabled>${ICONS.undo}</button><button class='td-icon-btn' data-action='preview-redo' title='重做 (前进)' disabled>${ICONS.redo}</button>` : ''}<button class='td-icon-btn' data-action='open-help' data-help-key='wbEntryEdit' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-preview'>${ICONS.close}</button></div>
           </div>
           <div class='td-modal-body'>
             <div style='display:flex;gap:8px;align-items:center;'><div class='td-field' style='flex:1;'><label class='td-label'>条目标题</label><input class='td-input' id='td-edit-name' type='text' value='${escapeHtml(e.name || '')}' /></div><div style='display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding-top:18px;flex-shrink:0;'><input type='checkbox' class='td-checkbox' id='td-wbe-enabled' ${e.enabled ? 'checked' : ''} /><span>启用</span></div></div>
@@ -278,14 +279,19 @@ export const worldbooksUiModule = {
               <span style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-previn' ${e.recursion?.prevent_incoming ? 'checked' : ''} /> 禁止被递归激活</span>
               <span style='display:inline-flex;align-items:center;gap:5px;font-size:12px;'><input type='checkbox' class='td-checkbox' id='td-wbe-prevout' ${e.recursion?.prevent_outgoing ? 'checked' : ''} /> 禁止递归激活其他</span>
             </div>
-            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:180px;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: e.content || '', minHeight: '140px' })}</div>
+            ${isNew ? `<div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:180px;'><label class='td-label'>条目正文（支持撤销/重做）</label>${renderQuickInsertHtml('td-edit-content')}${renderSearchableTextareaHtml({ id: 'td-edit-content', value: e.content || '', minHeight: '140px' })}</div>` : ''}
           </div>
           <div class='td-modal-foot'><button class='td-btn' data-action='close-preview'>取消</button><button class='td-btn primary' data-action='wb-save-entry'>${ICONS.save} 确认</button></div>
         </div>`;
-      bindEditorSearchEvents(previewLayerEl);
-      editHistory.stack = [readPreviewSnapshot()];
-      editHistory.index = 0;
-      updatePreviewHistoryButtons();
+      if (isNew) {
+        bindEditorSearchEvents(previewLayerEl);
+        editHistory.stack = [readPreviewSnapshot()];
+        editHistory.index = 0;
+        updatePreviewHistoryButtons();
+      } else {
+        editHistory.stack = [];
+        editHistory.index = -1;
+      }
       uiCtx.syncOverlayBounds();
       return true;
     }
@@ -493,7 +499,7 @@ export const worldbooksUiModule = {
       return true;
     }
     if (action === 'wb-save-entry' && state.previewCtx?.type === 'wbEntryEdit' && state.modal?.type === 'worldbookDetail') {
-      pushEditSnapshot(true);
+      if (state.previewCtx.isNew) pushEditSnapshot(true);
       const snap = readPreviewSnapshot(), eObj = cloneWorldbookEntry(state.previewCtx.entry);
       eObj.name = (snap?.name || '').trim() || '未命名条目';
       eObj.enabled = !!previewLayerEl?.querySelector('#td-wbe-enabled')?.checked;
@@ -516,7 +522,7 @@ export const worldbooksUiModule = {
         prevent_incoming: !!previewLayerEl?.querySelector('#td-wbe-previn')?.checked,
         prevent_outgoing: !!previewLayerEl?.querySelector('#td-wbe-prevout')?.checked,
       });
-      eObj.content = snap?.content ?? '';
+      if (previewLayerEl?.querySelector('#td-edit-content')) eObj.content = snap?.content ?? '';
       if (state.previewCtx.isNew) state.modal.entries.push(eObj); else state.modal.entries[state.previewCtx.idx] = eObj;
       state.modal.dirty = true; state.previewCtx = null; uiCtx.renderPreviewModal(); uiCtx.renderModal();
       return true;

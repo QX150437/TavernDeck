@@ -38,6 +38,7 @@ import { snapshotsUiModule, updateSnapshotList } from './ui-snapshots.js';
 import { mergeDialogsUiModule } from './ui-merge-dialogs.js';
 import { mergePanelUiModule, updateDualMergeBody } from './ui-merge-panel.js';
 import { presetsUiModule } from './ui-presets.js';
+import { regexTestUiModule } from './ui-regex-test.js';
 import { worldbooksUiModule } from './ui-worldbooks.js';
 import { aiAssistantUiModule, flushAiEditDraft } from './ui-ai-assistant.js';
 import { mvuUiModule } from './ui-mvu.js';
@@ -52,6 +53,7 @@ const UI_MODULES = [
   groupsUiModule,
   snapshotsUiModule,
   presetsUiModule,
+  regexTestUiModule,
   presetVarsUiModule,
   worldbooksUiModule,
   aiAssistantUiModule,
@@ -564,6 +566,12 @@ function handleRootClick(e) {
         renderPreviewModal();
         return;
       }
+      if (state.previewCtx?.returnPreviewKey) {
+        state.previewKey = state.previewCtx.returnPreviewKey;
+        state.previewCtx = null;
+        renderPreviewModal();
+        return;
+      }
       const prevType = state.previewCtx?.type;
       discardPendingCustomMergeDraft();
       state.previewKey = null;
@@ -735,6 +743,7 @@ function handleRootClick(e) {
       applyPreviewSnapshot(editHistory.stack[editHistory.index]);
       updatePreviewHistoryButtons();
       syncEditorSearchHighlights('td-edit-content', previewLayerEl, false);
+      syncEditorSearchHighlights('td-edit-replace-string', previewLayerEl, false);
     }
     return;
   }
@@ -744,6 +753,7 @@ function handleRootClick(e) {
       applyPreviewSnapshot(editHistory.stack[editHistory.index]);
       updatePreviewHistoryButtons();
       syncEditorSearchHighlights('td-edit-content', previewLayerEl, false);
+      syncEditorSearchHighlights('td-edit-replace-string', previewLayerEl, false);
     }
     return;
   }
