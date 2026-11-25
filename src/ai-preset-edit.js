@@ -202,7 +202,48 @@ export function buildCurrentApiOverride(cfg) {
   return out;
 }
 
-async function runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg }) {
+function createAiAbortError() {
+  const err = new Error('已手动终止 AI 生成');
+  err.isAiAborted = true;
+  return err;
+}
+
+export function stopAiGenerationRequest(generationId) {
+  if (!generationId || !hasTH('stopGenerationById')) return false;
+  try {
+    return !!callTH('stopGenerationById', generationId);
+  } catch (e) {
+    return false;
+  }
+}
+
+function raceWithAbortSignal(promise, signal, onAbort) {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    if (typeof onAbort === 'function') {
+      try { onAbort(); } catch (e) {}
+    }
+    return Promise.reject(createAiAbortError());
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', handleAbort);
+    const handleAbort = () => {
+      cleanup();
+      if (typeof onAbort === 'function') {
+        try { onAbort(); } catch (e) {}
+      }
+      reject(createAiAbortError());
+    };
+    signal.addEventListener('abort', handleAbort, { once: true });
+    Promise.resolve(promise).then(
+      (val) => { cleanup(); resolve(val); },
+      (err) => { cleanup(); reject(err); },
+    );
+  });
+}
+
+async function runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg, generationId, signal }) {
+  if (signal?.aborted) throw createAiAbortError();
   const apiVal = normalizeApiTargetValue(apiCfg?.proxyPreset);
   const overrideModel = String(apiCfg?.model || '').trim();
 
@@ -220,11 +261,15 @@ async function runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, api
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ];
-    const maxTokens = Number(st?.chatCompletionSettings?.openai_max_tokens) || 4096;
+    const maxTokens = Number(st?.chatCompletionSettings?.openai_max_tokens) || 8192;
     const prevModel = targetProfile ? targetProfile.model : undefined;
     if (targetProfile && overrideModel) targetProfile.model = overrideModel;
     try {
-      const res = await svc.sendRequest(profileId, messages, maxTokens, { stream: false, extractData: true });
+      const reqOpts = { stream: false, extractData: true, ...(signal ? { signal } : {}) };
+      const res = await raceWithAbortSignal(
+        svc.sendRequest(profileId, messages, maxTokens, reqOpts),
+        signal,
+      );
       return typeof res === 'string' ? res : (res?.content || res?.result || '');
     } finally {
       if (targetProfile && overrideModel) targetProfile.model = prevModel;
@@ -234,17 +279,21 @@ async function runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, api
   if (!hasTH('generateRaw')) {
     throw new Error('当前酒馆助手版本不支持 generateRaw 接口');
   }
-  const rawResult = await callTH('generateRaw', {
+  const rawPromise = callTH('generateRaw', {
     user_input: userPrompt,
     should_stream: false,
     should_silence: true,
     max_chat_history: 0,
+    ...(generationId ? { generation_id: generationId } : {}),
     custom_api: buildCurrentApiOverride(apiCfg),
     ordered_prompts: [
       ...(jbPrompts || []),
       { role: 'system', content: systemPrompt },
       'user_input',
     ],
+  });
+  const rawResult = await raceWithAbortSignal(rawPromise, signal, () => {
+    if (generationId) stopAiGenerationRequest(generationId);
   });
   return typeof rawResult === 'string' ? rawResult : (rawResult?.content || '');
 }
@@ -270,71 +319,303 @@ export function extractJailbreakPrompts(jailbreakPresetName) {
   }
 }
 
+function sanitizeJsonText(raw) {
+  const s = String(raw || '');
+  let out = '';
+  let inString = false;
+  let escaped = false;
+
+  const peekNextNonWs = (fromIdx) => {
+    let k = fromIdx;
+    while (k < s.length) {
+      const c = s[k];
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { k++; continue; }
+      if (c === '/' && s[k + 1] === '/') {
+        k += 2;
+        while (k < s.length && s[k] !== '\n') k++;
+        continue;
+      }
+      if (c === '/' && s[k + 1] === '*') {
+        const endIdx = s.indexOf('*/', k + 2);
+        k = endIdx >= 0 ? endIdx + 2 : s.length;
+        continue;
+      }
+      return c;
+    }
+    return '';
+  };
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        out += ch;
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      if (ch === '\n') { out += '\\n'; continue; }
+      if (ch === '\r') {
+        if (s[i + 1] === '\n') i++;
+        out += '\\n';
+        continue;
+      }
+      if (ch === '\t') { out += '\\t'; continue; }
+      if (ch.charCodeAt(0) < 0x20) { out += ' '; continue; }
+      out += ch;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '/') {
+      i += 2;
+      while (i < s.length && s[i] !== '\n') i++;
+      if (i < s.length) out += '\n';
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '*') {
+      const endIdx = s.indexOf('*/', i + 2);
+      i = endIdx >= 0 ? endIdx + 1 : s.length;
+      continue;
+    }
+    if (ch === ',') {
+      const nextCh = peekNextNonWs(i + 1);
+      if (nextCh === '}' || nextCh === ']') continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function recoverTruncatedEntriesJson(sanitized) {
+  const arrMatch = sanitized.match(/"(?:entries|prompts|items|results|changes|edits|worldbook|regexes)"\s*:\s*\[/i);
+  const startIdx = arrMatch
+    ? (arrMatch.index + arrMatch[0].length)
+    : (sanitized.trimStart().startsWith('[') ? sanitized.indexOf('[') + 1 : -1);
+  if (startIdx <= 0) return null;
+
+  const recovered = [];
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  let objStart = -1;
+
+  for (let i = startIdx; i < sanitized.length; i++) {
+    const ch = sanitized[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') {
+      if (depth === 0) objStart = i;
+      depth++;
+    } else if (ch === '}') {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && objStart >= 0) {
+          try {
+            const obj = JSON.parse(sanitized.slice(objStart, i + 1));
+            if (obj && typeof obj === 'object') recovered.push(obj);
+          } catch (e) {}
+          objStart = -1;
+        }
+      }
+    } else if (ch === ']' && depth === 0) {
+      break;
+    }
+  }
+
+  if (recovered.length === 0) return null;
+  let summary = '';
+  const sumMatch = sanitized.match(/"(?:summary|guide|explanation|instructions|note)"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+  if (sumMatch) {
+    try { summary = JSON.parse(`"${sumMatch[1]}"`); } catch (e) {}
+  }
+  return { summary, entries: recovered, _partialRecovered: true };
+}
+
+function tryParseFlexibleJson(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  try {
+    const v = JSON.parse(s);
+    if (v && typeof v === 'object') return v;
+  } catch (e) {}
+
+  const sanitized = sanitizeJsonText(s);
+  try {
+    const v = JSON.parse(sanitized);
+    if (v && typeof v === 'object') return v;
+  } catch (e) {}
+
+  return recoverTruncatedEntriesJson(sanitized);
+}
+
+function looksLikeAiEntry(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  return typeof obj.content === 'string'
+    || typeof obj.find_regex === 'string'
+    || typeof obj.findRegex === 'string'
+    || typeof obj.replace_string === 'string'
+    || typeof obj.replaceString === 'string'
+    || typeof obj.uidKey === 'string'
+    || typeof obj.script_name === 'string'
+    || (typeof obj.action === 'string' && (typeof obj.name === 'string' || typeof obj.script_name === 'string'))
+    || (typeof obj.name === 'string' && (obj.keys !== undefined || obj.role !== undefined || obj.enabled !== undefined));
+}
+
+function extractEntriesFromParsed(parsed, depth = 0) {
+  if (!parsed || typeof parsed !== 'object' || depth > 2) return null;
+  if (Array.isArray(parsed)) {
+    const items = parsed.filter((x) => x && typeof x === 'object');
+    return items;
+  }
+  const preferredKeys = [
+    'entries', 'prompts', 'items', 'results', 'changes',
+    'edits', 'worldbook', 'regexes', 'list', 'output',
+  ];
+  for (let i = 0; i < preferredKeys.length; i++) {
+    const val = parsed[preferredKeys[i]];
+    if (Array.isArray(val)) return val.filter((x) => x && typeof x === 'object');
+    if (val && typeof val === 'object') {
+      const vals = Object.values(val).filter((x) => x && typeof x === 'object');
+      if (vals.length > 0 && vals.every((x) => looksLikeAiEntry(x))) return vals;
+    }
+  }
+  if (parsed.data !== undefined) {
+    const nested = extractEntriesFromParsed(parsed.data, depth + 1);
+    if (nested) return nested;
+  }
+  const anyEntryArray = Object.values(parsed).find(
+    (v) => Array.isArray(v) && v.length > 0 && v.some((x) => looksLikeAiEntry(x)),
+  );
+  if (anyEntryArray) return anyEntryArray.filter((x) => x && typeof x === 'object');
+  if (looksLikeAiEntry(parsed)) return [parsed];
+  return null;
+}
+
+function scanBalancedJsonSpans(str) {
+  const spans = [];
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  let start = -1;
+  let openCh = '';
+  let closeCh = '';
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      if (depth > 0) inString = true;
+      continue;
+    }
+    if (depth === 0 && (ch === '{' || ch === '[')) {
+      openCh = ch;
+      closeCh = ch === '{' ? '}' : ']';
+      start = i;
+      depth = 1;
+    } else if (depth > 0) {
+      if (ch === openCh) depth++;
+      else if (ch === closeCh) {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          spans.push({ start, end: i + 1, text: str.slice(start, i + 1) });
+          start = -1;
+        }
+      }
+    }
+  }
+  if (depth > 0 && start >= 0) {
+    spans.push({ start, end: str.length, text: str.slice(start) });
+  }
+  return spans;
+}
+
 export function extractAiEditResponse(rawText) {
   const text = String(rawText || '').trim();
   if (!text) throw new Error('AI 返回内容为空');
 
-  const tryParse = (s) => {
-    try { return JSON.parse(s); } catch (e) { return null; }
+  const stripped = text.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/ig, '').trim();
+  const scanSources = stripped && stripped !== text ? [stripped, text] : [text];
+
+  let best = null;
+  const consider = (parsed, spanStart, spanEnd, srcText) => {
+    if (!parsed || typeof parsed !== 'object') return;
+    const entries = extractEntriesFromParsed(parsed);
+    let score = 1;
+    if (Array.isArray(entries)) {
+      if (entries.length > 0) {
+        score = entries.some((x) => looksLikeAiEntry(x)) ? 100 + entries.length : 50 + entries.length;
+      } else {
+        score = 10;
+      }
+      if (parsed._partialRecovered) score -= 5;
+    }
+    if (!best || score > best.score) {
+      best = { parsed, entries, spanStart, spanEnd, srcText, score };
+    }
   };
 
-  let parsed = null;
-  let jsonSpanStart = -1;
-  let jsonSpanEnd = -1;
+  for (let si = 0; si < scanSources.length; si++) {
+    const src = scanSources[si];
+    const direct = tryParseFlexibleJson(src);
+    if (direct) consider(direct, 0, src.length, src);
 
-  parsed = tryParse(text);
-  if (parsed && typeof parsed === 'object') {
-    jsonSpanStart = 0;
-    jsonSpanEnd = text.length;
-  } else {
-    parsed = null;
-  }
-
-  if (!parsed) {
     const fenceRe = /```(?:json)?\s*([\s\S]*?)```/ig;
     let m;
-    while ((m = fenceRe.exec(text)) !== null) {
-      const cand = tryParse(m[1].trim());
-      if (cand && typeof cand === 'object') {
-        parsed = cand;
-        jsonSpanStart = m.index;
-        jsonSpanEnd = m.index + m[0].length;
-        break;
+    while ((m = fenceRe.exec(src)) !== null) {
+      const cand = tryParseFlexibleJson(m[1]);
+      if (cand) consider(cand, m.index, m.index + m[0].length, src);
+    }
+
+    if (!best || best.score < 50) {
+      const unclosedFence = src.match(/```(?:json)?\s*([\s\S]*)$/i);
+      if (unclosedFence && !/```/.test(unclosedFence[1])) {
+        const cand = tryParseFlexibleJson(unclosedFence[1]);
+        if (cand) consider(cand, unclosedFence.index, src.length, src);
       }
     }
-  }
 
-  if (!parsed) {
-    const firstObj = text.indexOf('{');
-    const lastObj = text.lastIndexOf('}');
-    if (firstObj >= 0 && lastObj > firstObj) {
-      const cand = tryParse(text.slice(firstObj, lastObj + 1));
-      if (cand && typeof cand === 'object') {
-        parsed = cand;
-        jsonSpanStart = firstObj;
-        jsonSpanEnd = lastObj + 1;
+    if (!best || best.score < 50) {
+      const spans = scanBalancedJsonSpans(src);
+      for (let k = 0; k < spans.length; k++) {
+        const sp = spans[k];
+        if (sp.text.length < 4) continue;
+        const cand = tryParseFlexibleJson(sp.text);
+        if (cand) consider(cand, sp.start, sp.end, src);
       }
     }
+
+    if (best && best.score >= 50) break;
   }
 
-  if (!parsed) {
-    const firstArr = text.indexOf('[');
-    const lastArr = text.lastIndexOf(']');
-    if (firstArr >= 0 && lastArr > firstArr) {
-      const cand = tryParse(text.slice(firstArr, lastArr + 1));
-      if (cand && typeof cand === 'object') {
-        parsed = cand;
-        jsonSpanStart = firstArr;
-        jsonSpanEnd = lastArr + 1;
-      }
-    }
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
+  if (!best) {
     throw new Error('AI 未返回有效的 JSON 结构，请尝试调整提示词或模型');
   }
 
-  const entries = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.entries) ? parsed.entries : null);
+  const { parsed, entries, spanStart, spanEnd, srcText } = best;
   const summaryParts = [];
   if (!Array.isArray(parsed)) {
     const jsonSummary = parsed.summary ?? parsed.guide ?? parsed.explanation ?? parsed.instructions ?? parsed.note ?? '';
@@ -342,8 +623,11 @@ export function extractAiEditResponse(rawText) {
       summaryParts.push(jsonSummary.trim());
     }
   }
-  if (jsonSpanStart >= 0 && jsonSpanEnd > jsonSpanStart) {
-    const outside = `${text.slice(0, jsonSpanStart)}\n${text.slice(jsonSpanEnd)}`.trim();
+  if (parsed._partialRecovered) {
+    summaryParts.push('（提示：AI 响应在末尾疑似被截断，已自动恢复前面已完整生成的条目）');
+  }
+  if (spanStart >= 0 && spanEnd > spanStart && srcText) {
+    const outside = `${srcText.slice(0, spanStart)}\n${srcText.slice(spanEnd)}`.replace(/```(?:json)?|```/ig, '').trim();
     if (outside && !summaryParts.some((p) => p === outside)) {
       summaryParts.push(outside);
     }
@@ -359,7 +643,7 @@ export function extractJsonFromAiReply(rawText) {
   return extractAiEditResponse(rawText).entries;
 }
 
-export async function runAiPresetEdit({ selectedItems = [], referenceItems = [], instruction, apiCfg }) {
+export async function runAiPresetEdit({ selectedItems = [], referenceItems = [], instruction, apiCfg, generationId, signal }) {
   const hasTargets = Array.isArray(selectedItems) && selectedItems.length > 0;
   const hasRefs = Array.isArray(referenceItems) && referenceItems.length > 0;
   if (!hasTargets && !hasRefs) {
@@ -437,11 +721,11 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
     '你是一个专业的 SillyTavern (酒馆) 预设提示词与正则工程助手。',
     '用户会提供修改/编写指令、待编辑条目（可能包含预设提示词条目 itemType:"prompt" 与预设正则条目 itemType:"regex"，可选）以及供上下文参考的条目（可选）。',
     '你可以修改待编辑条目（action: "update"），也可以根据用户指令新增提示词条目或新增预设正则条目（action: "add"）。',
-    '输出要求：',
-    '1. 请输出一个合法的 JSON 对象（推荐置于 ```json ... ``` 代码块中）；如需提供整体修改说明、结构设计思路、使用/配置指导信息或注意事项，请写入根字段 "summary"（也可在 JSON 代码块外补充说明文字）。',
-    '2. 提示词条目格式：{"action": "update"|"add", "itemType": "prompt", "uidKey": "修改时填原样uidKey；新增时留空", "listName": "prompts"|"prompts_unused", "name": "条目名", "role": "system|user|assistant", "enabled": true, "content": "完整正文", "note": "说明"}',
-    '3. 预设正则条目格式：{"action": "update"|"add", "itemType": "regex", "uidKey": "修改时填原样uidKey；新增时留空", "script_name": "正则名称", "enabled": true, "find_regex": "查找正则表达式", "replace_string": "替换文本", "note": "说明"}',
-    '4. 修改原条目时必须完整保留 uidKey 与对应的 itemType，不得遗漏或篡改；不要把只读参考条目当作原条目输出为 update。',
+    '输出要求（必须严格遵守）：',
+    '1. 必须输出一个合法的 JSON 对象（推荐置于 ```json ... ``` 代码块中），根结构严格为：{"summary": "整体说明与配置指导（可选）", "entries": [条目对象1, 条目对象2, ...]}。即使只有 1 个条目也必须放入 "entries" 数组中，切勿省略 "entries" 键。',
+    '2. 提示词条目对象格式：{"action": "update"|"add", "itemType": "prompt", "uidKey": "修改时填原样uidKey；新增时留空", "listName": "prompts"|"prompts_unused", "name": "条目名", "role": "system|user|assistant", "enabled": true, "content": "完整正文", "note": "说明"}',
+    '3. 预设正则条目对象格式：{"action": "update"|"add", "itemType": "regex", "uidKey": "修改时填原样uidKey；新增时留空", "script_name": "正则名称", "enabled": true, "find_regex": "查找正则表达式", "replace_string": "替换文本", "note": "说明"}',
+    '4. 保持 JSON 语法绝对合法：字符串内的换行必须转义为 \\n、双引号转义为 \\"，不得出现尾部多余逗号；修改原条目时必须完整保留 uidKey 与 itemType，不要把只读参考条目当作原条目输出为 update。',
   ].join('\n');
 
   const blocks = [`【指令需求】\n${cleanInstruction}`];
@@ -457,23 +741,35 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
 
   recordOpStep('发送 AI 预设编辑请求', `待编辑 ${inputPayload.length} 项 / 参考 ${refPayload.length} 项`);
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
-  const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
-  const { entries: list, summary } = extractAiEditResponse(replyText);
-  if (!list || list.length === 0) {
-    throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
-  }
+  const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg, generationId, signal });
 
-  const byUidKey = new Map((selectedItems || []).map((it) => [it.uidKey, it]));
-  const getItemId = (x) => (x.itemType === 'regex' ? x.regex?.id : x.prompt?.id);
-  const results = [];
-  list.forEach((out) => {
-    if (!out || typeof out !== 'object') return;
-    const explicitAdd = out.action === 'add' || out.isNew === true;
-    const match = !explicitAdd
-      ? (byUidKey.get(out.uidKey)
-        || (selectedItems || []).find((x) => out.id && getItemId(x) === out.id && (x.index + 1) === Number(out.index))
-        || (selectedItems || []).find((x) => out.id && getItemId(x) === out.id))
-      : null;
+  try {
+    const { entries: list, summary } = extractAiEditResponse(replyText);
+    if (!list || list.length === 0) {
+      throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
+    }
+
+    const byUidKey = new Map((selectedItems || []).map((it) => [it.uidKey, it]));
+    const getItemId = (x) => (x.itemType === 'regex' ? x.regex?.id : x.prompt?.id);
+    const getItemName = (x) => (x.itemType === 'regex' ? (x.regex?.script_name || x.regex?.id) : (x.prompt?.name || x.prompt?.id));
+    const results = [];
+    list.forEach((out) => {
+      if (!out || typeof out !== 'object') return;
+      const explicitAdd = out.action === 'add' || out.isNew === true;
+      const outName = (typeof out.script_name === 'string' ? out.script_name : (typeof out.name === 'string' ? out.name : '')).trim();
+      const idxCands = (!explicitAdd && out.index !== undefined && !Number.isNaN(Number(out.index)))
+        ? (selectedItems || []).filter((x) => (x.index + 1) === Number(out.index) && (!out.itemType || x.itemType === out.itemType))
+        : [];
+      const nameCands = (!explicitAdd && outName)
+        ? (selectedItems || []).filter((x) => getItemName(x) === outName && (!out.itemType || x.itemType === out.itemType))
+        : [];
+      const match = !explicitAdd
+        ? (byUidKey.get(out.uidKey)
+          || (selectedItems || []).find((x) => out.id && getItemId(x) === out.id && (x.index + 1) === Number(out.index))
+          || (selectedItems || []).find((x) => out.id && getItemId(x) === out.id)
+          || (idxCands.length === 1 ? idxCands[0] : null)
+          || (nameCands.length === 1 ? nameCands[0] : null))
+        : null;
 
     const isRegex = match
       ? match.itemType === 'regex'
@@ -576,13 +872,17 @@ export async function runAiPresetEdit({ selectedItems = [], referenceItems = [],
     });
   });
 
-  if (results.length === 0) {
-    throw new Error('AI 未返回有效条目结果，请重试');
+    if (results.length === 0) {
+      throw new Error('AI 未返回有效条目结果，请重试');
+    }
+    return { rawReply: replyText, summary, results };
+  } catch (err) {
+    if (err && typeof err === 'object' && !err.rawReply) err.rawReply = replyText;
+    throw err;
   }
-  return { rawReply: replyText, summary, results };
 }
 
-export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = [], instruction, apiCfg }) {
+export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = [], instruction, apiCfg, generationId, signal }) {
   const hasTargets = Array.isArray(selectedItems) && selectedItems.length > 0;
   const hasRefs = Array.isArray(referenceItems) && referenceItems.length > 0;
   if (!hasTargets && !hasRefs) {
@@ -644,10 +944,11 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
     '你是一个专业的 SillyTavern (酒馆) 世界书 (Lorebook / World Info) 编写与编辑助手。',
     '用户会提供修改/编写指令、待编辑世界书条目（可选）以及参考条目（可选）。',
     '你可以修改待编辑条目（action: "update"），也可以根据需求新增世界书条目（action: "add"）。',
-    '输出要求：',
-    '1. 请输出一个合法的 JSON 对象（推荐置于 ```json ... ``` 代码块中）；如需提供整体修改说明、触发策略建议、使用/配置指导信息或注意事项，请写入根字段 "summary"（也可在 JSON 代码块外补充说明文字）。',
+    '输出要求（必须严格遵守）：',
+    '1. 必须输出一个合法的 JSON 对象（推荐置于 ```json ... ``` 代码块中），根结构严格包含 "entries" 数组；如需提供整体修改说明、触发策略建议、使用/配置指导信息或注意事项，请写入根字段 "summary"。',
     '2. 格式为：{"summary": "整体说明与指导信息（可选）", "entries": [{"action": "update"|"add", "index": 原样数字index(新增填-1), "uid": 原样数字uid(新增填-1), "name": "条目标题", "enabled": true, "keys": "逗号分隔的关键词字符串", "content": "完整正文", "note": "本条目的修改说明或指导"}]}',
     '3. 修改原条目时必须完整保留 index 与 uid；若不需更改关键词，请原样保留 keys 字段。',
+    '4. 保持 JSON 语法绝对合法：字符串内的换行必须转义为 \\n、双引号转义为 \\"，不得出现尾部多余逗号。',
   ].join('\n');
 
   const blocks = [`【指令需求】\n${cleanInstruction}`];
@@ -663,21 +964,27 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
 
   recordOpStep('发送 AI 世界书编辑请求', `待编辑 ${inputPayload.length} 项 / 参考 ${refPayload.length} 项`);
   const jbPrompts = extractJailbreakPrompts(apiCfg?.jailbreakPreset);
-  const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg });
-  const { entries: list, summary } = extractAiEditResponse(replyText);
-  if (!list || list.length === 0) {
-    throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
-  }
+  const replyText = await runConfiguredAiRequest({ jbPrompts, systemPrompt, userPrompt, apiCfg, generationId, signal });
 
-  const byIndex = new Map((selectedItems || []).map((it) => [it.index, it]));
-  const byUid = new Map((selectedItems || []).map((it) => [it.entry.uid, it]));
-  const results = [];
-  list.forEach((out) => {
-    if (!out || typeof out !== 'object') return;
-    const explicitAdd = out.action === 'add' || out.isNew === true;
-    const match = !explicitAdd
-      ? (byIndex.get(Number(out.index)) || byUid.get(Number(out.uid)))
-      : null;
+  try {
+    const { entries: list, summary } = extractAiEditResponse(replyText);
+    if (!list || list.length === 0) {
+      throw new Error('AI 返回的 entries 数组为空或格式不符合要求');
+    }
+
+    const byIndex = new Map((selectedItems || []).map((it) => [it.index, it]));
+    const byUid = new Map((selectedItems || []).map((it) => [it.entry.uid, it]));
+    const results = [];
+    list.forEach((out) => {
+      if (!out || typeof out !== 'object') return;
+      const explicitAdd = out.action === 'add' || out.isNew === true;
+      const outName = typeof out.name === 'string' ? out.name.trim() : '';
+      const nameCands = (!explicitAdd && outName)
+        ? (selectedItems || []).filter((x) => (x.entry?.name || '') === outName)
+        : [];
+      const match = !explicitAdd
+        ? (byIndex.get(Number(out.index)) || byUid.get(Number(out.uid)) || (nameCands.length === 1 ? nameCands[0] : null))
+        : null;
 
     if (!match) {
       results.push({
@@ -713,10 +1020,14 @@ export async function runAiWorldbookEdit({ selectedItems = [], referenceItems = 
     });
   });
 
-  if (results.length === 0) {
-    throw new Error('AI 未返回有效世界书条目结果，请重试');
+    if (results.length === 0) {
+      throw new Error('AI 未返回有效世界书条目结果，请重试');
+    }
+    return { rawReply: replyText, summary, results };
+  } catch (err) {
+    if (err && typeof err === 'object' && !err.rawReply) err.rawReply = replyText;
+    throw err;
   }
-  return { rawReply: replyText, summary, results };
 }
 
 export async function runAiMvuUpdate({

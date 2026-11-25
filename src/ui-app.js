@@ -560,6 +560,11 @@ function handleRootClick(e) {
     const doClose = () => {
       if (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit') {
         flushAiEditDraft(previewLayerEl);
+        if (!state.previewCtx.loading && state.previewCtx.draftKey && state.aiEditJobs instanceof Map) {
+          if (state.previewCtx.step === 'review' || (Array.isArray(state.previewCtx.results) && state.previewCtx.results.length > 0)) {
+            state.aiEditJobs.delete(state.previewCtx.draftKey);
+          }
+        }
       }
       if (state.previewCtx?.returnPreviewCtx) {
         state.previewCtx = state.previewCtx.returnPreviewCtx;
@@ -586,7 +591,7 @@ function handleRootClick(e) {
       }
     };
     const pc = state.previewCtx;
-    const hasAiReview = pc && (
+    const hasAiReview = pc && !pc.loading && (
       ((pc.type === 'pmAiEdit' || pc.type === 'wbAiEdit') && (pc.step === 'review' || (Array.isArray(pc.results) && pc.results.length > 0)))
       || (pc.type === 'mvuAiUpdate' && (pc.step === 'review' || !!pc.replyText))
     );

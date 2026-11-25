@@ -6,7 +6,7 @@ import { state, saveStore } from './store.js';
 import { PRESET_SYSTEM_IDS, buildNewPromptEntry, buildDefaultPresetRegex } from './preset-manager.js';
 import { buildDefaultWorldbookEntry } from './worldbook-manager.js';
 import {
-  runAiPresetEdit, runAiWorldbookEdit,
+  runAiPresetEdit, runAiWorldbookEdit, stopAiGenerationRequest,
   getAvailableApiTargets, fetchModelsForApiTarget, normalizeApiTargetValue,
 } from './ai-preset-edit.js';
 import { ICONS, uiCtx, openConfirm } from './ui-common.js';
@@ -89,8 +89,138 @@ function buildAiTokenMap(type) {
   return map;
 }
 
+function getAiJobsMap() {
+  if (!(state.aiEditJobs instanceof Map)) state.aiEditJobs = new Map();
+  return state.aiEditJobs;
+}
+
+function getAiRunIdleLabel(ai) {
+  if (!ai?.loading) return '发送给 AI 编辑';
+  const sec = Math.max(0, Math.floor((Date.now() - (ai.startedAt || Date.now())) / 1000));
+  return `停止生成 (${sec}s)`;
+}
+
+function syncAiRunButtonDom(previewLayerEl, ai) {
+  const btn = previewLayerEl?.querySelector("[data-action='ai-run']");
+  if (!btn || !ai) return;
+  btn.disabled = false;
+  if (ai.loading) {
+    btn.classList.remove('primary');
+    btn.classList.add('danger');
+    btn.textContent = getAiRunIdleLabel(ai);
+    btn.title = '点击手动终止本次 AI 请求';
+  } else {
+    btn.classList.remove('danger');
+    btn.classList.add('primary');
+    btn.textContent = '发送给 AI 编辑';
+    btn.title = '';
+  }
+}
+
+function stopAiJobTimer(job) {
+  if (job?.timerId) {
+    clearInterval(job.timerId);
+    job.timerId = null;
+  }
+}
+
+function startAiJobTimer(job) {
+  stopAiJobTimer(job);
+  job.timerId = setInterval(() => {
+    if (!job.aiCtx?.loading) {
+      stopAiJobTimer(job);
+      return;
+    }
+    if (state.panelOpen && state.previewCtx === job.aiCtx) {
+      syncAiRunButtonDom(uiCtx.getPreviewLayer(), job.aiCtx);
+    }
+  }, 1000);
+}
+
+function stopAiEditJob(ai) {
+  if (!ai || !ai.loading) return;
+  const job = getAiJobsMap().get(ai.draftKey);
+  if (job) {
+    job.cancelled = true;
+    stopAiJobTimer(job);
+  }
+  ai.loading = false;
+  try { ai._abortController?.abort(); } catch (e) {}
+  if (ai._generationId) stopAiGenerationRequest(ai._generationId);
+  ai._abortController = null;
+  ai._generationId = '';
+  if (state.panelOpen && state.previewCtx === ai) {
+    uiCtx.renderPreviewModal();
+  }
+  notify('info', '已手动终止 AI 编辑请求');
+}
+
+function isSameTargetModal(curModal, snap) {
+  if (!curModal || !snap || curModal.type !== snap.type) return false;
+  if (snap.type === 'presetDetail') return curModal.presetName === snap.presetName;
+  if (snap.type === 'worldbookDetail') return curModal.bookName === snap.bookName;
+  return false;
+}
+
+function isCurrentModalDirty() {
+  const m = state.modal;
+  if (!m) return false;
+  if (m.type === 'presetDetail' || m.type === 'worldbookDetail') return !!m.dirty;
+  if ((m.type === 'presetMerge' || m.type === 'wbMerge') && m.session?.dirty) return true;
+  return false;
+}
+
+function presentCompletedAiJob(job) {
+  const ai = job.aiCtx;
+  const openReviewNow = () => {
+    if (!isSameTargetModal(state.modal, job.modalSnapshot)) {
+      state.modal = job.modalSnapshot;
+    }
+    state.previewKey = null;
+    state.snapshotDetailId = null;
+    state.selectPopup = null;
+    state.previewCtx = ai;
+    if (!state.panelOpen) {
+      uiCtx.setPanelOpen(true);
+    } else {
+      uiCtx.renderModal();
+      uiCtx.renderPreviewModal();
+    }
+  };
+
+  if (!state.panelOpen || !state.modal || isSameTargetModal(state.modal, job.modalSnapshot) || !isCurrentModalDirty()) {
+    openReviewNow();
+    return;
+  }
+
+  openConfirm({
+    title: 'AI 编辑结果已返回',
+    message: `AI 已处理完成并生成 ${ai.results.length} 条结果，当前正在编辑其他未保存内容，是否切换并打开检视界面？`,
+    confirmText: '打开检视',
+    confirmClass: 'primary',
+    onConfirm: () => {
+      uiCtx.confirmDiscardDirtyModal(openReviewNow);
+    },
+  });
+}
+
+function formatAiErrorCopyText(errInfo) {
+  if (!errInfo) return '';
+  const parts = [`【报错信息 (${errInfo.time || ''})】\n${errInfo.message || '未知错误'}`];
+  parts.push(`【AI 返回内容】\n${errInfo.rawReply ? errInfo.rawReply : '（AI 未返回任何文本内容）'}`);
+  return parts.join('\n\n');
+}
+
 export function createAiEditPreviewCtx(type) {
   const draftKey = getAiDraftKey(type);
+  const existingJob = draftKey ? getAiJobsMap().get(draftKey) : null;
+  if (existingJob?.aiCtx && existingJob.aiCtx.type === type && (
+    existingJob.aiCtx.loading
+    || existingJob.aiCtx.lastError
+    || (Array.isArray(existingJob.aiCtx.results) && existingJob.aiCtx.results.length > 0)
+  )) {
+    return existingJob.aiCtx;
+  }
   const rawDraft = draftKey ? state.store?.extensions?.aiEditDrafts?.[draftKey] : null;
   const tokenMap = buildAiTokenMap(type);
   const selectedKeys = new Set();
@@ -543,10 +673,19 @@ function renderAiEditSetupHtml({ title, ai, items, itemLabelFn }) {
           </div>
         </div>
       </div>
+      ${ai.lastError && !ai.loading ? `
+        <div class='td-ai-error-bar'>
+          <span class='td-ai-error-msg' title='${escapeHtml(ai.lastError.message)}'>上次请求失败：${escapeHtml(ai.lastError.message)}</span>
+          <div class='td-ai-error-btns'>
+            <button type='button' class='td-btn xs danger' data-action='ai-view-error'>查看报错与返回</button>
+            <button type='button' class='td-btn xs' data-action='ai-copy-error'>复制</button>
+            <button type='button' class='td-icon-btn' data-action='ai-clear-error' title='清除错误提示' style='width:22px;height:22px;'>${ICONS.close}</button>
+          </div>
+        </div>` : ''}
       <div class='td-modal-foot'>
         <button class='td-btn' data-action='close-preview'>取消</button>
         ${Array.isArray(ai.results) && ai.results.length > 0 ? `<button type='button' class='td-btn warn' data-action='ai-goto-review' ${ai.loading ? 'disabled' : ''}>返回检视 (${ai.results.length})</button>` : ''}
-        <button class='td-btn primary' data-action='ai-run' ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'AI 处理中，请稍候...' : '发送给 AI 编辑'}</button>
+        <button class='td-btn ${ai.loading ? 'danger' : 'primary'}' data-action='ai-run' title='${ai.loading ? '点击手动终止本次 AI 请求' : ''}'>${escapeHtml(getAiRunIdleLabel(ai))}</button>
       </div>
     </div>`;
 }
@@ -574,8 +713,57 @@ function formatAiNotesText(pc) {
   return blocks.join('\n\n');
 }
 
+function renderAiReviewNoteHtml(r, rIdx) {
+  const note = typeof r?.note === 'string' ? r.note.trim() : '';
+  if (!note) return '';
+  const isLong = note.length > 90 || note.includes('\n');
+  const expanded = !!r.noteExpanded;
+  return `
+    <div class='td-ai-note-box ${isLong && !expanded ? 'is-clamped' : ''}' data-ridx='${rIdx}'>
+      <div class='td-ai-note-text'><strong class='td-ai-note-label'>AI 说明：</strong>${escapeHtml(note)}</div>
+      ${isLong ? `<button type='button' class='td-ai-note-toggle' data-action='ai-toggle-note' data-ridx='${rIdx}'>${expanded ? '收起说明 ▴' : '展开全部 ▾'}</button>` : ''}
+    </div>`;
+}
+
 export const aiAssistantUiModule = {
   renderSelectPopup(sp, selectLayerEl) {
+    if (sp.type === 'aiErrorDetail') {
+      const errInfo = state.previewCtx?.lastError;
+      if (!errInfo) return false;
+      const rawReply = String(errInfo.rawReply || '');
+      selectLayerEl.innerHTML = `
+        <div class='td-modal td-modal-tall'>
+          <div class='td-modal-head'>
+            <div class='td-modal-title'>AI 请求报错详情</div>
+            <div class='td-modal-head-actions'>
+              <button type='button' class='td-icon-btn' data-action='ai-copy-error' title='复制报错与返回内容'>${ICONS.copy}</button>
+              <button type='button' class='td-icon-btn' data-action='close-select-popup' title='关闭'>${ICONS.close}</button>
+            </div>
+          </div>
+          <div class='td-modal-body'>
+            <div class='td-field'>
+              <div class='td-ai-sec-row'>
+                <label class='td-label' style='margin:0;'>报错信息${errInfo.time ? ` (${escapeHtml(errInfo.time)})` : ''}</label>
+                <button type='button' class='td-chip sm' data-action='ai-copy-err-msg'>复制报错</button>
+              </div>
+              <div class='td-code-block td-scroll' style='max-height:150px;overflow-y:auto;border-color:rgba(239,68,68,0.45);'>${escapeHtml(errInfo.message || '未知错误')}</div>
+            </div>
+            <div class='td-field' style='flex:1;display:flex;flex-direction:column;min-height:180px;'>
+              <div class='td-ai-sec-row'>
+                <label class='td-label' style='margin:0;'>AI 返回的原始内容</label>
+                <button type='button' class='td-chip sm' data-action='ai-copy-err-raw' ${rawReply ? '' : 'disabled'}>复制返回内容</button>
+              </div>
+              <textarea class='td-textarea td-scroll' readonly style='flex:1;min-height:180px;' placeholder='（AI 未返回任何文本内容，可能在接口响应前已失败）'>${escapeHtml(rawReply)}</textarea>
+            </div>
+          </div>
+          <div class='td-modal-foot'>
+            <button type='button' class='td-btn' data-action='ai-copy-error'>${ICONS.copy} 复制全部</button>
+            <button type='button' class='td-btn primary' data-action='close-select-popup'>关闭</button>
+          </div>
+        </div>`;
+      uiCtx.syncOverlayBounds();
+      return true;
+    }
     if (sp.type === 'aiNotes') {
       const pc = state.previewCtx;
       if (!pc || (pc.type !== 'pmAiEdit' && pc.type !== 'wbAiEdit')) return false;
@@ -602,7 +790,7 @@ export const aiAssistantUiModule = {
                        <span class='td-mgr-row-title is-wrap'>${escapeHtml(r.newName || '未命名条目')}</span>
                      </div>
                    </div>
-                   <div style='font-size:12px;color:var(--td-text-muted);line-height:1.5;white-space:pre-wrap;user-select:text;'>${escapeHtml(r.note.trim())}</div>
+                   <div style='font-size:12px;color:var(--td-text-muted);line-height:1.5;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;user-select:text;'>${escapeHtml(r.note.trim())}</div>
                  </div>`).join('')}
              </div>
            </div>`
@@ -787,26 +975,24 @@ export const aiAssistantUiModule = {
             : (isAdd ? "<span class='td-mode-tag single'>新增写入</span>" : "<span class='td-mode-tag multi'>覆盖修改</span>");
           return `
             <div class='td-mgr-row ${r.accepted ? 'is-active' : ''}'>
-              <div class='td-mgr-row-head'>
-                <div style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;'>
+              <div class='td-mgr-row-head is-wrap-head'>
+                <div class='td-mgr-row-left' style='flex-wrap:wrap;row-gap:4px;'>
                   <input type='checkbox' class='td-checkbox' data-action='ai-toggle-accept' data-ridx='${rIdx}' ${r.accepted ? 'checked' : ''} />
                   ${tagHtml}
                   ${isRegex ? "<span class='td-mode-tag single'>正则</span>" : ''}
                   ${r.manualEdited ? "<span class='td-mode-tag multi'>已手动编辑</span>" : ''}
                   ${!r.isAiNew ? `<span class='td-idx-badge'>#${r.index + 1}</span>` : ''}
-                  <span class='td-mgr-row-title' title='${escapeHtml(r.newName)}'>${escapeHtml(r.newName)}</span>
+                  <span class='td-mgr-row-title is-wrap' style='flex:1 1 130px;' title='${escapeHtml(r.newName)}'>${escapeHtml(r.newName)}</span>
                 </div>
                 <span class='td-src-badge'>${isRegex ? '预设正则' : escapeHtml(r.newRole)} · ${r.newEnabled ? '开' : '关'}</span>
               </div>
-              <div style='display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;'>
-                ${r.note ? `<span style='font-size:11.5px;color:var(--td-text-muted);flex:1;'>AI 说明：${escapeHtml(r.note)}</span>` : '<span></span>'}
-                <div style='display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;'>
-                  <button type='button' class='td-btn sm primary' data-action='ai-edit-result-content' data-ridx='${rIdx}'>${ICONS.eye} 编辑内容</button>
-                  <button type='button' class='td-btn sm' data-action='ai-edit-result-attrs' data-ridx='${rIdx}'>${ICONS.edit} 属性</button>
-                  ${isRegex ? `<button type='button' class='td-btn sm' data-action='ai-test-regex' data-ridx='${rIdx}'>测试</button>` : ''}
-                  ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
-                  ${isAdd && !isRegex ? `<button type='button' class='td-btn sm' data-action='ai-toggle-target-list' data-ridx='${rIdx}'>目标: ${r.targetList === 'prompts_unused' ? '未添加池' : '主列表'}</button>` : ''}
-                </div>
+              ${renderAiReviewNoteHtml(r, rIdx)}
+              <div class='td-mgr-row-actions'>
+                <button type='button' class='td-btn sm primary' data-action='ai-edit-result-content' data-ridx='${rIdx}'>${ICONS.eye} 编辑内容</button>
+                <button type='button' class='td-btn sm' data-action='ai-edit-result-attrs' data-ridx='${rIdx}'>${ICONS.edit} 属性</button>
+                ${isRegex ? `<button type='button' class='td-btn sm' data-action='ai-test-regex' data-ridx='${rIdx}'>测试</button>` : ''}
+                ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
+                ${isAdd && !isRegex ? `<button type='button' class='td-btn sm' data-action='ai-toggle-target-list' data-ridx='${rIdx}'>目标: ${r.targetList === 'prompts_unused' ? '未添加池' : '主列表'}</button>` : ''}
               </div>
               <div class='td-diff-box td-scroll'>${lines.map((l) => `<div class='td-diff-line ${l.type}'>${l.type === 'add' ? '+ ' : (l.type === 'del' ? '- ' : '  ')}${escapeHtml(l.text)}</div>`).join('')}</div>
             </div>`;
@@ -851,24 +1037,22 @@ export const aiAssistantUiModule = {
             : (isAdd ? "<span class='td-mode-tag single'>新增写入</span>" : "<span class='td-mode-tag multi'>覆盖修改</span>");
           return `
             <div class='td-mgr-row ${r.accepted ? 'is-active' : ''}'>
-              <div class='td-mgr-row-head'>
-                <div style='display:flex;align-items:center;gap:6px;min-width:0;flex:1;'>
+              <div class='td-mgr-row-head is-wrap-head'>
+                <div class='td-mgr-row-left' style='flex-wrap:wrap;row-gap:4px;'>
                   <input type='checkbox' class='td-checkbox' data-action='ai-toggle-accept' data-ridx='${rIdx}' ${r.accepted ? 'checked' : ''} />
                   ${tagHtml}
                   ${!r.isAiNew ? `<span class='td-idx-badge'>#${r.index + 1}</span>` : ''}
                   ${r.manualEdited ? "<span class='td-mode-tag multi'>已手动编辑</span>" : ''}
-                  <span class='td-mgr-row-title' title='${escapeHtml(r.newName)}'>${escapeHtml(r.newName)}</span>
+                  <span class='td-mgr-row-title is-wrap' style='flex:1 1 130px;' title='${escapeHtml(r.newName)}'>${escapeHtml(r.newName)}</span>
                 </div>
                 <span class='td-src-badge'>${r.newEnabled ? '开' : '关'}</span>
               </div>
-              ${r.newKeys !== r.oldKeys && r.newKeys ? `<div style='font-size:11.5px;color:var(--td-single);'>关键词：${escapeHtml(r.newKeys)}</div>` : ''}
-              <div style='display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;'>
-                ${r.note ? `<span style='font-size:11.5px;color:var(--td-text-muted);flex:1;'>AI 说明：${escapeHtml(r.note)}</span>` : '<span></span>'}
-                <div style='display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;'>
-                  <button type='button' class='td-btn sm primary' data-action='ai-edit-result-content' data-ridx='${rIdx}'>${ICONS.eye} 编辑内容</button>
-                  <button type='button' class='td-btn sm' data-action='ai-edit-result-attrs' data-ridx='${rIdx}'>${ICONS.edit} 属性</button>
-                  ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
-                </div>
+              ${r.newKeys !== r.oldKeys && r.newKeys ? `<div style='font-size:11.5px;color:var(--td-single);word-break:break-word;overflow-wrap:anywhere;'>关键词：${escapeHtml(r.newKeys)}</div>` : ''}
+              ${renderAiReviewNoteHtml(r, rIdx)}
+              <div class='td-mgr-row-actions'>
+                <button type='button' class='td-btn sm primary' data-action='ai-edit-result-content' data-ridx='${rIdx}'>${ICONS.eye} 编辑内容</button>
+                <button type='button' class='td-btn sm' data-action='ai-edit-result-attrs' data-ridx='${rIdx}'>${ICONS.edit} 属性</button>
+                ${!r.isAiNew ? `<button type='button' class='td-btn sm ${isAdd ? 'warn' : ''}' data-action='ai-toggle-write-mode' data-ridx='${rIdx}'>${isAdd ? '切换为覆盖原条目' : '新增条目写入'}</button>` : ''}
               </div>
               <div class='td-diff-box td-scroll'>${lines.map((l) => `<div class='td-diff-line ${l.type}'>${l.type === 'add' ? '+ ' : (l.type === 'del' ? '- ' : '  ')}${escapeHtml(l.text)}</div>`).join('')}</div>
             </div>`;
@@ -1116,14 +1300,22 @@ export const aiAssistantUiModule = {
     }
     if (action === 'ai-run' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       const ai = state.previewCtx;
-      if (ai.loading) return true;
+      if (ai.loading) {
+        if (Date.now() - (ai.startedAt || 0) < 350) return true;
+        stopAiEditJob(ai);
+        return true;
+      }
       ensureAiSetupDefaults(ai);
       const cfg = saveSharedAiApiFieldsFromPreview(previewLayerEl);
       ai.instruction = previewLayerEl?.querySelector('#td-ai-instruction')?.value ?? ai.instruction;
       persistAiEditDraft(ai);
 
-      if (ai.type === 'pmAiEdit' && state.modal?.type === 'presetDetail') {
-        const selectedItems = [];
+      const isPresetEdit = ai.type === 'pmAiEdit' && state.modal?.type === 'presetDetail';
+      const isWbEdit = ai.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail';
+      if (!isPresetEdit && !isWbEdit) return true;
+
+      const selectedItems = [];
+      if (isPresetEdit) {
         ['prompts', 'prompts_unused'].forEach((listName) => {
           (state.modal.data[listName] || []).forEach((p, idx) => {
             const uk = `${listName}::${idx}`;
@@ -1134,42 +1326,125 @@ export const aiAssistantUiModule = {
           const uk = `regex::${idx}`;
           if (ai.selectedKeys.has(uk)) selectedItems.push({ itemType: 'regex', uidKey: uk, listName: 'regex', index: idx, regex: r });
         });
-        ai.loading = true;
-        setAiRunBtnLoading(previewLayerEl, true);
-        resolveAllSelectedReferenceItems(ai)
-          .then((referenceItems) => runAiPresetEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }))
-          .then(({ results, summary, rawReply }) => {
-            ai.loading = false; ai.results = results; ai.summary = summary || ''; ai.rawReply = rawReply || ''; ai.step = 'review'; uiCtx.renderPreviewModal();
-            notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
-          }).catch((err) => {
-            ai.loading = false;
-            setAiRunBtnLoading(previewLayerEl, false);
-            logError('AI 编辑预设失败', err);
-            notify('error', err.message || String(err));
-          });
-        return true;
-      }
-
-      if (ai.type === 'wbAiEdit' && state.modal?.type === 'worldbookDetail') {
-        const selectedItems = [];
+      } else {
         (state.modal.entries || []).forEach((entry, idx) => {
           if (ai.selectedKeys.has(String(idx))) selectedItems.push({ index: idx, entry });
         });
-        ai.loading = true;
-        setAiRunBtnLoading(previewLayerEl, true);
-        resolveAllSelectedReferenceItems(ai)
-          .then((referenceItems) => runAiWorldbookEdit({ selectedItems, referenceItems, instruction: ai.instruction, apiCfg: cfg }))
-          .then(({ results, summary, rawReply }) => {
-            ai.loading = false; ai.results = results; ai.summary = summary || ''; ai.rawReply = rawReply || ''; ai.step = 'review'; uiCtx.renderPreviewModal();
-            notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
-          }).catch((err) => {
-            ai.loading = false;
-            setAiRunBtnLoading(previewLayerEl, false);
-            logError('AI 编辑世界书失败', err);
-            notify('error', err.message || String(err));
-          });
-        return true;
       }
+
+      const draftKey = ai.draftKey || getAiDraftKey(ai.type);
+      ai.draftKey = draftKey;
+      ai.lastError = null;
+      ai.loading = true;
+      ai.startedAt = Date.now();
+      ai._abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      ai._generationId = `td_ai_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+
+      const job = {
+        draftKey,
+        type: ai.type,
+        aiCtx: ai,
+        modalSnapshot: state.modal,
+        cancelled: false,
+        timerId: null,
+      };
+      getAiJobsMap().set(draftKey, job);
+      startAiJobTimer(job);
+      uiCtx.renderPreviewModal();
+
+      const runner = isPresetEdit ? runAiPresetEdit : runAiWorldbookEdit;
+      const errPrefix = isPresetEdit ? 'AI 编辑预设失败' : 'AI 编辑世界书失败';
+
+      resolveAllSelectedReferenceItems(ai)
+        .then((referenceItems) => {
+          if (job.cancelled) throw Object.assign(new Error('已手动终止 AI 生成'), { isAiAborted: true });
+          return runner({
+            selectedItems,
+            referenceItems,
+            instruction: ai.instruction,
+            apiCfg: cfg,
+            generationId: ai._generationId,
+            signal: ai._abortController?.signal,
+          });
+        })
+        .then(({ results, summary, rawReply }) => {
+          stopAiJobTimer(job);
+          if (job.cancelled) return;
+          ai.loading = false;
+          ai._abortController = null;
+          ai._generationId = '';
+          ai.lastError = null;
+          ai.results = results;
+          ai.summary = summary || '';
+          ai.rawReply = rawReply || '';
+          ai.step = 'review';
+          presentCompletedAiJob(job);
+          notify('success', `AI 处理完成，返回 ${results.length} 条结果`);
+        })
+        .catch((err) => {
+          stopAiJobTimer(job);
+          ai.loading = false;
+          ai._abortController = null;
+          ai._generationId = '';
+          if (job.cancelled || err?.isAiAborted) {
+            if (state.panelOpen && state.previewCtx === ai) uiCtx.renderPreviewModal();
+            return;
+          }
+          const d = new Date();
+          const pad = (n) => (n < 10 ? `0${n}` : String(n));
+          ai.lastError = {
+            message: err?.message || String(err),
+            rawReply: typeof err?.rawReply === 'string' ? err.rawReply : '',
+            time: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,
+          };
+          if (state.panelOpen && state.previewCtx === ai) uiCtx.renderPreviewModal();
+          logError(errPrefix, err);
+          notify('error', ai.lastError.message);
+        });
+      return true;
+    }
+    if (action === 'ai-view-error' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      if (!state.previewCtx.lastError) return true;
+      state.selectPopup = { type: 'aiErrorDetail' };
+      uiCtx.renderSelectPopup();
+      return true;
+    }
+    if (action === 'ai-clear-error' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      state.previewCtx.lastError = null;
+      uiCtx.renderPreviewModal();
+      return true;
+    }
+    if (action === 'ai-copy-error' && state.previewCtx?.lastError) {
+      copyToClipboard(formatAiErrorCopyText(state.previewCtx.lastError))
+        .then(() => notify('success', '报错信息与 AI 返回内容已复制'))
+        .catch(() => notify('error', '复制失败'));
+      return true;
+    }
+    if (action === 'ai-copy-err-msg' && state.previewCtx?.lastError) {
+      copyToClipboard(state.previewCtx.lastError.message || '')
+        .then(() => notify('success', '报错信息已复制'))
+        .catch(() => notify('error', '复制失败'));
+      return true;
+    }
+    if (action === 'ai-copy-err-raw' && state.previewCtx?.lastError) {
+      copyToClipboard(state.previewCtx.lastError.rawReply || '')
+        .then(() => notify('success', 'AI 返回内容已复制'))
+        .catch(() => notify('error', '复制失败'));
+      return true;
+    }
+    if (action === 'ai-toggle-note' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
+      const rIdx = Number(actionEl.getAttribute('data-ridx'));
+      const r = state.previewCtx.results?.[rIdx];
+      if (!r) return true;
+      r.noteExpanded = !r.noteExpanded;
+      const box = actionEl.closest('.td-ai-note-box');
+      if (box) {
+        box.classList.toggle('is-clamped', !r.noteExpanded);
+        actionEl.textContent = r.noteExpanded ? '收起说明 ▴' : '展开全部 ▾';
+      } else {
+        uiCtx.renderPreviewModal();
+      }
+      return true;
     }
     if (action === 'ai-open-notes' && (state.previewCtx?.type === 'pmAiEdit' || state.previewCtx?.type === 'wbAiEdit')) {
       state.selectPopup = { type: 'aiNotes' };
@@ -1411,6 +1686,7 @@ export const aiAssistantUiModule = {
           state.modal.tab = 'regex';
         }
         if (updated + added > 0) state.modal.dirty = true;
+        if (state.previewCtx.draftKey) getAiJobsMap().delete(state.previewCtx.draftKey);
         state.previewCtx = null; uiCtx.renderPreviewModal(); uiCtx.renderModal();
         notify('success', `已写回预设草稿（修改 ${updated} 项，新增 ${added} 项置于顶部，请点击「保存预设」持久化）`);
         return true;
@@ -1443,6 +1719,7 @@ export const aiAssistantUiModule = {
           state.modal.entries.unshift(...addedEntries);
         }
         if (updated + added > 0) state.modal.dirty = true;
+        if (state.previewCtx.draftKey) getAiJobsMap().delete(state.previewCtx.draftKey);
         state.previewCtx = null; uiCtx.renderPreviewModal(); uiCtx.renderModal();
         notify('success', `已写回世界书草稿（修改 ${updated} 项，新增 ${added} 项置于顶部，请点击「保存世界书」持久化）`);
         return true;
