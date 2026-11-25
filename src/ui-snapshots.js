@@ -1,5 +1,6 @@
 import { escapeHtml, formatTime, genId, cloneWorldbookEntries, hasTH, callTH, notify, logError } from './utils.js';
 import { state, saveStore, hasSnapshotPayload, getSnapshotPayloadSizeBytes, deleteSnapshotPayload, setSnapshotPayload } from './store.js';
+import { getPresetRegexes } from './preset-manager.js';
 import {
   captureCurrentSnapshotData, captureWorldbookSnapshotData,
   computeSnapshotDiff, computeDetailedSnapshotDiff, applySnapshot,
@@ -77,6 +78,7 @@ export function updateSnapshotList() {
               ${diffTag}
               <span>${kind === 'worldbook' ? '世界书' : '预设'}: ${escapeHtml(tName)}</span>
               <span>启用 ${s.stats ? s.stats.enabledCount : 0}/${s.stats ? s.stats.totalCount : 0}</span>
+              ${kind === 'preset' && isFull && typeof s.stats?.regexCount === 'number' ? `<span>正则 ${s.stats.regexCount}</span>` : ''}
               <span>${escapeHtml(formatTime(s.updatedAt || s.createdAt))}</span>
             </div>
           </div>
@@ -239,7 +241,7 @@ export const snapshotsUiModule = {
             </button>
             <button type='button' class='td-seg-card single-card ${mode === 'full' ? 'active' : ''}' data-action='qsnap-set-mode' data-mode='full' style='padding:8px 10px;'>
               <div class='td-seg-title' style='font-size:12.5px;'>${isWb ? '完整世界书快照' : '完整预设快照'}</div>
-              <div class='td-seg-desc'>${isWb ? '含全部条目正文与策略' : '含全部正文与生成参数'}</div>
+              <div class='td-seg-desc'>${isWb ? '含全部条目正文与策略' : '含全部正文、正则与生成参数'}</div>
             </button>
           </div>
         </div>
@@ -330,7 +332,7 @@ export const snapshotsUiModule = {
                   </button>
                   <button type='button' class='td-seg-card single-card ${mode === 'full' ? 'active' : ''}' data-action='set-snap-mode' data-mode='full' style='padding:7px 10px;'>
                     <div class='td-seg-title' style='font-size:12.5px;'>${kind === 'worldbook' ? '完整世界书快照' : '完整预设快照'}</div>
-                    <div class='td-seg-desc'>${kind === 'worldbook' ? '含全部条目正文、关键词与策略' : '含全部提示词正文与生成参数'}</div>
+                    <div class='td-seg-desc'>${kind === 'worldbook' ? '含全部条目正文、关键词与策略' : '含全部提示词、正则与生成参数'}</div>
                   </button>
                 </div>
                 <button class='td-btn primary' data-action='create-snapshot' style='width:100%;'>${ICONS.camera} 保存为新${kind === 'worldbook' ? '世界书' : '预设'}快照</button>
@@ -551,6 +553,9 @@ export const snapshotsUiModule = {
             const pName = m.presetName === 'in_use' ? (state.presetName || '当前预设') : m.presetName;
             const pData = m.data || {};
             const prompts = Array.isArray(pData.prompts) ? pData.prompts : [];
+            const regexes = mode === 'full'
+              ? (Array.isArray(m.regexes) ? m.regexes : getPresetRegexes(m.presetName || 'in_use', pData))
+              : [];
             let enabledCount = 0;
             const promptStates = prompts.map((p) => {
               const en = !!p.enabled;
@@ -563,6 +568,7 @@ export const snapshotsUiModule = {
                     settings: JSON.parse(JSON.stringify(pData.settings || {})),
                     prompts: JSON.parse(JSON.stringify(prompts)),
                     prompts_unused: JSON.parse(JSON.stringify(pData.prompts_unused || [])),
+                    regexes: JSON.parse(JSON.stringify(regexes)),
                   },
                 })
               : { fileName: '', bytes: 0 };
@@ -584,6 +590,7 @@ export const snapshotsUiModule = {
                 enabledCount,
                 totalCount: promptStates.length,
                 unusedCount: Array.isArray(pData.prompts_unused) ? pData.prompts_unused.length : 0,
+                ...(mode === 'full' ? { regexCount: regexes.length } : {}),
               },
               promptStates,
             };

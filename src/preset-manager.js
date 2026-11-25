@@ -323,6 +323,29 @@ export function buildDefaultPresetRegex(fields = {}) {
   };
 }
 
+export function tavernRegexToRawScript(r) {
+  const placement = [];
+  if (r?.source?.user_input) placement.push(1);
+  if (r?.source?.ai_output) placement.push(2);
+  if (r?.source?.slash_command) placement.push(3);
+  if (r?.source?.world_info) placement.push(5);
+  if (r?.source?.reasoning) placement.push(6);
+  return {
+    id: r?.id || genId(),
+    scriptName: r?.script_name || '',
+    findRegex: r?.find_regex || '',
+    replaceString: r?.replace_string || '',
+    trimStrings: Array.isArray(r?.trim_strings) ? r.trim_strings : [],
+    placement: placement.length > 0 ? placement : [2],
+    disabled: !r?.enabled,
+    markdownOnly: !(r?.destination?.prompt),
+    promptOnly: !(r?.destination?.display),
+    runOnEdit: !!r?.run_on_edit,
+    minDepth: r?.min_depth ?? null,
+    maxDepth: r?.max_depth ?? null,
+  };
+}
+
 export async function savePresetRegexes(presetName, regexList, syncInUse = true) {
   const nextList = JSON.parse(JSON.stringify(Array.isArray(regexList) ? regexList : []));
   if (hasTH('updateTavernRegexesWith')) {
@@ -336,31 +359,9 @@ export async function savePresetRegexes(presetName, regexList, syncInUse = true)
     return;
   }
   if (hasTH('updatePresetWith')) {
-    const toRaw = (r) => {
-      const placement = [];
-      if (r.source?.user_input) placement.push(1);
-      if (r.source?.ai_output) placement.push(2);
-      if (r.source?.slash_command) placement.push(3);
-      if (r.source?.world_info) placement.push(5);
-      if (r.source?.reasoning) placement.push(6);
-      return {
-        id: r.id || genId(),
-        scriptName: r.script_name || '',
-        findRegex: r.find_regex || '',
-        replaceString: r.replace_string || '',
-        trimStrings: Array.isArray(r.trim_strings) ? r.trim_strings : [],
-        placement: placement.length > 0 ? placement : [2],
-        disabled: !r.enabled,
-        markdownOnly: !(r.destination?.prompt),
-        promptOnly: !(r.destination?.display),
-        runOnEdit: !!r.run_on_edit,
-        minDepth: r.min_depth ?? null,
-        maxDepth: r.max_depth ?? null,
-      };
-    };
     const applyFn = (preset) => {
       preset.extensions = preset.extensions || {};
-      preset.extensions.regex_scripts = nextList.map(toRaw);
+      preset.extensions.regex_scripts = nextList.map(tavernRegexToRawScript);
       return preset;
     };
     await callTH('updatePresetWith', presetName, applyFn, { render: 'debounced' });

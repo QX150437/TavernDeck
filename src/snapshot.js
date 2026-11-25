@@ -9,7 +9,7 @@ import {
 } from './store.js';
 import { recordOpStep } from './dev-tools.js';
 import { refreshAllCatalogs, refreshWorldbookCatalog } from './catalog.js';
-import { PRESET_SETTING_FIELDS } from './preset-manager.js';
+import { PRESET_SETTING_FIELDS, getPresetRegexes, savePresetRegexes, tavernRegexToRawScript } from './preset-manager.js';
 
 const MAX_AUTO_SNAPSHOTS = 10;
 
@@ -27,7 +27,8 @@ async function pruneAutoSnapshots() {
 
 export async function captureCurrentSnapshotData(name, mode, opts = {}) {
   const targetPreset = opts.presetName || state.presetName || '当前预设';
-  const preset = callTH('getPreset', opts.sourceName || 'in_use');
+  const sourceName = opts.sourceName || 'in_use';
+  const preset = callTH('getPreset', sourceName);
   const prompts = preset && Array.isArray(preset.prompts) ? preset.prompts : [];
   let enabledCount = 0;
   const promptStates = prompts.map((p) => {
@@ -38,6 +39,7 @@ export async function captureCurrentSnapshotData(name, mode, opts = {}) {
 
   const snapId = opts.id || genId();
   const resolvedMode = mode === 'full' ? 'full' : 'state';
+  const regexes = resolvedMode === 'full' && preset ? getPresetRegexes(sourceName, preset) : [];
   let payloadBytes = 0;
   let payloadFile = '';
   if (resolvedMode === 'full' && preset) {
@@ -46,6 +48,7 @@ export async function captureCurrentSnapshotData(name, mode, opts = {}) {
         settings: JSON.parse(JSON.stringify(preset.settings || {})),
         prompts: JSON.parse(JSON.stringify(preset.prompts || [])),
         prompts_unused: JSON.parse(JSON.stringify(preset.prompts_unused || [])),
+        regexes: JSON.parse(JSON.stringify(regexes)),
       },
     }, { prevFileName: opts.prevFileName });
     payloadBytes = saved.bytes;
@@ -72,6 +75,7 @@ export async function captureCurrentSnapshotData(name, mode, opts = {}) {
       enabledCount,
       totalCount: promptStates.length,
       unusedCount: Array.isArray(preset?.prompts_unused) ? preset.prompts_unused.length : 0,
+      ...(resolvedMode === 'full' ? { regexCount: regexes.length } : {}),
     },
     promptStates,
   };
@@ -489,6 +493,98 @@ export async function computeDetailedSnapshotDiff(targetSnap, baseSnap = null) {
     });
   }
 
+  const targetRegexes = Array.isArray(targetPreset?.regexes) ? targetPreset.regexes : null;
+  const baseRegexes = isCompare
+    ? (Array.isArray(basePreset?.regexes) ? basePreset.regexes : null)
+    : getPresetRegexes('in_use', basePreset);
+
+  if (Array.isArray(targetRegexes) && Array.isArray(baseRegexes)) {
+    const baseRegById = new Map();
+    const baseRegByName = new Map();
+    baseRegexes.forEach((r) => {
+      if (!r) return;
+      baseRegById.set(String(r.id), r);
+      if (r.script_name && !baseRegByName.has(r.script_name)) baseRegByName.set(r.script_name, r);
+    });
+    const matchedBaseRegIds = new Set();
+
+    targetRegexes.forEach((tr, idx) => {
+      if (!tr) return;
+      const matched = baseRegById.get(String(tr.id)) || (tr.script_name ? baseRegByName.get(tr.script_name) : null);
+      const regLabel = `[正则] ${tr.script_name || tr.id}`;
+      if (!matched) {
+        result.structDiffs.push({
+          diffId: `struct:reg:snap:${tr.id}:${idx}`,
+          scope: 'regex',
+          change: 'in_snap_only',
+          id: String(tr.id),
+          name: regLabel,
+          restorable: true,
+          snapRegex: JSON.parse(JSON.stringify(tr)),
+        });
+        return;
+      }
+
+      matchedBaseRegIds.add(String(matched.id));
+      if (!!matched.enabled !== !!tr.enabled) {
+        result.switchDiffs.push({
+          diffId: `sw:reg:${tr.id}`,
+          scope: 'regex',
+          id: String(tr.id),
+          baseId: String(matched.id),
+          name: regLabel,
+          from: !!matched.enabled,
+          to: !!tr.enabled,
+          restorable: true,
+        });
+      }
+
+      const metaChanges = [];
+      if ((matched.script_name || '') !== (tr.script_name || '')) {
+        metaChanges.push(`名称: ${matched.script_name} → ${tr.script_name}`);
+      }
+      if (
+        JSON.stringify(matched.source || null) !== JSON.stringify(tr.source || null)
+        || JSON.stringify(matched.destination || null) !== JSON.stringify(tr.destination || null)
+        || !!matched.run_on_edit !== !!tr.run_on_edit
+        || (matched.min_depth ?? null) !== (tr.min_depth ?? null)
+        || (matched.max_depth ?? null) !== (tr.max_depth ?? null)
+        || JSON.stringify(matched.trim_strings || []) !== JSON.stringify(tr.trim_strings || [])
+      ) {
+        metaChanges.push('作用范围/深度/修剪属性不同');
+      }
+      const curText = `查找: ${matched.find_regex || ''}\n---\n${matched.replace_string || ''}`;
+      const snapText = `查找: ${tr.find_regex || ''}\n---\n${tr.replace_string || ''}`;
+      const contentChanged = curText !== snapText;
+      if (contentChanged || metaChanges.length > 0) {
+        result.contentDiffs.push({
+          diffId: `ct:reg:${tr.id}`,
+          scope: 'regex',
+          id: String(tr.id),
+          baseId: String(matched.id),
+          name: regLabel,
+          contentChanged,
+          metaChanges,
+          lineDiffs: contentChanged ? computeLineDiff(curText, snapText) : [],
+          snapRegex: JSON.parse(JSON.stringify(tr)),
+          restorable: true,
+        });
+      }
+    });
+
+    baseRegexes.forEach((br, idx) => {
+      if (!br || matchedBaseRegIds.has(String(br.id))) return;
+      result.structDiffs.push({
+        diffId: `struct:reg:cur:${br.id}:${idx}`,
+        scope: 'regex',
+        change: 'in_cur_only',
+        id: String(br.id),
+        name: `[正则] ${br.script_name || br.id}`,
+        restorable: true,
+      });
+    });
+  }
+
   result.totalCount = result.switchDiffs.length
     + result.contentDiffs.length
     + result.settingDiffs.length
@@ -552,6 +648,9 @@ export async function applySnapshot(snap, restoreFull, opts = {}) {
         preset.prompts_unused = JSON.parse(JSON.stringify(fp.prompts_unused || preset.prompts_unused || []));
         return preset;
       }, { render: 'immediate' });
+      if (Array.isArray(fp.regexes)) {
+        await savePresetRegexes('in_use', fp.regexes, false);
+      }
     } else {
       const stateById = new Map();
       const stateByName = new Map();
@@ -643,24 +742,34 @@ export async function applySelectiveSnapshot(snap, diffObj, selectedDiffIds) {
 
     const promptSwitchMap = new Map();
     const promptContentMap = new Map();
+    const regexSwitchMap = new Map();
+    const regexContentMap = new Map();
 
     diffObj.switchDiffs.forEach((d) => {
       if (!selectedDiffIds.has(d.diffId)) return;
       if (d.scope === 'prompt') promptSwitchMap.set(String(d.baseId ?? d.id), d.to);
+      else if (d.scope === 'regex') regexSwitchMap.set(String(d.baseId ?? d.id), d.to);
     });
     diffObj.contentDiffs.forEach((d) => {
-      if (selectedDiffIds.has(d.diffId) && d.scope === 'prompt') {
-        promptContentMap.set(String(d.baseId ?? d.id), d.snapPrompt);
-      }
+      if (!selectedDiffIds.has(d.diffId)) return;
+      if (d.scope === 'prompt') promptContentMap.set(String(d.baseId ?? d.id), d.snapPrompt);
+      else if (d.scope === 'regex') regexContentMap.set(String(d.baseId ?? d.id), d.snapRegex);
     });
 
     const settingUpdates = diffObj.settingDiffs.filter((d) => selectedDiffIds.has(d.diffId));
     const removePromptIds = new Set();
     const addPrompts = [];
+    const removeRegexIds = new Set();
+    const addRegexes = [];
     diffObj.structDiffs.forEach((d) => {
       if (!selectedDiffIds.has(d.diffId)) return;
-      if (d.change === 'in_cur_only') removePromptIds.add(String(d.id));
-      else if (d.change === 'in_snap_only' && d.snapPrompt) addPrompts.push(JSON.parse(JSON.stringify(d.snapPrompt)));
+      if (d.scope === 'regex') {
+        if (d.change === 'in_cur_only') removeRegexIds.add(String(d.id));
+        else if (d.change === 'in_snap_only' && d.snapRegex) addRegexes.push(JSON.parse(JSON.stringify(d.snapRegex)));
+      } else {
+        if (d.change === 'in_cur_only') removePromptIds.add(String(d.id));
+        else if (d.change === 'in_snap_only' && d.snapPrompt) addPrompts.push(JSON.parse(JSON.stringify(d.snapPrompt)));
+      }
     });
 
     if (
@@ -697,6 +806,33 @@ export async function applySelectiveSnapshot(snap, diffObj, selectedDiffIds) {
         preset.prompts = nextPrompts;
         return preset;
       }, { render: 'immediate' });
+    }
+
+    if (
+      regexSwitchMap.size > 0
+      || regexContentMap.size > 0
+      || removeRegexIds.size > 0
+      || addRegexes.length > 0
+    ) {
+      const curRegexes = getPresetRegexes('in_use');
+      const nextRegexes = [];
+      curRegexes.forEach((r) => {
+        const rid = String(r.id);
+        if (removeRegexIds.has(rid)) return;
+        let next = JSON.parse(JSON.stringify(r));
+        if (regexContentMap.has(rid)) {
+          const prevEn = !!next.enabled;
+          next = JSON.parse(JSON.stringify(regexContentMap.get(rid)));
+          next.id = rid;
+          next.enabled = prevEn;
+        }
+        if (regexSwitchMap.has(rid)) {
+          next.enabled = regexSwitchMap.get(rid);
+        }
+        nextRegexes.push(next);
+      });
+      addRegexes.forEach((ar) => nextRegexes.push(JSON.parse(JSON.stringify(ar))));
+      await savePresetRegexes('in_use', nextRegexes, false);
     }
 
     state.isBusy = false;
@@ -738,6 +874,9 @@ export async function saveSnapshotAsNewTarget(snap, newName) {
     prompts_unused: JSON.parse(JSON.stringify(fp.prompts_unused || [])),
     extensions: {},
   });
+  if (Array.isArray(fp.regexes) && fp.regexes.length > 0) {
+    await savePresetRegexes(clean, fp.regexes, false);
+  }
   await refreshAllCatalogs();
   notify('success', `已将快照另存为新预设「${clean}」`);
   return clean;
@@ -754,11 +893,15 @@ export async function exportSingleSnapshotAsStandardJson(snap) {
       return;
     }
     if (snap.kind !== 'worldbook' && payload.fullPresetData) {
+      const fp = payload.fullPresetData;
+      const extensions = Array.isArray(fp.regexes) && fp.regexes.length > 0
+        ? { regex_scripts: fp.regexes.map(tavernRegexToRawScript) }
+        : {};
       downloadJsonFile({
-        settings: payload.fullPresetData.settings || {},
-        prompts: payload.fullPresetData.prompts || [],
-        prompts_unused: payload.fullPresetData.prompts_unused || [],
-        extensions: {},
+        settings: fp.settings || {},
+        prompts: fp.prompts || [],
+        prompts_unused: fp.prompts_unused || [],
+        extensions,
       }, `${safeName}-预设.json`);
       notify('success', `已导出标准预设文件「${safeName}」`);
       return;
