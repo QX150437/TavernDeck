@@ -353,6 +353,15 @@ export const snapshotsUiModule = {
         </div>`;
       updateSnapshotList();
       uiCtx.syncOverlayBounds();
+      const pendingTop = Number(m._pendingScrollTop) || 0;
+      m._pendingScrollTop = 0;
+      if (pendingTop > 0) {
+        const box = modalLayerEl.querySelector("[data-role='snapshot-list']");
+        if (box) {
+          box.scrollTop = pendingTop;
+          requestAnimationFrame(() => { box.scrollTop = pendingTop; });
+        }
+      }
       return true;
     }
 
@@ -485,7 +494,7 @@ export const snapshotsUiModule = {
               ${diff.contentDiffs.length > 0 ? `<button type='button' class='td-chip' data-action='snap-diff-select' data-mode='content'>仅选正文</button>` : ''}
               <button type='button' class='td-chip' data-action='snap-diff-select' data-mode='none'>全不选</button>
             </div>` : ''}
-          <div style='display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;'>${bodyDiffsHtml}</div>
+          <div data-role='snap-diff-scroll' style='display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;'>${bodyDiffsHtml}</div>
         </div>
         <div class='td-modal-foot'>
           <button class='td-btn' data-action='close-preview'>关闭</button>
@@ -884,6 +893,9 @@ export const snapshotsUiModule = {
     if (action === 'rename-snapshot') {
       const snap = (state.store.snapshots || []).find((s) => s.id === actionEl.getAttribute('data-snap-id'));
       if (snap) {
+        if (state.modal?.type === 'snapshots') {
+          state.modal._pendingScrollTop = modalLayerEl?.querySelector("[data-role='snapshot-list']")?.scrollTop || 0;
+        }
         state.modal = { type: 'snapshotRename', snapId: snap.id, name: snap.name, note: snap.note || '', prevModal: state.modal };
         uiCtx.renderModal();
       }

@@ -384,6 +384,7 @@ function renderPreservingFocus(targetLayer, renderFn) {
   }
   const prevBodyTop = targetLayer?.querySelector('.td-modal-body')?.scrollTop || 0;
   const prevListTop = targetLayer?.querySelector('.td-picker-list')?.scrollTop || 0;
+  const prevSnapDiffTop = targetLayer?.querySelector("[data-role='snap-diff-scroll']")?.scrollTop || 0;
   const prevDualSrcTop = targetLayer?.querySelector("[data-role='dual-list-source']")?.scrollTop || 0;
   const prevDualBaseTop = targetLayer?.querySelector("[data-role='dual-list-base']")?.scrollTop || 0;
 
@@ -398,6 +399,10 @@ function renderPreservingFocus(targetLayer, renderFn) {
       if (prevListTop > 0) {
         const nextList = targetLayer.querySelector('.td-picker-list');
         if (nextList) nextList.scrollTop = prevListTop;
+      }
+      if (prevSnapDiffTop > 0) {
+        const nextSnapDiff = targetLayer.querySelector("[data-role='snap-diff-scroll']");
+        if (nextSnapDiff) nextSnapDiff.scrollTop = prevSnapDiffTop;
       }
       const nextDualSrc = targetLayer.querySelector("[data-role='dual-list-source']");
       if (nextDualSrc && prevDualSrcTop > 0) {
@@ -568,13 +573,13 @@ function handleRootClick(e) {
       }
       if (state.previewCtx?.returnPreviewCtx) {
         state.previewCtx = state.previewCtx.returnPreviewCtx;
-        renderPreviewModal();
+        renderPreservingFocus(previewLayerEl, renderPreviewModal);
         return;
       }
       if (state.previewCtx?.returnPreviewKey) {
         state.previewKey = state.previewCtx.returnPreviewKey;
         state.previewCtx = null;
-        renderPreviewModal();
+        renderPreservingFocus(previewLayerEl, renderPreviewModal);
         return;
       }
       const prevType = state.previewCtx?.type;

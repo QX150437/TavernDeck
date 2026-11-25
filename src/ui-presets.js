@@ -128,6 +128,15 @@ export const presetsUiModule = {
           <div class='td-modal-foot'><button class='td-btn primary' data-action='close-modal'>完成</button></div>
         </div>`;
       uiCtx.syncOverlayBounds();
+      const pendingTop = Number(m._pendingScrollTop) || 0;
+      m._pendingScrollTop = 0;
+      if (pendingTop > 0) {
+        const box = modalLayerEl.querySelector('.td-picker-list');
+        if (box) {
+          box.scrollTop = pendingTop;
+          requestAnimationFrame(() => { box.scrollTop = pendingTop; });
+        }
+      }
       return true;
     }
 
@@ -326,6 +335,20 @@ export const presetsUiModule = {
       editHistory.index = 0;
       updatePreviewHistoryButtons();
       uiCtx.syncOverlayBounds();
+      const pendingBodyTop = Number(state.previewCtx._pendingBodyTop) || 0;
+      const pendingTextTop = Number(state.previewCtx._pendingTextTop) || 0;
+      state.previewCtx._pendingBodyTop = 0;
+      state.previewCtx._pendingTextTop = 0;
+      if (pendingBodyTop > 0 || pendingTextTop > 0) {
+        const bodyEl = previewLayerEl.querySelector('.td-modal-body');
+        const textEl = previewLayerEl.querySelector('#td-edit-replace-string');
+        if (bodyEl && pendingBodyTop > 0) bodyEl.scrollTop = pendingBodyTop;
+        if (textEl && pendingTextTop > 0) textEl.scrollTop = pendingTextTop;
+        requestAnimationFrame(() => {
+          if (bodyEl && pendingBodyTop > 0) bodyEl.scrollTop = pendingBodyTop;
+          if (textEl && pendingTextTop > 0) textEl.scrollTop = pendingTextTop;
+        });
+      }
       return true;
     }
 
@@ -688,6 +711,12 @@ export const presetsUiModule = {
     }
     if (action === 'pm-open-detail') {
       const name = actionEl.getAttribute('data-name');
+      const prevManagerState = state.modal?.type === 'presetManager'
+        ? {
+            query: state.modal.query || '',
+            scrollTop: modalLayerEl?.querySelector('.td-picker-list')?.scrollTop || 0,
+          }
+        : null;
       try {
         const detailData = getPresetDetail(name);
         const regexes = getPresetRegexes(name, detailData);
@@ -704,6 +733,7 @@ export const presetsUiModule = {
           toolsOpen: false,
           batchMode: false,
           selectedIdx: new Set(),
+          prevManagerState,
         };
         uiCtx.renderModal();
       }
@@ -724,8 +754,14 @@ export const presetsUiModule = {
       return true;
     }
     if (action === 'pm-back-list' && state.modal?.type === 'presetDetail') {
+      const prev = state.modal.prevManagerState;
       confirmDiscardDirtyModal(() => {
-        state.modal = { type: 'presetManager', query: '', toolsOpen: false };
+        state.modal = {
+          type: 'presetManager',
+          query: prev?.query || '',
+          toolsOpen: false,
+          _pendingScrollTop: prev?.scrollTop || 0,
+        };
         uiCtx.renderModal();
       });
       return true;
@@ -876,6 +912,8 @@ export const presetsUiModule = {
     }
     if (action === 'pm-test-cur-regex' && state.previewCtx?.type === 'pmRegexContentEdit' && state.modal?.type === 'presetDetail') {
       const curCtx = state.previewCtx;
+      curCtx._pendingBodyTop = previewLayerEl?.querySelector('.td-modal-body')?.scrollTop || 0;
+      curCtx._pendingTextTop = previewLayerEl?.querySelector('#td-edit-replace-string')?.scrollTop || 0;
       const snap = readPreviewSnapshot();
       curCtx.regex.script_name = (snap?.name || '').trim() || curCtx.regex.script_name;
       curCtx.regex.find_regex = snap?.find_regex ?? '';

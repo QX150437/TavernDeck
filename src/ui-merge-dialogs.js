@@ -349,6 +349,15 @@ export const mergeDialogsUiModule = {
           </div>
         </div>`;
       uiCtx.syncOverlayBounds();
+      const pendingTop = Number(pc._pendingScrollTop) || 0;
+      pc._pendingScrollTop = 0;
+      if (pendingTop > 0) {
+        const box = previewLayerEl.querySelector('.td-picker-list');
+        if (box) {
+          box.scrollTop = pendingTop;
+          requestAnimationFrame(() => { box.scrollTop = pendingTop; });
+        }
+      }
       return true;
     }
 
@@ -500,7 +509,12 @@ export const mergeDialogsUiModule = {
     if (action === 'merge-diff-back' && state.previewCtx?.type === 'mergeEntryDiff') {
       const pc = state.previewCtx;
       if (pc.returnToGlobalDiff) {
-        state.previewCtx = { type: 'mergeGlobalDiff', kind: session.kind, filter: pc.prevFilter || 'diff' };
+        state.previewCtx = {
+          type: 'mergeGlobalDiff',
+          kind: session.kind,
+          filter: pc.prevFilter || 'diff',
+          _pendingScrollTop: pc.prevScrollTop || 0,
+        };
       } else {
         state.previewCtx = null;
       }
@@ -651,6 +665,7 @@ export const mergeDialogsUiModule = {
       const sk = actionEl.getAttribute('data-skey') || null;
       const bk = actionEl.getAttribute('data-bkey') || null;
       const prevFilter = state.previewCtx.filter || 'diff';
+      const prevScrollTop = previewLayerEl?.querySelector('.td-picker-list')?.scrollTop || 0;
       state.previewCtx = {
         type: 'mergeEntryDiff',
         kind: session.kind,
@@ -658,6 +673,7 @@ export const mergeDialogsUiModule = {
         baseKey: bk,
         returnToGlobalDiff: true,
         prevFilter,
+        prevScrollTop,
       };
       updateDualMergeBody(session.kind);
       uiCtx.renderPreviewModal();

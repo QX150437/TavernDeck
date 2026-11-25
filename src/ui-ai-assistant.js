@@ -1007,6 +1007,15 @@ export const aiAssistantUiModule = {
             <div class='td-modal-foot'><button class='td-btn' data-action='ai-back-setup'>返回修改需求</button><button class='td-btn primary' data-action='ai-apply-results'>${ICONS.check} 写回（改 ${modCnt} · 新增 ${addCnt}）</button></div>
           </div>`;
         uiCtx.syncOverlayBounds();
+        const pendingTop = Number(ai._pendingScrollTop) || 0;
+        ai._pendingScrollTop = 0;
+        if (pendingTop > 0) {
+          const box = previewLayerEl.querySelector('.td-picker-list');
+          if (box) {
+            box.scrollTop = pendingTop;
+            requestAnimationFrame(() => { box.scrollTop = pendingTop; });
+          }
+        }
         return true;
       }
 
@@ -1491,6 +1500,7 @@ export const aiAssistantUiModule = {
       const r = state.previewCtx.results?.[rIdx];
       if (!r || r.itemType !== 'regex') return true;
       const ai = state.previewCtx;
+      ai._pendingScrollTop = previewLayerEl?.querySelector('.td-picker-list')?.scrollTop || 0;
       openRegexTestPreview({
         title: r.newName || 'AI 正则结果',
         findRegex: r.newFindRegex || '',

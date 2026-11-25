@@ -131,6 +131,15 @@ export const worldbooksUiModule = {
           <div class='td-modal-foot'><button class='td-btn primary' data-action='close-modal'>完成</button></div>
         </div>`;
       uiCtx.syncOverlayBounds();
+      const pendingTop = Number(m._pendingScrollTop) || 0;
+      m._pendingScrollTop = 0;
+      if (pendingTop > 0) {
+        const box = modalLayerEl.querySelector('.td-picker-list');
+        if (box) {
+          box.scrollTop = pendingTop;
+          requestAnimationFrame(() => { box.scrollTop = pendingTop; });
+        }
+      }
       return true;
     }
 
@@ -352,9 +361,16 @@ export const worldbooksUiModule = {
     }
     if (action === 'wbm-open-detail') {
       const name = actionEl.getAttribute('data-name');
+      const prevManagerState = state.modal?.type === 'worldbookManager'
+        ? {
+            filter: state.modal.filter || 'all',
+            query: state.modal.query || '',
+            scrollTop: modalLayerEl?.querySelector('.td-picker-list')?.scrollTop || 0,
+          }
+        : null;
       callTH('getWorldbook', name).then((entries) => {
         const clonedEntries = (entries || []).map(cloneWorldbookEntry);
-        state.modal = { type: 'worldbookDetail', bookName: name, entries: clonedEntries, savedSnapshot: serializeWbEntries(clonedEntries), query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set() };
+        state.modal = { type: 'worldbookDetail', bookName: name, entries: clonedEntries, savedSnapshot: serializeWbEntries(clonedEntries), query: '', dirty: false, toolsOpen: false, batchMode: false, selectedIdx: new Set(), prevManagerState };
         uiCtx.renderModal();
       }).catch((err) => { logError(`读取世界书「${name}」失败`, err); notify('error', err.message || String(err)); });
       return true;
@@ -413,8 +429,15 @@ export const worldbooksUiModule = {
       return true;
     }
     if (action === 'wbd-back-list' && state.modal?.type === 'worldbookDetail') {
+      const prev = state.modal.prevManagerState;
       confirmDiscardDirtyModal(() => {
-        state.modal = { type: 'worldbookManager', filter: 'all', query: '', toolsOpen: false };
+        state.modal = {
+          type: 'worldbookManager',
+          filter: prev?.filter || 'all',
+          query: prev?.query || '',
+          toolsOpen: false,
+          _pendingScrollTop: prev?.scrollTop || 0,
+        };
         uiCtx.renderModal();
       });
       return true;

@@ -810,15 +810,16 @@ export const presetVarsUiModule = {
           <button type='button' class='td-btn primary' data-action='close-preview'>完成</button>
         </div>
       </div>`;
-    if (vc._pendingScrollTop > 0) {
+    uiCtx.syncOverlayBounds();
+    const pendingTop = Number(vc._pendingScrollTop) || 0;
+    vc._pendingScrollTop = 0;
+    if (pendingTop > 0) {
       const box = previewLayerEl.querySelector('.td-picker-list');
       if (box) {
-        box.scrollTop = vc._pendingScrollTop;
-        requestAnimationFrame(() => { box.scrollTop = vc._pendingScrollTop; });
+        box.scrollTop = pendingTop;
+        requestAnimationFrame(() => { box.scrollTop = pendingTop; });
       }
-      vc._pendingScrollTop = 0;
     }
-    uiCtx.syncOverlayBounds();
     return true;
   },
 
