@@ -38,10 +38,11 @@
 5. **同步更新索引铁律**
    - 每次新增、删除、拆分模块，或新增 `modal.type` / `previewCtx.type` / `data-action` 前缀时，**必须在同一次修改中同步更新本文档下方的「模块索引表」**，保证新开对话时 AI 可以“先看索引、按需读取”。
 
-6. **增量补丁输出格式规范（严格校验语法）**
+6. **增量补丁输出格式规范（严格校验语法与可复制性）**
    - **修改已有文件**：使用指令 `FILE:`（后接路径），配合成对的 `<<<<<<< SEARCH`、`=======`、`>>>>>>> REPLACE` 块；严禁对不存在的文件使用 `FILE:`。
    - **新建文件**：必须使用指令 `CREATE:`（后接路径），正文以 `<<<<<<< CONTENT` 起始、以 `>>>>>>> END` 结束（不可写成 `>>>>>>> CONTENT` 或省略标记）。
    - **整文件重写 / 删除**：分别使用指令 `REWRITE:` / `DELETE:`，避免使用空 `SEARCH` 块代替新建或删除。
+   - **一键复制与分批输出**：输出的所有代码块及增量补丁均必须包裹在标准 Markdown 围栏代码块（三个反引号包裹；若补丁正文包含三个反引号，外层改用四个反引号包裹）中以支持一键复制；若代码或修改量较多，应按功能模块或文件拆分为多个批次输出，方便逐批复制导入。
 
 7. **版本号与变更日志自动管理规则（SemVer 同步铁律）**
    - **默认自增规则**：遵循 `MAJOR.MINOR.PATCH` 十进制进位。当开发者提需求且**未明确指定目标版本号**时，凡涉及代码功能新增、交互优化或 Bug 修复，完成修改后**自动将最小版本号 `PATCH + 1`**（例如 `1.2.5` → `1.2.6`）；**当末尾 `PATCH` 达到 `10` 时向前进 1**（即 `MINOR + 1`、`PATCH` 归 `0`，例如 `1.2.9` → `1.3.0`；同理当 `MINOR` 达到 `10` 时向 `MAJOR` 进 1，例如 `1.9.9` → `2.0.0`）；若属跨模块大型架构升级，可在答复中建议开发者确认是否手动提升 `MINOR`。
@@ -64,7 +65,7 @@
 | `style.css` | ~680 | 全部组件样式与 5 套面板主题、6 套通知主题变量 | — | `#tavern-deck-root` 及 `.td-*` 样式体系 |
 | `src/utils.js` | ~405 | 全局常量、日志工具、ST/TH 桥接、Toast 渲染器、LCS 行/词 Diff、世界书克隆与关键词解析 | `APP_NAME`, `hasTH`, `callTH`, `getST`, `notify`, `showToastElement`, `computeLineDiff`, `computeSideLineDiffs`, `cloneWorldbookEntry`, `formatKeysInput`, `parseKeysInput` | — |
 | `src/dev-tools.js` | ~200 | 劫持 `console` 与全局错误捕获、记录近期操作步骤与堆栈、维护 200 条内存日志缓冲与持久化钩子 | `initDevErrorCapture`, `setDevUiContext`, `setDevLogPersistHandler`, `recordOpStep`, `getDevLogs`, `clearDevLogs`, `formatLogsReport`, `formatDayLogsReport`, `formatSingleLogReport` | — |
-| `src/store.js` | ~760 | 运行时 `state`、全局变量存取、方案/分组 CRUD、快照载荷与按天日志后端存储管理、缝合草稿持久化、存储诊断与清理 | `state`, `loadStore`, `saveStore`, `getActiveScheme`, `performDrop`, `getSnapshotPayload`, `saveMergeDraft`, `getStorageDiagnostics`, `cleanAutoBackupSnapshots`, `enqueueBackendLogPersist`, `flushBackendLogQueue`, `getBackendLogDayDetail`, `deleteBackendLogDay`, `clearAllBackendLogDays` | — |
+| `src/store.js` | ~800 | 运行时 `state`、全局变量存取、方案/分组 CRUD、快照载荷与按天日志后端存储管理、缝合草稿持久化、存储诊断与清理 | `state`, `loadStore`, `saveStore`, `getActiveScheme`, `performDrop`, `getSnapshotPayload`, `saveMergeDraft`, `getStorageDiagnostics`, `cleanAutoBackupSnapshots`, `deleteAiInstructionTemplate`, `deleteQuickTemplate`, `enqueueBackendLogPersist`, `flushBackendLogQueue`, `getBackendLogDayDetail`, `deleteBackendLogDay`, `clearAllBackendLogDays` | — |
 | `src/native-ui.js` | ~261 | 折叠酒馆原生预设设定区、顶部导航栏图标注入、接管酒馆原生 `toastr` 通知 | `syncNativePresetCollapse`, `syncTopBarButton`, `getTopBarPositionOptions`, `syncNativeToastHook` | `#td-st-preset-collapse-bar`, `#tavern-deck-top-bar-btn` |
 
 ### 2. 核心业务逻辑层（纯数据与宿主 API 交互）
@@ -102,7 +103,7 @@
 | `src/ui-ai-assistant.js` | ~820 | 共享可折叠 API/模型配置框、AI 批量编辑预设（含预设正则）与世界书的勾选与指令持久化、请求读秒/手动停止/后台返回弹出、报错详情查看复制、Diff 检视、说明指导查看、分离式内容/属性弹窗编辑（撤销/重做）与写回 | `aiAssistantUiModule`, `createAiEditPreviewCtx`, `persistAiEditDraft`, `flushAiEditDraft`, `renderCollapsibleAiApiBoxHtml`, `saveSharedAiApiFieldsFromPreview`, `syncAiPreviewDraftInputs`, `setAiRunBtnLoading` | `previewCtx.type`: `pmAiEdit`, `wbAiEdit`<br>`selectPopup.type`: `aiResultContentEdit`, `aiResultAttrEdit`, `aiNotes`, `aiErrorDetail`<br>`data-action`: `ai-*` |
 | `src/ui-mvu.js` | ~585 | MVU 楼层变量查看器（全部/加精重点关注）、楼层步进回溯、单变量类型编辑、JSON 编辑、命令补全预演及 AI 推算更新 | `mvuUiModule` | `modal.type`: `mvuViewer`<br>`previewCtx.type`: `mvuValEdit`, `mvuJsonEdit`, `mvuCmdEdit`, `mvuAiUpdate`<br>`data-action`: `open-mvu-viewer`, `mvu-*` |
 | `src/ui-settings.js` | ~565 | 控制台设置页、全类型二级选择弹窗（主题/颜色/顶部栏位置/移动目标/AI条目预览）、悬浮球图片裁剪器 | `settingsUiModule`, `renderSelectPopup` | `modal.type`: `settings`<br>`selectPopup.type`: `theme`, `orbStyle`, `groupTextColor`, `entryTextColor`, `topBarPosition`, `tdToastTheme`, `nativeToastTheme`, `nativeToastPosition`, `movePromptTarget`, `moveWbTarget`, `aiItemPreview`（另由 `ui-ai-assistant` 接管 `aiResultEdit`）<br>`previewCtx.type`: `orbCrop`<br>`data-action`: `open-settings`, `open-select-popup`, `close-select-popup`, `select-popup-*`, `move-by-number`, `trigger-orb-upload`, `clear-orb-image`, `orb-crop-*`, `toggle-*`, `apply-panel-*`, `preview-*-toast`, `reset-layout`, `clear-all-data` |
-| `src/ui-tools.js` | ~470 | 存储空间占用诊断与按天后端日志查看清理、运行日志面板（步骤/堆栈展开、过滤/单条或批量复制/导出）、配置导入导出中心 | `toolsUiModule` | `modal.type`: `storageManager`, `logs`, `ioCenter`<br>`previewCtx.type`: `backendLogDay`<br>`data-action`: `open-storage-manager`, `storage-*`, `open-logs`, `logs-*`, `open-io-center`, `toggle-io-*`, `export-*`, `trigger-io-file`, `parse-io-text`, `set-io-imp-mode`, `confirm-io-import` |
+| `src/ui-tools.js` | ~565 | 存储空间占用诊断与按天后端日志查看清理、运行日志面板（步骤/堆栈展开、过滤/单条或批量复制/导出）、配置导入导出中心 | `toolsUiModule` | `modal.type`: `storageManager`, `logs`, `ioCenter`<br>`previewCtx.type`: `backendLogDay`<br>`data-action`: `open-storage-manager`, `storage-*`, `open-logs`, `logs-*`, `open-io-center`, `toggle-io-*`, `export-*`, `trigger-io-file`, `parse-io-text`, `set-io-imp-mode`, `confirm-io-import` |
 | `src/ui-app.js` | ~415 | UI 根容器挂载/卸载、扩展菜单与设置面板注入、主面板 Header/抽屉壳渲染、`renderPreservingFocus`、全局事件与 `UI_MODULES` 注册表总控分发 | `mountUI`, `cleanupDOM`, `renderOrb`, `renderMain`, `renderMainBodyOnly`, `setPanelOpen`, `syncTopBarUI`, `syncExtensionButton`, `mountExtensionSettingsPanel`, `applyThemeAttributes`, `syncEntryStatesUI` | `UI_MODULES` 总控注册表；顶层基础动作：`close-panel`, `toggle-tools-drawer`, `toggle-control-bar`, `toggle-fullscreen`, `refresh`, `close-modal`, `close-preview`, `preview-undo`, `preview-redo`, `confirm-*`, `show-full-title` |
 
 ---

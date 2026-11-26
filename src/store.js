@@ -1218,9 +1218,21 @@ export function getStorageDiagnostics(devLogCount = 0) {
 
   const aiTplsArr = Array.isArray(extObj.aiInstructionTemplates) ? extObj.aiInstructionTemplates : [];
   const aiTplsBytes = getUtf8ByteLength(JSON.stringify(aiTplsArr));
+  const aiTplsItems = aiTplsArr.map((t, idx) => ({
+    id: String(t?.id || `idx:${idx}`),
+    name: String(t?.name || `模板 #${idx + 1}`),
+    contentPreview: String(t?.content || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+    bytes: getUtf8ByteLength(JSON.stringify(t || {})),
+  })).sort((a, b) => b.bytes - a.bytes);
 
   const quickTplsArr = Array.isArray(extObj.quickTemplates) ? extObj.quickTemplates : [];
   const quickTplsBytes = getUtf8ByteLength(JSON.stringify(quickTplsArr));
+  const quickTplsItems = quickTplsArr.map((t, idx) => ({
+    id: String(t?.id || `idx:${idx}`),
+    name: String(t?.name || `模板 #${idx + 1}`),
+    contentPreview: String(t?.content || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+    bytes: getUtf8ByteLength(JSON.stringify(t || {})),
+  })).sort((a, b) => b.bytes - a.bytes);
 
   const ignoredMap = extObj.ignoredPresetVars && typeof extObj.ignoredPresetVars === 'object' ? extObj.ignoredPresetVars : {};
   const ignoredVarsBytes = getUtf8ByteLength(JSON.stringify(ignoredMap));
@@ -1336,10 +1348,26 @@ export function getStorageDiagnostics(devLogCount = 0) {
   } catch (e) {}
 
   const aiCache = state._aiModelsCache && typeof state._aiModelsCache === 'object' ? state._aiModelsCache : {};
-  const aiCacheEndpoints = Object.keys(aiCache).length;
+  const aiCacheKeys = Object.keys(aiCache);
+  const aiCacheEndpoints = aiCacheKeys.length;
   const aiCacheBytes = getUtf8ByteLength(JSON.stringify(aiCache));
+  const aiCacheItems = aiCacheKeys.map((apiKey) => {
+    const models = Array.isArray(aiCache[apiKey]) ? aiCache[apiKey] : [];
+    const label = !apiKey
+      ? '跟随酒馆当前连接'
+      : (apiKey.startsWith('profile:')
+        ? `连接配置 (${apiKey.slice(8)})`
+        : (apiKey.startsWith('proxy:') ? `代理预设 (${apiKey.slice(6)})` : apiKey));
+    return {
+      apiKey,
+      label,
+      modelCount: models.length,
+      bytes: getUtf8ByteLength(JSON.stringify(models)),
+    };
+  }).sort((a, b) => b.bytes - a.bytes);
   const devLogStats = getDevLogsStorageInfo();
-  const extraLoadedBooksCount = Object.keys(state.extraLoadedBooks || {}).length;
+  const extraLoadedBooks = Object.keys(state.extraLoadedBooks || {});
+  const extraLoadedBooksCount = extraLoadedBooks.length;
 
   const autoUnpinnedCount = snapList.filter((s) => s && s.auto && !s.pinned).length;
   const fullUnpinnedCount = snapList.filter((s) => s && s.mode === 'full' && !s.pinned && (!!s.payloadFile || !!payloadMap[s.id])).length;
@@ -1361,8 +1389,10 @@ export function getStorageDiagnostics(devLogCount = 0) {
       aiDraftItems,
       aiTplsBytes,
       aiTplsCount: aiTplsArr.length,
+      aiTplsItems,
       quickTplsBytes,
       quickTplsCount: quickTplsArr.length,
+      quickTplsItems,
       ignoredVarsBytes,
       ignoredVarItems,
       backendLogMetaBytes,
@@ -1423,8 +1453,10 @@ export function getStorageDiagnostics(devLogCount = 0) {
       opStepCount: devLogStats.opStepCount,
       pendingBackendLogCount: pendingBackendLogs.length,
       extraLoadedBooksCount,
+      extraLoadedBooks,
       aiCacheEndpoints,
       aiCacheBytes,
+      aiCacheItems,
     },
     quickCounts: {
       autoUnpinnedCount,
@@ -1501,6 +1533,16 @@ export function clearAllAiEditDrafts() {
   return count;
 }
 
+export function deleteAiInstructionTemplate(tplId) {
+  const list = state.store?.extensions?.aiInstructionTemplates;
+  if (!Array.isArray(list)) return false;
+  const next = list.filter((t, idx) => String(t?.id || `idx:${idx}`) !== tplId);
+  if (next.length === list.length) return false;
+  state.store.extensions.aiInstructionTemplates = next;
+  saveStore(state.store);
+  return true;
+}
+
 export function clearAiInstructionTemplates() {
   if (!state.store?.extensions) return 0;
   const list = state.store.extensions.aiInstructionTemplates;
@@ -1508,6 +1550,17 @@ export function clearAiInstructionTemplates() {
   state.store.extensions.aiInstructionTemplates = [];
   saveStore(state.store);
   return count;
+}
+
+export function deleteQuickTemplate(tplId) {
+  const list = state.store?.extensions?.quickTemplates;
+  if (!Array.isArray(list)) return false;
+  const next = list.filter((t, idx) => String(t?.id || `idx:${idx}`) !== tplId);
+  if (next.length === list.length) return false;
+  if (next.length === 0) delete state.store.extensions.quickTemplates;
+  else state.store.extensions.quickTemplates = next;
+  saveStore(state.store);
+  return true;
 }
 
 export function clearQuickTemplates() {
