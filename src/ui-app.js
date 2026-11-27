@@ -5,10 +5,10 @@ import {
 } from './utils.js';
 import { setDevUiContext, recordOpStep } from './dev-tools.js';
 import {
-  state, saveStore, ensureSchemesPool, getVisibleSchemes, getActiveScheme, findGroupNode,
+  state, saveStore, ensureSchemesPool, getVisibleSchemes, getActiveScheme, getSchemeSources, findGroupNode,
   flushBackendLogQueue,
 } from './store.js';
-import { refreshAllCatalogs } from './catalog.js';
+import { refreshAllCatalogs, resolveGroupItemStatus } from './catalog.js';
 import { syncTopBarButton } from './native-ui.js';
 import { isInActiveChat } from './worldbook-manager.js';
 import {
@@ -198,7 +198,12 @@ export function syncEntryStatesUI() {
 
   panelMainEl.querySelectorAll('.td-item[data-item-key]').forEach((itemEl) => {
     const k = itemEl.getAttribute('data-item-key');
-    const entry = state.catalog.byKey.get(k);
+    const gid = itemEl.getAttribute('data-group-id');
+    const found = gid ? findGroupNode(activeScheme.groups, gid) : null;
+    const refInGroup = found ? (found.group.items || []).find((it) => (it.key || makeItemKey(it)) === k) : null;
+    const entry = refInGroup
+      ? resolveGroupItemStatus(refInGroup, activeScheme).entry
+      : state.catalog.byKey.get(k);
     const enabled = entry ? !!entry.enabled : false;
     const sw = itemEl.querySelector('.td-switch');
     if (sw) sw.classList.toggle('on', enabled);
@@ -215,7 +220,7 @@ export function syncEntryStatesUI() {
     let validCount = 0;
     let activeCount = 0;
     items.forEach((ref) => {
-      const entry = state.catalog.byKey.get(ref.key || makeItemKey(ref));
+      const entry = resolveGroupItemStatus(ref, activeScheme).entry;
       if (entry) { validCount++; if (entry.enabled) activeCount++; }
     });
     const stickyTop = Array.from(groupEl.children).find((el) => el.classList.contains('td-group-sticky-top'));
@@ -315,8 +320,13 @@ export function renderMain() {
   const presetOptions = presetList
     .map((pName) => `<option value='${escapeHtml(pName)}' ${pName === state.presetName ? 'selected' : ''}>${escapeHtml(pName)}</option>`)
     .join('');
+  const activeSources = getSchemeSources(activeScheme);
   const schemeOptions = visInfo.schemes
-    .map((s) => `<option value='${escapeHtml(s.id)}' ${s.id === activeScheme.id ? 'selected' : ''}>${escapeHtml(s.name)} (${(s.groups || []).length} 组)</option>`)
+    .map((s) => {
+      const srcs = getSchemeSources(s);
+      const srcSuffix = srcs.length > 0 ? ` · ${srcs.length}源` : '';
+      return `<option value='${escapeHtml(s.id)}' ${s.id === activeScheme.id ? 'selected' : ''}>${escapeHtml(s.name)} (${(s.groups || []).length} 组${srcSuffix})</option>`;
+    })
     .join('');
 
   panelMainEl.innerHTML = `
@@ -361,7 +371,7 @@ export function renderMain() {
         ${pool.length > 1 ? `<button class='td-icon-btn danger' data-action='delete-scheme' title='删除当前方案'>${ICONS.trash}</button>` : ''}
       </div>
       <div class='td-drawer-actions'>
-        <div class='td-stat-pill'><span>启用 <strong>${enabledPresetTotal}</strong>/${state.catalog.preset.length}${visInfo.isBound ? ` · 绑定${visInfo.schemes.length}方案` : ''}</span></div>
+        <div class='td-stat-pill' title='${escapeHtml(activeSources.length > 0 ? `当前方案来源：${activeSources.join('、')}` : '当前方案未绑定源')}'><span>启用 <strong>${enabledPresetTotal}</strong>/${state.catalog.preset.length} · ${activeSources.length > 0 ? `源:${escapeHtml(activeSources.join(','))}` : '未指定源'}</span></div>
         <button class='td-btn primary' data-action='new-group'>${ICONS.plus} 新建分组</button>
       </div>
     </div>

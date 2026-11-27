@@ -544,6 +544,8 @@ export function createDefaultStore() {
       groupTextColor: '',
       entryTextColor: '',
       collapseNativePresetSettings: false,
+      autoScrollToBottomOnChatOpen: false,
+      autoScrollToNewMessageTop: false,
       takeoverNativeToast: false,
       nativeToastTheme: 'glass',
       nativeToastPosition: 'top-right',
@@ -583,7 +585,7 @@ export function createDefaultStore() {
       panelSize: null,
       fullscreen: false,
     },
-    schemes: [{ id: defId, name: '默认方案', groups: [] }],
+    schemes: [{ id: defId, name: '默认方案', groups: [], sources: [] }],
     presetBindings: {},
     activeSchemeByPreset: {},
     activeSchemeId: defId,
@@ -658,6 +660,8 @@ export function loadStore() {
     }
     settings.orbImageFit = settings.orbImageFit === 'contain' ? 'contain' : 'cover';
     settings.unlockOrbSliders = !!settings.unlockOrbSliders;
+    settings.autoScrollToBottomOnChatOpen = !!settings.autoScrollToBottomOnChatOpen;
+    settings.autoScrollToNewMessageTop = !!settings.autoScrollToNewMessageTop;
     settings.takeoverNativeToast = !!settings.takeoverNativeToast;
     if (!settings.nativeToastTheme) settings.nativeToastTheme = 'glass';
     if (!['top-right', 'top-center', 'bottom-right'].includes(settings.nativeToastPosition)) {
@@ -687,6 +691,7 @@ export function loadStore() {
           id: (s && s.id) || genId(),
           name: (s && s.name) || '方案',
           groups: s && Array.isArray(s.groups) ? s.groups.map(normalizeGroupNode).filter(Boolean) : [],
+          sources: s && Array.isArray(s.sources) ? Array.from(new Set(s.sources.filter(Boolean).map(String))) : [],
         }))
       : def.schemes;
     const normalizedSnapshots = Array.isArray(raw.snapshots)
@@ -713,7 +718,7 @@ export function loadStore() {
           return snap;
         })
       : [];
-    return {
+    const loadedStore = {
       schemaVersion: SCHEMA_VERSION,
       settings,
       schemes,
@@ -723,6 +728,8 @@ export function loadStore() {
       snapshots: normalizedSnapshots,
       extensions: raw.extensions && typeof raw.extensions === 'object' ? raw.extensions : {},
     };
+    syncSchemeSourcesFromBindings(loadedStore);
+    return loadedStore;
   } catch (e) {
     logError('读取全局变量失败', e);
     return createDefaultStore();
@@ -748,10 +755,56 @@ export function saveStore(store = state.store, opts = {}) {
 export function ensureSchemesPool() {
   if (!Array.isArray(state.store.schemes) || state.store.schemes.length === 0) {
     const defId = genId();
-    state.store.schemes = [{ id: defId, name: '默认方案', groups: [] }];
+    state.store.schemes = [{ id: defId, name: '默认方案', groups: [], sources: [] }];
     state.store.activeSchemeId = defId;
   }
   return state.store.schemes;
+}
+
+export function syncSchemeSourcesFromBindings(store = state.store) {
+  if (!store || typeof store !== 'object') return;
+  const pool = Array.isArray(store.schemes) ? store.schemes : [];
+  const bindings = store.presetBindings && typeof store.presetBindings === 'object' ? store.presetBindings : {};
+  const sourcesMap = new Map();
+  pool.forEach((s) => {
+    if (s && s.id) sourcesMap.set(s.id, []);
+  });
+  Object.keys(bindings).forEach((pName) => {
+    const arr = Array.isArray(bindings[pName]) ? bindings[pName] : [];
+    arr.forEach((sid) => {
+      if (sourcesMap.has(sid) && pName && !sourcesMap.get(sid).includes(pName)) {
+        sourcesMap.get(sid).push(pName);
+      }
+    });
+  });
+  pool.forEach((s) => {
+    if (s) s.sources = sourcesMap.get(s.id) || [];
+  });
+}
+
+export function getSchemeSources(scheme) {
+  if (!scheme) return [];
+  if (Array.isArray(scheme.sources)) return scheme.sources;
+  const out = [];
+  const bindings = state.store?.presetBindings || {};
+  Object.keys(bindings).forEach((pName) => {
+    if (Array.isArray(bindings[pName]) && bindings[pName].includes(scheme.id) && !out.includes(pName)) {
+      out.push(pName);
+    }
+  });
+  return out;
+}
+
+export function setPresetBindingsForPreset(presetName, schemeIds) {
+  const pKey = presetName || '__default__';
+  const pool = ensureSchemesPool();
+  const validIds = new Set(pool.map((s) => s.id));
+  const cleanIds = Array.from(new Set((schemeIds || []).filter((id) => validIds.has(id))));
+  if (cleanIds.length > 0) state.store.presetBindings[pKey] = cleanIds;
+  else delete state.store.presetBindings[pKey];
+  syncSchemeSourcesFromBindings(state.store);
+  saveStore(state.store);
+  return cleanIds;
 }
 
 export function getBoundSchemeIds(presetName) {
@@ -831,12 +884,11 @@ export function isGroupDescendant(group, possibleChildId) {
 
 export function createOrUpdateScheme(data) {
   const pool = ensureSchemesPool();
-  const pKey = state.presetName || '__default__';
   if (data.id) {
     const s = pool.find((item) => item.id === data.id);
     if (s) s.name = data.name;
     saveStore(state.store);
-    return;
+    return s?.id || data.id;
   }
   const newId = genId();
   if (data.duplicateFromId) {
@@ -848,16 +900,12 @@ export function createOrUpdateScheme(data) {
         copy.children = cloneGroupsDeep(copy.children);
         return copy;
       });
-    pool.push({ id: newId, name: data.name, groups: src ? cloneGroupsDeep(src.groups) : [] });
+    pool.push({ id: newId, name: data.name, groups: src ? cloneGroupsDeep(src.groups) : [], sources: [] });
   } else {
-    pool.push({ id: newId, name: data.name, groups: [] });
-  }
-  if (data.bindToCurrent) {
-    const cur = getBoundSchemeIds(pKey);
-    if (!cur.includes(newId)) cur.push(newId);
-    state.store.presetBindings[pKey] = cur;
+    pool.push({ id: newId, name: data.name, groups: [], sources: [] });
   }
   setActiveSchemeId(newId);
+  return newId;
 }
 
 export function deleteActiveScheme() {
@@ -871,8 +919,10 @@ export function deleteActiveScheme() {
   Object.keys(state.store.presetBindings).forEach((k) => {
     if (Array.isArray(state.store.presetBindings[k])) {
       state.store.presetBindings[k] = state.store.presetBindings[k].filter((id) => id !== active.id);
+      if (state.store.presetBindings[k].length === 0) delete state.store.presetBindings[k];
     }
   });
+  syncSchemeSourcesFromBindings(state.store);
   getActiveScheme();
   saveStore(state.store);
   notify('info', '方案已删除');
@@ -1082,6 +1132,7 @@ export async function importStoreData(data, opts) {
       id: (s && s.id) || genId(),
       name: (s && s.name) || '导入方案',
       groups: s && Array.isArray(s.groups) ? s.groups.map(normalizeGroupNode).filter(Boolean) : [],
+      sources: [],
     }));
     if (mode === 'overwrite') {
       if (incoming.length > 0) {
@@ -1090,7 +1141,10 @@ export async function importStoreData(data, opts) {
         state.store.activeSchemeByPreset = {};
         if (data.presetBindings && typeof data.presetBindings === 'object') {
           state.store.presetBindings = JSON.parse(JSON.stringify(data.presetBindings));
+        } else {
+          state.store.presetBindings = {};
         }
+        syncSchemeSourcesFromBindings(state.store);
       }
     } else {
       const pool = ensureSchemesPool();
@@ -1101,7 +1155,7 @@ export async function importStoreData(data, opts) {
         if (existingIds.has(newId)) newId = genId();
         idMap.set(s.id, newId);
         existingIds.add(newId);
-        pool.push({ id: newId, name: s.name, groups: s.groups });
+        pool.push({ id: newId, name: s.name, groups: s.groups, sources: [] });
       });
       if (data.presetBindings && typeof data.presetBindings === 'object') {
         Object.keys(data.presetBindings).forEach((pName) => {
@@ -1113,6 +1167,7 @@ export async function importStoreData(data, opts) {
           if (cur.length > 0) state.store.presetBindings[pName] = cur;
         });
       }
+      syncSchemeSourcesFromBindings(state.store);
     }
   }
 

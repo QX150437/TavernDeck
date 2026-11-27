@@ -1,7 +1,11 @@
 import { APP_NAME, getST, hasTH, logInfo, logWarn, syncNotifyRuntimeConfig } from './src/utils.js';
 import { state, loadStore, enqueueBackendLogPersist, flushBackendLogQueue } from './src/store.js';
 import { refreshAllCatalogs } from './src/catalog.js';
-import { syncNativePresetCollapse, syncNativeToastHook } from './src/native-ui.js';
+import {
+  syncNativePresetCollapse, syncNativeToastHook, scheduleChatScrollToBottom,
+  onTavernChatChanged, onTavernGenerationStarted, onTavernMessageReceived,
+  onTavernCharacterMessageRendered, onTavernGenerationEnded,
+} from './src/native-ui.js';
 import { initDevErrorCapture, setDevLogPersistHandler, recordOpStep } from './src/dev-tools.js';
 import { updatePickerList, updateSnapshotList, syncPreviewStatusUi, renderModal } from './src/ui-views.js';
 import {
@@ -25,6 +29,10 @@ async function syncAndRefresh() {
     if (!initialSynced) {
       initialSynced = true;
       logInfo(`已连接 TavernHelper 并完成首次同步（当前预设：${state.presetName || '未知'}）`);
+      const st = getST();
+      if (st?.getCurrentChatId?.() || st?.chatId) {
+        scheduleChatScrollToBottom();
+      }
     }
     renderOrb();
     syncExtensionButton();
@@ -71,6 +79,14 @@ function bindTavernEvents() {
     et.CHARACTER_PAGE_LOADED,
     et.CHAT_CHANGED,
   ].filter(Boolean).forEach((evt) => es.on(evt, debouncedSync));
+
+  if (et.CHAT_CHANGED) es.on(et.CHAT_CHANGED, () => onTavernChatChanged());
+  if (et.GENERATION_STARTED) es.on(et.GENERATION_STARTED, () => onTavernGenerationStarted());
+  if (et.MESSAGE_RECEIVED) es.on(et.MESSAGE_RECEIVED, (msgId, type) => onTavernMessageReceived(msgId, type));
+  if (et.CHARACTER_MESSAGE_RENDERED) {
+    es.on(et.CHARACTER_MESSAGE_RENDERED, (msgId) => onTavernCharacterMessageRendered(msgId));
+  }
+  if (et.GENERATION_ENDED) es.on(et.GENERATION_ENDED, (msgId) => onTavernGenerationEnded(msgId));
 
   const debouncedMvuRefresh = (() => {
     let t = null;

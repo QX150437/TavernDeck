@@ -428,6 +428,8 @@ export const settingsUiModule = {
     const unlockOrb = !!s.unlockOrbSliders;
     const showOrb = s.showOrb !== false, enableExt = !!s.enableExtButton, enableTopBar = !!s.enableTopBarButton;
     const enableDrag = !!s.enableDragSort, collapseNative = !!s.collapseNativePresetSettings;
+    const autoScrollBottom = !!s.autoScrollToBottomOnChatOpen;
+    const autoScrollNewTop = !!s.autoScrollToNewMessageTop;
     const takeoverNativeToast = !!s.takeoverNativeToast;
     const nativeToastThemeObj = NATIVE_TOAST_THEME_OPTIONS.find((o) => o.id === (s.nativeToastTheme || 'glass')) || NATIVE_TOAST_THEME_OPTIONS[0];
     const nativeToastPosObj = NATIVE_TOAST_POS_OPTIONS.find((o) => o.id === (s.nativeToastPosition || 'top-right')) || NATIVE_TOAST_POS_OPTIONS[0];
@@ -501,6 +503,20 @@ export const settingsUiModule = {
                 <div class='td-setting-desc'>将酒馆预设下拉框下方的原生设定区域折叠，保留预设条目（可随时点横条原样展开）</div>
               </div>
               <button type='button' class='td-switch ${collapseNative ? 'on' : ''}' data-action='toggle-native-preset-collapse'></button>
+            </div>
+            <div class='td-setting-row'>
+              <div>
+                <div class='td-setting-title'>打开对话自动跳到底部</div>
+                <div class='td-setting-desc'>进入或切换对话时自动滚到底部，方便查看最新消息</div>
+              </div>
+              <button type='button' class='td-switch ${autoScrollBottom ? 'on' : ''}' data-action='toggle-auto-scroll-bottom'></button>
+            </div>
+            <div class='td-setting-row'>
+              <div>
+                <div class='td-setting-title'>自动滚动到新消息开头</div>
+                <div class='td-setting-desc'>收到新的酒馆正文回复消息后，把该消息滚动到视口顶部，方便直接查看</div>
+              </div>
+              <button type='button' class='td-switch ${autoScrollNewTop ? 'on' : ''}' data-action='toggle-auto-scroll-new-msg-top'></button>
             </div>
             <div class='td-setting-row'>
               <div>
@@ -737,6 +753,22 @@ export const settingsUiModule = {
       state.store.settings.collapseNativePresetSettings = nextVal;
       saveStore(state.store); actionEl.classList.toggle('on', nextVal); syncNativePresetCollapse();
       notify('info', nextVal ? '已折叠酒馆原生预设设定区域' : '已展开酒馆原生预设设定区域');
+      return true;
+    }
+    if (action === 'toggle-auto-scroll-bottom') {
+      const nextVal = !state.store.settings.autoScrollToBottomOnChatOpen;
+      state.store.settings.autoScrollToBottomOnChatOpen = nextVal;
+      saveStore(state.store);
+      actionEl.classList.toggle('on', nextVal);
+      notify('info', nextVal ? '已开启：打开对话自动跳到底部' : '已关闭：打开对话自动跳到底部');
+      return true;
+    }
+    if (action === 'toggle-auto-scroll-new-msg-top') {
+      const nextVal = !state.store.settings.autoScrollToNewMessageTop;
+      state.store.settings.autoScrollToNewMessageTop = nextVal;
+      saveStore(state.store);
+      actionEl.classList.toggle('on', nextVal);
+      notify('info', nextVal ? '已开启：自动滚动到新消息开头' : '已关闭：自动滚动到新消息开头');
       return true;
     }
     if (action === 'toggle-native-toast-takeover') {

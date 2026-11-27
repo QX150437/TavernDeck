@@ -3,7 +3,7 @@ import {
   getST, hasTH, callTH, notify, makeItemKey, logInfo, logWarn, logError,
 } from './utils.js';
 import { recordOpStep } from './dev-tools.js';
-import { state, saveStore, getActiveScheme, findGroupPath } from './store.js';
+import { state, saveStore, getActiveScheme, getSchemeSources, findGroupPath } from './store.js';
 
 let mutationQueue = Promise.resolve();
 let pendingMutationOps = 0;
@@ -484,15 +484,69 @@ export function applyItemMutations(mutations) {
   return task;
 }
 
-function collectSubtreeDisableMutations(node, mutationMap) {
+export function resolveGroupItemStatus(ref, scheme = getActiveScheme()) {
+  const k = ref?.key || makeItemKey(ref);
+  const directItem = state.catalog.byKey.get(k) || null;
+  if (!ref || ref.type !== 'preset') {
+    return {
+      key: k,
+      entry: directItem,
+      blockedReason: '',
+      blockedBadge: '',
+    };
+  }
+
+  const curPreset = state.presetName || '';
+  const sources = getSchemeSources(scheme);
+
+  if (sources.length > 0) {
+    if (curPreset && sources.includes(curPreset)) {
+      const entry = directItem || state.catalog.byKey.get(`preset::${ref.id}`) || null;
+      return {
+        key: k,
+        entry,
+        blockedReason: '',
+        blockedBadge: '',
+      };
+    }
+    return {
+      key: k,
+      entry: null,
+      blockedReason: `该方案的来源为「${sources.join('、')}」，未绑定当前预设「${curPreset || '未知'}」`,
+      blockedBadge: `源:${sources.length > 1 ? `${sources[0]}+${sources.length - 1}` : sources[0]}`,
+    };
+  }
+
+  if (ref.preset && curPreset && ref.preset !== curPreset) {
+    return {
+      key: k,
+      entry: null,
+      blockedReason: `该条目属于预设「${ref.preset}」，当前方案未绑定来源且当前预设「${curPreset}」不可控制`,
+      blockedBadge: `预设:${ref.preset}`,
+    };
+  }
+
+  const entry = directItem || (!ref.preset ? state.catalog.byKey.get(`preset::${ref.id}`) : null) || null;
+  return {
+    key: k,
+    entry,
+    blockedReason: '',
+    blockedBadge: '',
+  };
+}
+
+function collectSubtreeDisableMutations(node, mutationMap, activeScheme = getActiveScheme()) {
   if (!node) return false;
   let storeChanged = false;
-  const validItems = (node.items || [])
-    .map((ref) => state.catalog.byKey.get(ref.key || makeItemKey(ref)))
+  const validRows = (node.items || [])
+    .map((ref) => {
+      const st = resolveGroupItemStatus(ref, activeScheme);
+      return st.entry ? { refKey: st.key, entry: st.entry } : null;
+    })
     .filter(Boolean);
 
   if (node.mode === 'multi' && node.meta?.memoryToggle) {
-    const activeKeys = validItems.filter((it) => !!it.enabled).map((it) => it.key);
+    const activeKeys = validRows.filter((r) => !!r.entry.enabled).map((r) => r.refKey);
     if (activeKeys.length > 0) {
       node.meta = node.meta || {};
       node.meta.lastActiveKeys = activeKeys;
@@ -500,21 +554,21 @@ function collectSubtreeDisableMutations(node, mutationMap) {
     }
   }
 
-  validItems.forEach((it) => {
-    if (!mutationMap.has(it.key)) {
-      mutationMap.set(it.key, { ref: it.ref, enabled: false });
+  validRows.forEach((r) => {
+    if (!mutationMap.has(r.entry.key)) {
+      mutationMap.set(r.entry.key, { ref: r.entry.ref, enabled: false });
     }
   });
 
   if (Array.isArray(node.children)) {
     node.children.forEach((child) => {
-      if (collectSubtreeDisableMutations(child, mutationMap)) storeChanged = true;
+      if (collectSubtreeDisableMutations(child, mutationMap, activeScheme)) storeChanged = true;
     });
   }
   return storeChanged;
 }
 
-function collectExclusiveSiblingDisableMutations(path, mutationMap) {
+function collectExclusiveSiblingDisableMutations(path, mutationMap, activeScheme = getActiveScheme()) {
   if (!Array.isArray(path) || path.length < 2) return false;
   let storeChanged = false;
   for (let i = path.length - 2; i >= 0; i--) {
@@ -523,7 +577,7 @@ function collectExclusiveSiblingDisableMutations(path, mutationMap) {
     if (!parent?.meta?.exclusiveChildren) continue;
     (parent.children || []).forEach((sibling) => {
       if (sibling && sibling.id !== activeChild.id) {
-        if (collectSubtreeDisableMutations(sibling, mutationMap)) storeChanged = true;
+        if (collectSubtreeDisableMutations(sibling, mutationMap, activeScheme)) storeChanged = true;
       }
     });
   }
@@ -531,77 +585,84 @@ function collectExclusiveSiblingDisableMutations(path, mutationMap) {
 }
 
 export function toggleEntryInGroup(groupId, itemKey) {
-  const path = findGroupPath(getActiveScheme().groups, groupId);
+  const activeScheme = getActiveScheme();
+  const path = findGroupPath(activeScheme.groups, groupId);
   if (!path) return Promise.resolve(false);
   const group = path[path.length - 1];
   const refInGroup = (group.items || []).find((it) => (it.key || makeItemKey(it)) === itemKey);
-  if (refInGroup && refInGroup.type === 'preset' && refInGroup.preset && state.presetName && refInGroup.preset !== state.presetName) {
-    notify('warning', `该条目属于预设「${refInGroup.preset}」，当前预设「${state.presetName}」不可控制`);
+  const resolved = resolveGroupItemStatus(refInGroup || { key: itemKey }, activeScheme);
+  if (resolved.blockedReason) {
+    notify('warning', resolved.blockedReason);
     return Promise.resolve(false);
   }
-  const targetItem = state.catalog.byKey.get(itemKey);
+  const targetItem = resolved.entry;
   if (!targetItem) {
     notify('warning', '该条目当前未加载或已不存在');
     return Promise.resolve(false);
   }
   const nextEnabled = !targetItem.enabled;
   const mutationMap = new Map();
-  if (nextEnabled && collectExclusiveSiblingDisableMutations(path, mutationMap)) {
+  if (nextEnabled && collectExclusiveSiblingDisableMutations(path, mutationMap, activeScheme)) {
     saveStore(state.store);
   }
   if (group.mode === 'single') {
     (group.items || []).forEach((ref) => {
-      const k = ref.key || makeItemKey(ref);
-      mutationMap.set(k, { ref, enabled: k === itemKey ? nextEnabled : false });
+      const st = resolveGroupItemStatus(ref, activeScheme);
+      if (!st.entry) return;
+      mutationMap.set(st.entry.key, { ref: st.entry.ref, enabled: st.key === itemKey ? nextEnabled : false });
     });
   } else {
-    mutationMap.set(itemKey, { ref: targetItem.ref, enabled: nextEnabled });
+    mutationMap.set(targetItem.key, { ref: targetItem.ref, enabled: nextEnabled });
   }
   return applyItemMutations(Array.from(mutationMap.values()));
 }
 
 export function toggleMultiGroupAll(groupId) {
-  const path = findGroupPath(getActiveScheme().groups, groupId);
+  const activeScheme = getActiveScheme();
+  const path = findGroupPath(activeScheme.groups, groupId);
   if (!path) return Promise.resolve(false);
   const group = path[path.length - 1];
   if (group.mode !== 'multi') return Promise.resolve(false);
-  const validItems = (group.items || [])
-    .map((ref) => state.catalog.byKey.get(ref.key || makeItemKey(ref)))
+  const validRows = (group.items || [])
+    .map((ref) => {
+      const st = resolveGroupItemStatus(ref, activeScheme);
+      return st.entry ? { refKey: st.key, entry: st.entry } : null;
+    })
     .filter(Boolean);
-  if (validItems.length === 0) {
+  if (validRows.length === 0) {
     notify('info', '该分组暂无可直接控制的条目');
     return Promise.resolve(false);
   }
 
   const isMemory = !!group.meta?.memoryToggle;
-  const activeItems = validItems.filter((it) => !!it.enabled);
-  const targetState = isMemory ? activeItems.length === 0 : !validItems.every((it) => !!it.enabled);
+  const activeRows = validRows.filter((r) => !!r.entry.enabled);
+  const targetState = isMemory ? activeRows.length === 0 : !validRows.every((r) => !!r.entry.enabled);
 
   const mutationMap = new Map();
   let storeChanged = false;
 
   if (targetState) {
-    if (collectExclusiveSiblingDisableMutations(path, mutationMap)) {
+    if (collectExclusiveSiblingDisableMutations(path, mutationMap, activeScheme)) {
       storeChanged = true;
     }
     const savedSet = isMemory && Array.isArray(group.meta?.lastActiveKeys)
       ? new Set(group.meta.lastActiveKeys)
       : null;
-    const hasValidSaved = !!savedSet && validItems.some((it) => savedSet.has(it.key));
-    validItems.forEach((it) => {
-      mutationMap.set(it.key, {
-        ref: it.ref,
-        enabled: hasValidSaved ? savedSet.has(it.key) : true,
+    const hasValidSaved = !!savedSet && validRows.some((r) => savedSet.has(r.refKey) || savedSet.has(r.entry.key));
+    validRows.forEach((r) => {
+      mutationMap.set(r.entry.key, {
+        ref: r.entry.ref,
+        enabled: hasValidSaved ? (savedSet.has(r.refKey) || savedSet.has(r.entry.key)) : true,
       });
     });
   } else {
-    if (isMemory && activeItems.length > 0) {
+    if (isMemory && activeRows.length > 0) {
       group.meta = group.meta || {};
-      group.meta.lastActiveKeys = activeItems.map((it) => it.key);
+      group.meta.lastActiveKeys = activeRows.map((r) => r.refKey);
       storeChanged = true;
     }
-    validItems.forEach((it) => {
-      mutationMap.set(it.key, { ref: it.ref, enabled: false });
+    validRows.forEach((r) => {
+      mutationMap.set(r.entry.key, { ref: r.entry.ref, enabled: false });
     });
   }
 

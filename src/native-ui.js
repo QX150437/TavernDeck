@@ -1,4 +1,4 @@
-import { ROOT_ID, logWarn, showToastElement } from './utils.js';
+import { ROOT_ID, getST, hasTH, callTH, logWarn, showToastElement } from './utils.js';
 import { state } from './store.js';
 
 const BAR_ID = 'td-st-preset-collapse-bar';
@@ -316,5 +316,176 @@ export function syncNativeToastHook() {
     };
   } catch (e) {
     logWarn('接管酒馆原生通知失败', e);
+  }
+}
+
+let chatScrollTimers = [];
+let userScrollAbortCleanup = null;
+let pendingNewReply = null;
+
+function clearScheduledChatScrolls() {
+  chatScrollTimers.forEach((t) => clearTimeout(t));
+  chatScrollTimers = [];
+  if (typeof userScrollAbortCleanup === 'function') {
+    try { userScrollAbortCleanup(); } catch (e) {}
+    userScrollAbortCleanup = null;
+  }
+}
+
+function getChatScrollContainer() {
+  const chatEl = typeof document !== 'undefined' ? document.getElementById('chat') : null;
+  if (!chatEl || chatEl.offsetParent === null) return { chatEl: null, scrollEl: null };
+  let cur = chatEl;
+  while (cur && cur !== document.body && cur !== document.documentElement) {
+    try {
+      const style = window.getComputedStyle(cur);
+      const ovY = style?.overflowY || '';
+      if ((ovY === 'auto' || ovY === 'scroll' || ovY === 'overlay') && cur.scrollHeight >= cur.clientHeight) {
+        return { chatEl, scrollEl: cur };
+      }
+    } catch (e) {}
+    cur = cur.parentElement;
+  }
+  return { chatEl, scrollEl: chatEl };
+}
+
+function attachUserScrollAbort(scrollEl) {
+  if (!scrollEl) return;
+  const abort = () => clearScheduledChatScrolls();
+  const onKey = (ev) => {
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(ev.key)) abort();
+  };
+  scrollEl.addEventListener('wheel', abort, { passive: true, once: true });
+  scrollEl.addEventListener('touchstart', abort, { passive: true, once: true });
+  scrollEl.addEventListener('pointerdown', abort, { passive: true, once: true });
+  window.addEventListener('keydown', onKey, { passive: true });
+  userScrollAbortCleanup = () => {
+    scrollEl.removeEventListener('wheel', abort);
+    scrollEl.removeEventListener('touchstart', abort);
+    scrollEl.removeEventListener('pointerdown', abort);
+    window.removeEventListener('keydown', onKey);
+  };
+}
+
+function scrollChatToBottomImmediate() {
+  const { chatEl, scrollEl } = getChatScrollContainer();
+  if (!chatEl || !scrollEl) return;
+  const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+  scrollEl.scrollTop = maxTop;
+}
+
+export function scheduleChatScrollToBottom() {
+  if (!state.store?.settings?.autoScrollToBottomOnChatOpen) return;
+  clearScheduledChatScrolls();
+  const { scrollEl } = getChatScrollContainer();
+  if (!scrollEl) return;
+  attachUserScrollAbort(scrollEl);
+  [40, 160, 380, 720].forEach((delay) => {
+    const t = setTimeout(() => {
+      if (!state.store?.settings?.autoScrollToBottomOnChatOpen) return;
+      if (pendingNewReply && Date.now() < pendingNewReply.expiresAt) return;
+      scrollChatToBottomImmediate();
+    }, delay);
+    chatScrollTimers.push(t);
+  });
+}
+
+function scrollMessageTopToViewport(messageId, smooth = true) {
+  const { chatEl, scrollEl } = getChatScrollContainer();
+  if (!chatEl || !scrollEl) return false;
+  const mesEl = chatEl.querySelector(`.mes[mesid="${messageId}"]`)
+    || (messageId === getLastMsgIdSafe() ? chatEl.querySelector('.mes.last_mes') : null);
+  if (!mesEl) return false;
+
+  const containerRect = scrollEl.getBoundingClientRect();
+  const mesRect = mesEl.getBoundingClientRect();
+  const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+  const rawTarget = scrollEl.scrollTop + (mesRect.top - containerRect.top) - 4;
+  const targetTop = Math.max(0, Math.min(maxTop, Math.round(rawTarget)));
+
+  if (Math.abs(scrollEl.scrollTop - targetTop) <= 4) return true;
+  if (smooth && typeof scrollEl.scrollTo === 'function') {
+    scrollEl.scrollTo({ top: targetTop, behavior: 'smooth' });
+  } else {
+    scrollEl.scrollTop = targetTop;
+  }
+  return true;
+}
+
+function getLastMsgIdSafe() {
+  try {
+    if (hasTH('getLastMessageId')) {
+      const id = Number(callTH('getLastMessageId'));
+      if (!Number.isNaN(id)) return id;
+    }
+  } catch (e) {}
+  return -1;
+}
+
+function isAssistantReplyMessage(messageId, type) {
+  if (typeof messageId !== 'number' || Number.isNaN(messageId) || messageId < 0) return false;
+  const t = String(type || 'normal').toLowerCase();
+  if (t === 'quiet' || t === 'first_message' || t === 'command') return false;
+  const st = getST();
+  const rawMsg = Array.isArray(st?.chat) ? st.chat[messageId] : null;
+  if (rawMsg) {
+    if (rawMsg.is_user || rawMsg.is_system) return false;
+    return true;
+  }
+  if (hasTH('getChatMessages')) {
+    try {
+      const msg = callTH('getChatMessages', messageId)?.[0];
+      if (msg && (msg.role === 'user' || msg.is_hidden)) return false;
+    } catch (e) {}
+  }
+  return true;
+}
+
+function runScrollToNewMessageTop(messageId) {
+  if (!state.store?.settings?.autoScrollToNewMessageTop) return;
+  clearScheduledChatScrolls();
+  const { scrollEl } = getChatScrollContainer();
+  if (!scrollEl) return;
+  attachUserScrollAbort(scrollEl);
+
+  [90, 260, 520].forEach((delay, idx) => {
+    const t = setTimeout(() => {
+      if (!state.store?.settings?.autoScrollToNewMessageTop) return;
+      scrollMessageTopToViewport(messageId, idx === 0);
+    }, delay);
+    chatScrollTimers.push(t);
+  });
+}
+
+export function onTavernChatChanged() {
+  pendingNewReply = null;
+  scheduleChatScrollToBottom();
+}
+
+export function onTavernGenerationStarted() {
+  clearScheduledChatScrolls();
+}
+
+export function onTavernMessageReceived(messageId, type) {
+  if (!state.store?.settings?.autoScrollToNewMessageTop) return;
+  if (!isAssistantReplyMessage(messageId, type)) return;
+  pendingNewReply = { id: Number(messageId), expiresAt: Date.now() + 8000, triggered: false };
+  runScrollToNewMessageTop(Number(messageId));
+}
+
+export function onTavernCharacterMessageRendered(messageId) {
+  if (!state.store?.settings?.autoScrollToNewMessageTop) return;
+  if (!pendingNewReply || Date.now() > pendingNewReply.expiresAt) return;
+  if (Number(messageId) !== pendingNewReply.id) return;
+  pendingNewReply.triggered = true;
+  runScrollToNewMessageTop(pendingNewReply.id);
+}
+
+export function onTavernGenerationEnded(messageId) {
+  if (!state.store?.settings?.autoScrollToNewMessageTop) return;
+  if (!pendingNewReply || Date.now() > pendingNewReply.expiresAt) return;
+  const targetId = typeof messageId === 'number' && !Number.isNaN(messageId) ? messageId : pendingNewReply.id;
+  if (targetId === pendingNewReply.id) {
+    runScrollToNewMessageTop(targetId);
   }
 }

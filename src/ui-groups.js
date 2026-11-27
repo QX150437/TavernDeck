@@ -3,13 +3,13 @@ import {
   hasTH, callTH, notify, copyToClipboard, computeLineDiff, logError,
 } from './utils.js';
 import {
-  state, saveStore, ensureSchemesPool, getBoundSchemeIds,
-  getActiveScheme, setActiveSchemeId, findGroupNode,
+  state, saveStore, ensureSchemesPool, getBoundSchemeIds, getVisibleSchemes,
+  getActiveScheme, getSchemeSources, setPresetBindingsForPreset, setActiveSchemeId, findGroupNode,
   createOrUpdateScheme, deleteActiveScheme, createOrUpdateGroup,
   clearGroupContents, deleteGroup, removeEntryFromGroup, setGroupItems,
 } from './store.js';
 import {
-  refreshWorldbookCatalog, refreshAllCatalogs,
+  refreshWorldbookCatalog, refreshAllCatalogs, resolveGroupItemStatus,
   toggleEntryInGroup, toggleMultiGroupAll, saveEditedEntry,
 } from './catalog.js';
 import { hasUnsavedPresetChanges, saveInUseToPreset, describePresetChanges } from './preset-merge.js';
@@ -42,13 +42,14 @@ export function renderGroupItemsListHtml(group) {
       </div>`;
   }
 
+  const activeScheme = getActiveScheme();
   const visibleRefs = !gQuery
     ? items
     : items.filter((ref) => {
-        const k = ref.key || makeItemKey(ref);
-        const entry = state.catalog.byKey.get(k);
-        const nameStr = (entry ? entry.name : String(ref.id || ref.uid || k)).toLowerCase();
-        return nameStr.includes(gQuery) || k.toLowerCase().includes(gQuery);
+        const st = resolveGroupItemStatus(ref, activeScheme);
+        const entry = st.entry;
+        const nameStr = (entry ? entry.name : String(ref.name || ref.id || ref.uid || st.key)).toLowerCase();
+        return nameStr.includes(gQuery) || st.key.toLowerCase().includes(gQuery);
       });
 
   if (items.length > 0 && visibleRefs.length === 0) {
@@ -56,17 +57,18 @@ export function renderGroupItemsListHtml(group) {
   }
 
   return visibleRefs.map((ref) => {
-    const k = ref.key || makeItemKey(ref);
-    const entry = state.catalog.byKey.get(k);
-    const isOtherPreset = ref.type === 'preset' && !!ref.preset && !!state.presetName && ref.preset !== state.presetName;
+    const st = resolveGroupItemStatus(ref, activeScheme);
+    const k = st.key;
+    const entry = st.entry;
+    const isOtherPreset = !!st.blockedReason;
     const missing = !entry && !isOtherPreset;
     const unavailable = !entry;
-    const name = entry ? entry.name : (isOtherPreset ? (ref.name || ref.id) : `未找到条目 (${ref.id || ref.uid || k})`);
+    const name = entry ? entry.name : (isOtherPreset ? (ref.name || ref.id) : `未找到条目 (${ref.name || ref.id || ref.uid || k})`);
     const enabled = entry ? !!entry.enabled : false;
-    const typeBadge = isOtherPreset ? `预设:${ref.preset}` : (TYPE_LABELS[ref.type] || ref.type);
+    const typeBadge = isOtherPreset ? st.blockedBadge : (TYPE_LABELS[ref.type] || ref.type);
     const drawerId = `${group.id}::${k}`;
     const drawerOpen = hasAnyFolded && state.activeItemDrawerId === drawerId;
-    const disableTitle = isOtherPreset ? `该条目属于预设「${ref.preset}」，当前预设不可控制` : '';
+    const disableTitle = isOtherPreset ? st.blockedReason : '';
 
     const controlBtn = isMulti
       ? `<button type='button' class='td-switch sm ${enabled ? 'on' : ''}' data-action='toggle-entry' data-group-id='${escapeHtml(group.id)}' data-item-key='${escapeHtml(k)}' ${unavailable ? 'disabled' : ''} title='${escapeHtml(disableTitle || '点击开关条目')}'></button>`
@@ -123,10 +125,11 @@ export function renderGroupHtml(group, depth) {
   const foldDel = collapseGrp && !!grpCfg.delete;
   const hasAnyGrpFolded = collapseGrp && (foldQuick || foldAdd || foldSub || foldEdit || foldDel);
 
+  const activeScheme = getActiveScheme();
   let validCount = 0;
   let activeCount = 0;
   items.forEach((ref) => {
-    const entry = state.catalog.byKey.get(ref.key || makeItemKey(ref));
+    const entry = resolveGroupItemStatus(ref, activeScheme).entry;
     if (entry) { validCount++; if (entry.enabled) activeCount++; }
   });
 
@@ -333,18 +336,24 @@ export const groupsUiModule = {
   renderModal(m, modalLayerEl) {
     if (m.type === 'schemeForm') {
       const title = m.mode === 'rename' ? '重命名方案' : (m.mode === 'duplicate' ? '复制方案' : '新建方案');
-      const showBindOpt = m.mode !== 'rename';
-      const bindChecked = typeof m.bindToCurrent === 'boolean' ? m.bindToCurrent : (getBoundSchemeIds(state.presetName).length > 0);
-      m.bindToCurrent = bindChecked;
-      modalLayerEl.innerHTML = `<div class='td-modal td-modal-sm'><div class='td-modal-head'><div class='td-modal-title'>${title}</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div><div class='td-modal-body'><div class='td-field'><label class='td-label'>方案名称</label><input class='td-input' id='td-scheme-name-input' type='text' placeholder='例如：日常聊天、战斗模式、纯文风...' value='${escapeHtml(m.name || '')}' /></div>${showBindOpt ? `<div class='td-setting-row'><div><div class='td-setting-title'>同时绑定到当前预设</div><div class='td-setting-desc'>${escapeHtml(state.presetName)}</div></div><input class='td-checkbox' id='td-scheme-bind-check' type='checkbox' ${bindChecked ? 'checked' : ''} /></div>` : ''}</div><div class='td-modal-foot'><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='submit-scheme-form'>确定</button></div></div>`;
+      const curScheme = m.mode === 'rename' ? ensureSchemesPool().find((s) => s.id === m.schemeId) : null;
+      const curSources = curScheme ? getSchemeSources(curScheme) : [];
+      const tipHtml = m.mode === 'rename'
+        ? `<div style='font-size:12px;color:var(--td-text-muted);line-height:1.5;'>当前方案来源：${curSources.length > 0 ? escapeHtml(curSources.join('、')) : '未绑定源'}（可在各预设下通过 🔗 绑定按钮指定或解除）</div>`
+        : `<div style='font-size:12px;color:var(--td-text-muted);line-height:1.5;'>新方案默认不指定源；如需限定仅作用于特定预设，请在创建后通过 🔗 绑定按钮绑定（支持绑定多个来源预设）。</div>`;
+      modalLayerEl.innerHTML = `<div class='td-modal td-modal-sm'><div class='td-modal-head'><div class='td-modal-title'>${title}</div><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div><div class='td-modal-body'><div class='td-field'><label class='td-label'>方案名称</label><input class='td-input' id='td-scheme-name-input' type='text' placeholder='例如：日常聊天、战斗模式、纯文风...' value='${escapeHtml(m.name || '')}' /></div>${tipHtml}</div><div class='td-modal-foot'><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='submit-scheme-form'>确定</button></div></div>`;
       uiCtx.syncOverlayBounds();
       return true;
     }
 
     if (m.type === 'bindings') {
       const pool = ensureSchemesPool(), selectedSet = m.selectedIds;
-      const rowsHtml = pool.map((s) => `<div class='td-picker-row ${selectedSet.has(s.id) ? 'checked' : ''}'><div class='td-picker-left'><input class='td-checkbox' type='checkbox' data-action='toggle-bind-scheme' data-scheme-id='${escapeHtml(s.id)}' ${selectedSet.has(s.id) ? 'checked' : ''} /><span class='td-item-name'>${escapeHtml(s.name)}</span></div><span class='td-count-tag'>${(s.groups || []).length} 个分组</span></div>`).join('');
-      modalLayerEl.innerHTML = `<div class='td-modal'><div class='td-modal-head'><div class='td-modal-title'>预设方案绑定 · ${escapeHtml(state.presetName)}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='bindings' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div><div class='td-modal-body'><div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>勾选要绑定到当前预设的方案（支持多选，同一方案也可被多个预设共用）。若全部不选，则控制台默认列出全部方案。</div><div style='display:flex;flex-direction:column;gap:6px;'>${rowsHtml}</div></div><div class='td-modal-foot'><button class='td-btn' style='margin-right:auto;' data-action='clear-bindings'>全部不选(显示全部)</button><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='save-bindings'>保存绑定</button></div></div>`;
+      const rowsHtml = pool.map((s) => {
+        const sources = getSchemeSources(s);
+        const srcText = sources.length > 0 ? `来源: ${sources.join('、')}` : '未指定源';
+        return `<div class='td-picker-row ${selectedSet.has(s.id) ? 'checked' : ''}'><div class='td-picker-left'><input class='td-checkbox' type='checkbox' data-action='toggle-bind-scheme' data-scheme-id='${escapeHtml(s.id)}' ${selectedSet.has(s.id) ? 'checked' : ''} /><div style='min-width:0;flex:1;'><div class='td-item-name'>${escapeHtml(s.name)}</div><div style='font-size:11px;color:var(--td-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' title='${escapeHtml(srcText)}'>${escapeHtml(srcText)}</div></div></div><span class='td-count-tag'>${(s.groups || []).length} 组</span></div>`;
+      }).join('');
+      modalLayerEl.innerHTML = `<div class='td-modal'><div class='td-modal-head'><div class='td-modal-title'>预设方案绑定 · ${escapeHtml(state.presetName)}</div><div class='td-modal-head-actions'><button class='td-icon-btn' data-action='open-help' data-help-key='bindings' title='功能说明'>${ICONS.help}</button><button class='td-icon-btn' data-action='close-modal'>${ICONS.close}</button></div></div><div class='td-modal-body'><div style='font-size:12.5px;color:var(--td-text-muted);line-height:1.5;'>勾选即可将当前预设「${escapeHtml(state.presetName)}」指定为对应方案的源（一个方案可绑定多个来源预设）；取消勾选则解除当前预设对应的源。若全部不选，则默认列出全部方案。</div><div style='display:flex;flex-direction:column;gap:6px;'>${rowsHtml}</div></div><div class='td-modal-foot'><button class='td-btn' style='margin-right:auto;' data-action='clear-bindings'>全部不选(解绑)</button><button class='td-btn' data-action='close-modal'>取消</button><button class='td-btn primary' data-action='save-bindings'>保存绑定</button></div></div>`;
       uiCtx.syncOverlayBounds();
       return true;
     }
@@ -448,18 +457,17 @@ export const groupsUiModule = {
     }
     if (action === 'clear-bindings' && state.modal?.type === 'bindings') {
       state.modal.selectedIds.clear();
-      modalLayerEl?.querySelectorAll("[data-action='toggle-bind-scheme']").forEach((row) => {
-        row.classList.remove('checked');
-        const cb = row.querySelector('.td-checkbox');
-        if (cb) cb.checked = false;
+      modalLayerEl?.querySelectorAll("[data-action='toggle-bind-scheme']").forEach((cb) => {
+        cb.checked = false;
+        cb.closest('.td-picker-row')?.classList.remove('checked');
       });
       return true;
     }
     if (action === 'save-bindings' && state.modal?.type === 'bindings') {
-      const pKey = state.presetName || '__default__', arr = Array.from(state.modal.selectedIds);
-      if (arr.length > 0) state.store.presetBindings[pKey] = arr; else delete state.store.presetBindings[pKey];
-      saveStore(state.store); state.modal = null; uiCtx.renderModal(); uiCtx.renderMain();
-      notify('success', arr.length > 0 ? `已绑定 ${arr.length} 个方案到当前预设` : '已解除绑定，将显示全部方案');
+      const pKey = state.presetName || '__default__';
+      const arr = setPresetBindingsForPreset(pKey, Array.from(state.modal.selectedIds));
+      state.modal = null; uiCtx.renderModal(); uiCtx.renderMain();
+      notify('success', arr.length > 0 ? `已将「${pKey}」指定为 ${arr.length} 个方案的源` : `已解除「${pKey}」对应的方案源绑定`);
       return true;
     }
     if (action === 'new-scheme') { state.modal = { type: 'schemeForm', mode: 'create', schemeId: null, name: '' }; uiCtx.renderModal(); return true; }
@@ -471,14 +479,17 @@ export const groupsUiModule = {
       return true;
     }
     if (action === 'submit-scheme-form' && state.modal?.type === 'schemeForm') {
-      const inp = modalLayerEl?.querySelector('#td-scheme-name-input'), bindCb = modalLayerEl?.querySelector('#td-scheme-bind-check');
+      const inp = modalLayerEl?.querySelector('#td-scheme-name-input');
       const name = (inp ? inp.value : state.modal.name || '').trim();
       if (!name) { notify('warning', '请输入方案名称'); if (inp) inp.focus(); return true; }
-      const bindToCurrent = bindCb ? !!bindCb.checked : !!state.modal.bindToCurrent;
-      if (state.modal.mode === 'rename') createOrUpdateScheme({ id: state.modal.schemeId, name });
-      else if (state.modal.mode === 'duplicate') createOrUpdateScheme({ duplicateFromId: state.modal.duplicateFromId, name, bindToCurrent });
-      else createOrUpdateScheme({ name, bindToCurrent });
+      const mode = state.modal.mode;
+      if (mode === 'rename') createOrUpdateScheme({ id: state.modal.schemeId, name });
+      else if (mode === 'duplicate') createOrUpdateScheme({ duplicateFromId: state.modal.duplicateFromId, name });
+      else createOrUpdateScheme({ name });
       state.modal = null; uiCtx.renderModal(); uiCtx.renderMain();
+      if (mode !== 'rename' && getVisibleSchemes(state.presetName).isBound) {
+        notify('info', `已创建无源方案「${name}」，请点击 🔗 绑定按钮将其绑定到当前预设`);
+      }
       return true;
     }
 
@@ -543,7 +554,14 @@ export const groupsUiModule = {
     }
     if (action === 'preview-entry') {
       e.stopPropagation();
-      state.snapshotDetailId = null; state.snapshotDetailCtx = null; state.previewCtx = null; state.previewKey = itemKey;
+      let resolvedKey = itemKey;
+      if (!state.catalog.byKey.has(resolvedKey) && groupId) {
+        const found = findGroupNode(getActiveScheme().groups, groupId);
+        const refInGroup = (found?.group?.items || []).find((it) => (it.key || makeItemKey(it)) === itemKey);
+        const st = resolveGroupItemStatus(refInGroup || { key: itemKey }, getActiveScheme());
+        if (st.entry) resolvedKey = st.entry.key;
+      }
+      state.snapshotDetailId = null; state.snapshotDetailCtx = null; state.previewCtx = null; state.previewKey = resolvedKey;
       uiCtx.renderPreviewModal();
       return true;
     }
@@ -761,7 +779,6 @@ export const groupsUiModule = {
       return true;
     }
     if (id === 'td-scheme-select') { setActiveSchemeId(target.value); uiCtx.renderMain(); return true; }
-    if (id === 'td-scheme-bind-check' && state.modal?.type === 'schemeForm') { state.modal.bindToCurrent = !!target.checked; return true; }
     return false;
   },
 };

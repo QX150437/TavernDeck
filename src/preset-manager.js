@@ -1,6 +1,6 @@
 import { callTH, hasTH, getTH, getST, notify, genId, makeItemKey, downloadJsonFile, logWarn } from './utils.js';
 import { hasUnsavedPresetChanges } from './preset-merge.js';
-import { state, saveStore } from './store.js';
+import { state, saveStore, syncSchemeSourcesFromBindings } from './store.js';
 
 export const PRESET_SYSTEM_IDS = new Set([
   'main', 'nsfw', 'jailbreak', 'enhanceDefinitions',
@@ -105,6 +105,7 @@ export async function renameSavedPresetSafe(oldName, newName) {
     state.store.activeSchemeByPreset[clean] = state.store.activeSchemeByPreset[oldName];
     delete state.store.activeSchemeByPreset[oldName];
   }
+  syncSchemeSourcesFromBindings(state.store);
   (state.store.schemes || []).forEach((s) => renamePresetRefsInGroups(s.groups, oldName, clean));
   saveStore(state.store);
   notify('success', `已将预设重命名为「${clean}」`);
