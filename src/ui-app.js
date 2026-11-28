@@ -371,9 +371,20 @@ export function renderMain() {
         ${pool.length > 1 ? `<button class='td-icon-btn danger' data-action='delete-scheme' title='删除当前方案'>${ICONS.trash}</button>` : ''}
       </div>
       <div class='td-drawer-actions'>
-        <div class='td-stat-pill' title='${escapeHtml(activeSources.length > 0 ? `当前方案来源：${activeSources.join('、')}` : '当前方案未绑定源')}'><span>启用 <strong>${enabledPresetTotal}</strong>/${state.catalog.preset.length} · ${activeSources.length > 0 ? `源:${escapeHtml(activeSources.join(','))}` : '未指定源'}</span></div>
+        <div class='td-stat-pill' title='${escapeHtml(activeSources.length > 0 ? `当前方案来源：${activeSources.join('、')}` : '当前方案未绑定源')}'><span>启用 <strong>${enabledPresetTotal}</strong>/${state.catalog.preset.length} · ${activeSources.length > 0 ? `已绑 ${activeSources.length} 源` : '未指定源'}</span></div>
         <button class='td-btn primary' data-action='new-group'>${ICONS.plus} 新建分组</button>
       </div>
+      ${activeSources.length > 0 ? `
+        <div class='td-scheme-sources-row'>
+          <span class='td-scheme-sources-label'>来源</span>
+          <div class='td-scheme-sources-wrap td-scroll'>
+            ${activeSources.map((src) => `
+              <span class='td-scheme-src-chip ${src === state.presetName ? 'is-current' : ''}' title='${escapeHtml(src)}'>
+                <span class='td-scheme-src-name'>${escapeHtml(src)}</span>
+                <button type='button' class='td-scheme-src-del' data-action='unbind-scheme-source' data-scheme-id='${escapeHtml(activeScheme.id)}' data-source='${escapeHtml(src)}' title='解除源「${escapeHtml(src)}」'>×</button>
+              </span>`).join('')}
+          </div>
+        </div>` : ''}
     </div>
     <div class='td-body'>${buildGroupListHtml()}</div>`;
 

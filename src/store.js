@@ -807,6 +807,22 @@ export function setPresetBindingsForPreset(presetName, schemeIds) {
   return cleanIds;
 }
 
+export function removeSchemeSource(schemeId, sourceName) {
+  if (!schemeId || !sourceName) return false;
+  const pKey = sourceName || '__default__';
+  const bindings = state.store?.presetBindings;
+  if (!bindings || !Array.isArray(bindings[pKey]) || !bindings[pKey].includes(schemeId)) {
+    return false;
+  }
+  const next = bindings[pKey].filter((id) => id !== schemeId);
+  if (next.length > 0) bindings[pKey] = next;
+  else delete bindings[pKey];
+  syncSchemeSourcesFromBindings(state.store);
+  getActiveScheme();
+  saveStore(state.store);
+  return true;
+}
+
 export function getBoundSchemeIds(presetName) {
   const key = presetName || '__default__';
   const pool = ensureSchemesPool();
